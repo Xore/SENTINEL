@@ -7,7 +7,7 @@
 </head>
 <body>
   <header><div><p class="eyebrow">FIELDLINE / PASSIVE-FIRST</p><h1>Network Probe</h1></div><div id="clock" class="clock">—</div></header>
-  <nav><button data-view="overview" class="active">Overview</button><button data-view="discovery">Discovery</button><button data-view="health">Health</button><button data-view="endpoints">Endpoints</button><button data-view="captures">Captures</button><button data-view="wifi">Wi-Fi</button><button data-view="security">Security</button><button data-view="jobs">Activity</button><button onclick="location.href='/monitor'">Monitor</button></nav>
+  <nav><button data-view="overview" class="active">Overview</button><button data-view="discovery">Discovery</button><button data-view="health">Health</button><button data-view="endpoints">Endpoints</button><button data-view="captures">Captures</button><button data-view="wifi">Wi-Fi</button><button data-view="neighbours">Neighbours</button><button data-view="security">Security</button><button data-view="settings">Settings</button><button data-view="jobs">Activity</button><button onclick="location.href='/monitor'">Monitor</button></nav>
   <main>
     <section id="overview" class="view active">
       <div class="metrics"><article><span>Probe</span><strong id="hostname">—</strong><small id="uptime">—</small></article><article><span>Load</span><strong id="load">—</strong><small>1 / 5 / 15 min</small></article><article><span>Capture disk</span><strong id="disk">—</strong><small id="diskDetail">—</small></article><article><span>Toolset</span><strong id="toolCount">—</strong><small>available locally</small></article></div>
@@ -38,13 +38,46 @@
       <div class="panel"><p class="eyebrow">RADIO HEALTH</p><h2>Local Wi-Fi links</h2><p class="hint">Signal, bitrate, channel and association data from local adapters. Deeper 802.11 management-frame analysis: run <code>sudo scripts/wifi-monitor-capture.sh &lt;iface&gt; &lt;channels&gt;</code> on the probe.</p><pre id="wifiData">Loading…</pre></div><div class="panel"><h2>What to assess</h2><div class="check-grid"><div><strong>Coverage</strong><span>RSSI/SNR, channel width, PHY rate</span></div><div><strong>Airtime</strong><span>Channel utilization and retries</span></div><div><strong>RF design</strong><span>Co-channel overlap and band use</span></div><div><strong>Reliability</strong><span>Roaming, deauth/disassoc, loss</span></div><div><strong>Services</strong><span>DHCP, DNS and gateway latency</span></div><div><strong>Security</strong><span>Encryption, rogue/evil-twin clues</span></div></div></div></section>
     <section id="security" class="view">
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">INTRUSION DETECTION</p><h2>Signature alerts (Suricata)</h2></div><button class="primary" onclick="loadIds()">Refresh</button></div>
-        <p class="hint">Passive signature-based IDS on the monitored interface (ET Open ruleset). Detection only — Suricata never blocks or alters traffic. If it is not installed, run <code>sudo scripts/install-ids.sh --apply</code> on the probe.</p>
+        <p class="hint">Passive signature-based IDS on the monitored interface (ET Open ruleset). Detection only — Suricata never blocks or alters traffic. If it is not installed, run <code>sudo scripts/install-ids.sh --apply</code> on the probe. Click any IP to trace it.</p>
+        <div class="form-row"><select id="idsSev" onchange="renderIds()"><option value="">any severity</option><option value="critical">critical</option><option value="major">major</option><option value="minor">minor</option><option value="info">info</option></select><input id="idsQ" placeholder="filter signature/category" oninput="renderIds()" aria-label="Filter text"><input id="idsSrc" placeholder="source IP" oninput="renderIds()" aria-label="Source IP" style="max-width:11rem"><input id="idsDst" placeholder="dest IP" oninput="renderIds()" aria-label="Destination IP" style="max-width:11rem"><span id="idsCount" class="hint"></span></div>
         <div id="idsStatus" class="hint"></div>
         <div id="idsSummary" class="chips"></div>
         <div id="idsResult" class="table-wrap"></div>
       </div>
     </section>
+    <section id="neighbours" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">TOPOLOGY</p><h2>LLDP / CDP neighbours</h2></div><button class="primary" onclick="loadLldp()">Refresh</button></div>
+        <p class="hint">Which switch and port the probe is plugged into, from LLDP/CDP frames collected by <code>lldpd</code> (receive-only). Not installed? Run <code>sudo scripts/install-neighbors.sh --apply</code>.</p>
+        <div id="lldpStatus" class="hint"></div>
+        <div id="lldpResult" class="table-wrap"></div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">DEVICE IDENTITY</p><h2>SNMP probe</h2></div></div>
+        <p class="hint">Read-only single-host SNMP identity read (sysName/Descr/location, optional interface list) using the credentials in Settings. One host at a time — not a sweep.</p>
+        <div class="form-row"><input id="snmpIp" placeholder="device IP (e.g. 10.0.255.1)" aria-label="SNMP target IP"><label class="inline"><input type="checkbox" id="snmpIfaces"> list interfaces</label><button class="primary" onclick="runSnmp()">Query</button></div>
+        <div id="snmpStatus" class="hint"></div>
+        <div id="snmpResult" class="table-wrap"></div>
+      </div>
+    </section>
+    <section id="settings" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">CAPTURE CONTROL</p><h2>Interfaces</h2></div><button onclick="loadSettings()">Refresh</button></div>
+        <p class="hint">Enable an interface for capture / monitor / health jobs. Interfaces without an IP are eligible by default; enabling one that carries an IP (e.g. the management link) lets you capture on it too — you will be sniffing your own management traffic, so use it deliberately. USB adapters are detected automatically.</p>
+        <div id="ifaceSettings" class="table-wrap"></div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">CREDENTIALS</p><h2>SNMP</h2></div></div>
+        <p class="hint">Stored on the probe only (owner-readable). Leave a secret field blank to keep the current value.</p>
+        <div class="form-row"><label class="inline">Version <select id="snmpVer" onchange="snmpVerToggle()"><option value="2c">v2c</option><option value="3">v3</option></select></label></div>
+        <div id="snmpV2" class="form-row"><input id="snmpCommunity" type="password" placeholder="read community" aria-label="SNMP community"><span id="snmpCommunitySet" class="hint"></span></div>
+        <div id="snmpV3" class="genform" style="display:none">
+          <div class="form-row"><input id="v3User" placeholder="username" aria-label="v3 user"><select id="v3Level"><option>authPriv</option><option>authNoPriv</option><option>noAuthNoPriv</option></select></div>
+          <div class="form-row"><select id="v3AuthProto"><option>SHA</option><option>MD5</option><option>SHA-256</option><option>SHA-512</option></select><input id="v3AuthKey" type="password" placeholder="auth key" aria-label="v3 auth key"><span id="v3AuthKeySet" class="hint"></span></div>
+          <div class="form-row"><select id="v3PrivProto"><option>AES</option><option>DES</option><option>AES-256</option></select><input id="v3PrivKey" type="password" placeholder="privacy key" aria-label="v3 privacy key"><span id="v3PrivKeySet" class="hint"></span></div>
+        </div>
+        <div class="form-row"><button class="primary" onclick="saveSnmp()">Save SNMP settings</button><span id="snmpSaveStatus" class="hint"></span></div>
+      </div>
+      <div class="panel"><p class="eyebrow">ACCESS</p><h2>Dashboard token</h2><p class="hint">The access token rotates on every dashboard restart, so a restart signs everyone out. Read the current token on the probe with <code>sudo cat /etc/network-probe/dashboard-token</code>.</p></div>
+    </section>
     <section id="jobs" class="view"><div class="panel"><div class="panel-head"><h2>Recent activity</h2><button onclick="loadJobs()">Refresh</button></div><div id="jobsList"></div></div></section>
+    <div id="ipTrace" class="ip-trace" style="display:none"><div class="panel-head"><h2 id="ipTraceTitle">Trace</h2><button onclick="document.querySelector('#ipTrace').style.display='none'">Close</button></div><pre id="ipTraceOut">…</pre></div>
   </main>
   <div id="toast" role="status"></div><script src="/static/app.js"></script>
 </body></html>

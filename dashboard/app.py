@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import ipaddress
 import json
 import os
 import re
@@ -14,6 +15,11 @@ import uuid
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
+
+try:  # package import (waitress-serve dashboard.app:app)
+    from dashboard import settings as settings_store
+except ImportError:  # run from inside the dashboard directory
+    import settings as settings_store
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_DIR = Path(os.environ.get("PROBE_CAPTURE_DIR", ROOT / "captures")).resolve()
@@ -64,11 +70,31 @@ def run(command: list[str], timeout: int = 15) -> tuple[int, str]:
         return 127, str(exc)
 
 
+def _iface_bus(item: Path) -> tuple[str, str]:
+    """Return (kind, bus): kind in wired/wireless/loopback/virtual, bus in
+    usb/pci/... Used to label and auto-surface hot-plugged USB adapters."""
+    name = item.name
+    if name == "lo":
+        return "loopback", ""
+    kind = "wireless" if (item / "wireless").exists() or (item / "phy80211").exists() else "wired"
+    bus = ""
+    try:
+        # .../devices/.../usb.../net/<if> or .../pci.../net/<if>
+        real = os.path.realpath(item / "device" / "subsystem")
+        bus = os.path.basename(real)
+    except OSError:
+        pass
+    if not bus and not (item / "device").exists():
+        kind = "virtual" if kind == "wired" else kind
+    return kind, bus
+
+
 def interfaces() -> list[dict]:
     found = []
     net_root = Path("/sys/class/net")
     if not net_root.exists():
         return found
+    overrides = settings_store.load().get("interface_overrides", {})
     for item in sorted(net_root.iterdir()):
         name = item.name
         _, address_text = run(["ip", "-brief", "address", "show", "dev", name])
@@ -78,29 +104,60 @@ def interfaces() -> list[dict]:
                 stats[key] = int((item / "statistics" / key).read_text().strip())
             except (OSError, ValueError):
                 stats[key] = 0
+        capture_safe = not bool(re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}/|\b[0-9a-fA-F:]+/", address_text))
+        kind, bus = _iface_bus(item)
+        override = overrides.get(name, {}).get("capture_allowed")
         found.append({
             "name": name,
             "state": (item / "operstate").read_text().strip(),
             "mac": (item / "address").read_text().strip(),
             "addresses": address_text.strip(),
-            "capture_safe": not bool(re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}/|\b[0-9a-fA-F:]+/", address_text)),
+            "kind": kind,
+            "bus": bus,
+            "usb": bus == "usb",
+            "capture_safe": capture_safe,
+            # Eligible for capture/health/monitor jobs. Safe by default (no IP);
+            # an operator override can enable an addressed interface too.
+            "capture_allowed": bool(override) if override is not None else capture_safe,
+            "capture_override": override,
             **stats,
         })
     return found
 
 
+VALID_PROTOCOLS = {"tcp", "s7-tcp", "opcua-tcp"}
+
+
+def _valid_target(name: str, address: str, protocol: str, port) -> bool:
+    return bool(NAME_RE.fullmatch(name) and NAME_RE.fullmatch(address)
+                and protocol in VALID_PROTOCOLS and str(port).isdigit())
+
+
 def targets() -> list[dict]:
-    if not TARGET_FILE.is_file():
-        return []
-    rows = []
-    with TARGET_FILE.open(newline="", encoding="utf-8") as handle:
-        for row in csv.reader(line for line in handle if not line.lstrip().startswith("#")):
-            if len(row) != 4:
-                continue
-            name, address, protocol, port = (value.strip() for value in row)
-            if NAME_RE.fullmatch(name) and NAME_RE.fullmatch(address) and protocol in {"tcp", "s7-tcp", "opcua-tcp"} and port.isdigit():
-                rows.append({"name": name, "address": address, "protocol": protocol, "port": int(port)})
-    return rows
+    """Approved scope = the read-only operator CSV plus any endpoints added
+    through the dashboard (persisted in the settings store). Deduplicated by
+    (address, port)."""
+    rows: list[dict] = []
+    if TARGET_FILE.is_file():
+        with TARGET_FILE.open(newline="", encoding="utf-8") as handle:
+            for row in csv.reader(line for line in handle if not line.lstrip().startswith("#")):
+                if len(row) != 4:
+                    continue
+                name, address, protocol, port = (value.strip() for value in row)
+                if _valid_target(name, address, protocol, port):
+                    rows.append({"name": name, "address": address, "protocol": protocol, "port": int(port), "source": "file"})
+    for entry in settings_store.load().get("approved_scope", []):
+        name, address = str(entry.get("name", "")), str(entry.get("address", ""))
+        protocol, port = str(entry.get("protocol", "tcp")), entry.get("port")
+        if _valid_target(name, address, protocol, port):
+            rows.append({"name": name, "address": address, "protocol": protocol, "port": int(port), "source": "dashboard"})
+    seen, unique = set(), []
+    for row in rows:
+        key = (row["address"], row["port"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(row)
+    return unique
 
 
 def launch_job(kind: str, command: list[str], timeout: int = 120) -> str:
@@ -131,7 +188,8 @@ def status():
         "uptime_seconds": float(Path("/proc/uptime").read_text().split()[0]) if Path("/proc/uptime").exists() else 0,
         "load": list(os.getloadavg()) if hasattr(os, "getloadavg") else [0, 0, 0],
         "disk": {"total": disk.total, "used": disk.used, "free": disk.free},
-        "tools": {name: bool(shutil.which(name)) for name in ("dumpcap", "tshark", "nmap", "tracepath", "iw", "zeek", "suricata", "ntopng")},
+        "tools": {name: (bool(_lldpctl_path()) if name == "lldpctl" else bool(shutil.which(name)))
+                  for name in ("dumpcap", "tshark", "nmap", "tracepath", "iw", "snmpget", "lldpctl", "suricata", "ntopng")},
         "interfaces": interfaces(),
         "targets": targets(),
     })
@@ -176,8 +234,8 @@ def capture():
     except (TypeError, ValueError):
         return jsonify(error="Capture limits must be numbers"), 400
     selected = next((item for item in interfaces() if item["name"] == iface), None)
-    if not selected or not selected["capture_safe"]:
-        return jsonify(error="Select an existing interface with no IP address"), 400
+    if not selected or not selected["capture_allowed"]:
+        return jsonify(error="Interface is not enabled for capture. Enable it in Settings → Interfaces (interfaces with an IP are off by default)."), 400
     if not (30 <= seconds <= 3600 and 1 <= files <= 96 and 16 <= size <= 4096):
         return jsonify(error="Capture limits are outside the allowed range"), 400
     command = [str(ROOT / "scripts" / "capture-pcapng.sh"), iface, str(CAPTURE_DIR), str(seconds), str(files), str(size)]
@@ -199,8 +257,8 @@ def l2_health():
     except (TypeError, ValueError):
         return jsonify(error="Duration must be a number"), 400
     selected = next((item for item in interfaces() if item["name"] == iface), None)
-    if not selected or not selected["capture_safe"]:
-        return jsonify(error="Select an existing no-IP capture interface"), 400
+    if not selected or not selected["capture_allowed"]:
+        return jsonify(error="Interface is not enabled for capture. Enable it in Settings → Interfaces."), 400
     if not 5 <= duration <= 120:
         return jsonify(error="Duration must be 5-120 seconds"), 400
     command = [str(ROOT / "scripts" / "l2-health.sh"), iface, str(duration)]
@@ -362,8 +420,209 @@ def ids_alerts():
         limit = max(1, min(int(request.args.get("limit", 100)), 500))
     except ValueError:
         return jsonify(error="limit must be a number"), 400
-    _, payload = _ids_summary(limit)
+    # Server-side filters (also filterable in the UI without a re-fetch).
+    sev = request.args.get("severity", "").strip().lower()
+    text = request.args.get("q", "").strip().lower()
+    src = request.args.get("src", "").strip()
+    dst = request.args.get("dst", "").strip()
+    # Fetch a wider window when filtering so matches are not truncated first.
+    _, payload = _ids_summary(limit if not (sev or text or src or dst) else 500)
+    alerts = payload.get("alerts")
+    if isinstance(alerts, list) and (sev or text or src or dst):
+        def keep(a: dict) -> bool:
+            if sev and str(a.get("severity_label", "")).lower() != sev:
+                return False
+            if src and src not in str(a.get("src", "")):
+                return False
+            if dst and dst not in str(a.get("dst", "")):
+                return False
+            if text and text not in (str(a.get("signature", "")) + " " + str(a.get("category", ""))).lower():
+                return False
+            return True
+        payload["alerts"] = [a for a in alerts if keep(a)][:limit]
+        payload["filtered"] = True
     return jsonify(payload)
+
+
+def valid_ip(value: str) -> str:
+    """Return a normalised IP string, or '' if not a plain IPv4/IPv6 address."""
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return ""
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Redacted settings for the UI (secrets returned only as *_set booleans)."""
+    return jsonify(settings_store.redacted())
+
+
+@app.put("/api/settings")
+def put_settings():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(error="expected a JSON object"), 400
+    # Only known top-level sections are accepted.
+    allowed = {"snmp", "interface_overrides", "approved_scope"}
+    update = {k: v for k, v in payload.items() if k in allowed}
+    if not update:
+        return jsonify(error="no editable settings in request"), 400
+    try:
+        return jsonify(settings_store.apply_update(update))
+    except OSError as exc:
+        return jsonify(error=f"could not save settings: {exc}"), 500
+
+
+@app.post("/api/interfaces/<name>/capture")
+def set_capture(name: str):
+    """Enable/disable an interface for capture/monitor jobs (persistent)."""
+    if not any(item["name"] == name for item in interfaces()):
+        return jsonify(error="unknown interface"), 404
+    payload = request.get_json(silent=True) or {}
+    allowed = bool(payload.get("capture_allowed"))
+    current = settings_store.load()
+    overrides = current.setdefault("interface_overrides", {})
+    overrides.setdefault(name, {})["capture_allowed"] = allowed
+    settings_store.save(current)
+    return jsonify(name=name, capture_allowed=allowed)
+
+
+@app.post("/api/scope/add")
+def scope_add():
+    """Promote a host (e.g. from Discovery) into the approved-scope list."""
+    payload = request.get_json(silent=True) or {}
+    address = valid_ip(str(payload.get("address", ""))) or str(payload.get("address", "")).strip()
+    protocol = str(payload.get("protocol", "tcp"))
+    name = str(payload.get("name", "")).strip() or f"host-{address}"
+    name = re.sub(r"[^A-Za-z0-9._:-]", "-", name)[:48]
+    try:
+        port = int(payload.get("port"))
+    except (TypeError, ValueError):
+        return jsonify(error="port is required and numeric"), 400
+    if not _valid_target(name, address, protocol, port) or not (0 < port < 65536):
+        return jsonify(error="invalid endpoint (name/address/protocol/port)"), 400
+    current = settings_store.load()
+    scope = current.setdefault("approved_scope", [])
+    if any(e.get("address") == address and int(e.get("port", -1)) == port for e in scope):
+        return jsonify(status="exists", name=name), 200
+    scope.append({"name": name, "address": address, "protocol": protocol, "port": port})
+    settings_store.save(current)
+    return jsonify(status="added", name=name, count=len(scope)), 201
+
+
+@app.post("/api/scope/remove")
+def scope_remove():
+    """Remove a dashboard-added endpoint (file-provided ones are read-only)."""
+    payload = request.get_json(silent=True) or {}
+    address, port = str(payload.get("address", "")).strip(), payload.get("port")
+    current = settings_store.load()
+    scope = current.get("approved_scope", [])
+    kept = [e for e in scope if not (e.get("address") == address and str(e.get("port")) == str(port))]
+    if len(kept) == len(scope):
+        return jsonify(error="not a dashboard-added endpoint"), 404
+    current["approved_scope"] = kept
+    settings_store.save(current)
+    return jsonify(status="removed", count=len(kept))
+
+
+@app.post("/api/trace-ip")
+def trace_ip():
+    """Traceroute (tracepath) to any valid IP - used by click-to-trace on
+    Discovery/IDS/monitor events. Read-only and bounded."""
+    payload = request.get_json(silent=True) or {}
+    ip = valid_ip(str(payload.get("ip", "")))
+    if not ip:
+        return jsonify(error="a valid IP address is required"), 400
+    return jsonify(job_id=launch_job("trace-ip", ["tracepath", "-n", ip], 45)), 202
+
+
+@app.post("/api/snmp")
+def snmp_probe():
+    """Single-target, read-only SNMP identity read using stored credentials.
+    Deliberately not a sweep: one host, a small OID set, short timeout."""
+    payload = request.get_json(silent=True) or {}
+    ip = valid_ip(str(payload.get("ip", "")))
+    if not ip:
+        return jsonify(error="a valid IP address is required"), 400
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "snmp_probe.py"),
+               "--host", ip, "--settings", str(settings_store.SETTINGS_FILE)]
+    if payload.get("walk_interfaces"):
+        command.append("--interfaces")
+    return jsonify(job_id=launch_job("snmp-probe", command, 40)), 202
+
+
+def _lldpctl_path() -> str | None:
+    """Resolve lldpctl by absolute path.
+
+    lldpctl lives in /usr/sbin, which the service's default PATH may omit, and
+    the binary is group-execute-only (adm), so shutil.which()/PATH lookup can
+    miss it even when installed. Probe known locations directly.
+    """
+    for candidate in ("/usr/sbin/lldpctl", "/usr/bin/lldpctl", "/sbin/lldpctl"):
+        if os.path.exists(candidate):
+            return candidate
+    return shutil.which("lldpctl")
+
+
+@app.get("/api/lldp")
+def lldp_neighbors():
+    """Discovered LLDP/CDP neighbours from a locally running lldpd."""
+    lldpctl = _lldpctl_path()
+    if not lldpctl:
+        return jsonify(status="unavailable", neighbors=[],
+                       note="lldpd is not installed. Run scripts/install-neighbors.sh --apply on the probe.")
+    code, output = run([lldpctl, "-f", "json"], 8)
+    if code != 0 or not output.strip():
+        return jsonify(status="no_data", neighbors=[],
+                       note="lldpd is installed but returned no neighbours yet (frames are sent ~every 30s).")
+    try:
+        data = json.loads(output)
+    except ValueError:
+        return jsonify(status="error", neighbors=[], note="could not parse lldpctl output")
+    return jsonify(status="ok", neighbors=_parse_lldp(data))
+
+
+def _parse_lldp(data: dict) -> list[dict]:
+    """Flatten lldpctl JSON into rows: local port, remote system, port, mgmt IP."""
+    rows = []
+    interfaces_node = (data.get("lldp") or {}).get("interface") or data.get("interface") or []
+    if isinstance(interfaces_node, dict):
+        interfaces_node = [{"name": k, **v} if isinstance(v, dict) else {"name": k} for k, v in interfaces_node.items()]
+    for iface in interfaces_node:
+        local = iface.get("name", "")
+        chassis = iface.get("chassis", {})
+        # chassis may be {"SYSNAME": {...}} or a flat dict.
+        sysname, mgmt = "", ""
+        if isinstance(chassis, dict) and chassis:
+            first = next(iter(chassis.values())) if not chassis.get("id") else chassis
+            sysname = next(iter(chassis)) if not chassis.get("id") else (first.get("name", "") if isinstance(first, dict) else "")
+            node = first if isinstance(first, dict) else chassis
+            mgmt = _lldp_first(node.get("mgmt-ip"))
+            descr = _lldp_first(node.get("descr"))
+        else:
+            descr = ""
+        port = iface.get("port", {})
+        port_id = _lldp_first(port.get("id")) if isinstance(port, dict) else ""
+        port_descr = _lldp_first(port.get("descr")) if isinstance(port, dict) else ""
+        vlan = iface.get("vlan", {})
+        vlan_id = _lldp_first(vlan.get("vlan-id") if isinstance(vlan, dict) else vlan) if vlan else ""
+        rows.append({
+            "local_port": local, "system": sysname, "mgmt_ip": mgmt,
+            "port_id": port_id, "port_descr": port_descr, "descr": descr, "vlan": vlan_id,
+        })
+    return rows
+
+
+def _lldp_first(node):
+    """lldpctl JSON wraps scalars as {'value': x} or lists; pull a plain string."""
+    if node is None:
+        return ""
+    if isinstance(node, dict):
+        return str(node.get("value", node.get("name", "")))
+    if isinstance(node, list):
+        return ", ".join(_lldp_first(n) for n in node)
+    return str(node)
 
 
 def monitor_db() -> sqlite3.Connection | None:

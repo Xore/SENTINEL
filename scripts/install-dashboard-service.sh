@@ -70,6 +70,10 @@ Environment=PROBE_AUTH_TOKEN_FILE=$config_dir/dashboard-token
 Environment=PROBE_CAPTURE_DIR=$state_dir/captures
 Environment=PROBE_SNAPSHOT_DIR=$state_dir/snapshots
 Environment=PROBE_TARGET_FILE=$config_dir/targets.csv
+Environment=PROBE_SETTINGS_FILE=$state_dir/settings.json
+# Rotate the access token on every (re)start: old sessions are deauthenticated.
+# The '+' prefix runs this as root, before the unprivileged service starts.
+ExecStartPre=+$repo_dir/scripts/rotate-dashboard-token.sh $config_dir/dashboard-token $service_user
 ExecStart=$venv_dir/bin/waitress-serve --listen=$bind_address:8088 dashboard.app:app
 Restart=on-failure
 RestartSec=3

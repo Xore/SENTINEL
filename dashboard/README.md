@@ -64,7 +64,33 @@ Grant the account write permission only to the chosen capture directory. Do not 
 - Traffic generator: bounded, allow-listed TCP/UDP send with optional expected-response check
 - Discovery: broad-view LAN host inventory (IP/MAC/vendor/name) of a connected subnet, discovery-only
 - Wi-Fi survey: AP/channel/band/security list plus per-channel occupancy (needs the radio enabled)
-- Security (IDS): recent Suricata signature alerts and engine status, read-only from `eve.json` (needs `scripts/install-ids.sh`)
+- Security (IDS): recent Suricata signature alerts and engine status, read-only from `eve.json` (needs `scripts/install-ids.sh`); alerts are filterable by severity/text/source/destination and every IP is click-to-trace
+- Neighbours (LLDP): switch/port/VLAN the probe is plugged into, from a receive-only lldpd (needs `scripts/install-neighbors.sh`)
+- SNMP: read-only single-host `snmpget`/`snmpwalk` probe (system group + interface list) using credentials stored in Settings
+- Trace IP: on-demand `tracepath` to any IP seen in discovery, neighbours or alerts
+
+## Settings (persistent, dashboard-editable)
+
+The **Settings** view writes to `/var/lib/network-probe/settings.json` (mode
+0600, the only web-writable path). Everything there survives restarts:
+
+- **Interface capture overrides** — every interface can be toggled capture-on/off
+  from the dashboard, not just no-IP interfaces. Interfaces are auto-enumerated
+  every refresh, so hot-plugged USB Wi-Fi/Ethernet adapters appear on their own
+  and are labelled by bus (USB/PCI) and kind (wired/wireless).
+- **SNMP credentials** — v2c community or v3 user/auth/priv. Secrets are stored
+  0600 and never returned to the browser (the API reports only whether each is
+  set); submitting a blank secret keeps the stored value.
+- **Approved scope** — discovered endpoints can be promoted into the approved
+  target scope with one button (or removed), merged with the file-based
+  `targets.csv` allow-list.
+
+## Access-token rotation
+
+The token is rotated on every service (re)start (`ExecStartPre=+` →
+`scripts/rotate-dashboard-token.sh`), so restarting the dashboard deauthenticates
+any browser still holding the old token. Retrieve the current one with
+`sudo cat /etc/network-probe/dashboard-token`.
 
 Deeper 802.11 management-frame capture is an operator sudo tool
 (`scripts/wifi-monitor-capture.sh`), not a web job — monitor mode needs
