@@ -38,10 +38,15 @@ import threading
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import probes  # noqa: E402 - local module beside this file
+
 DB_PATH = Path(os.environ.get("PROBE_MONITOR_DB", "/var/lib/network-probe/monitor.db"))
 TARGET_FILE = Path(os.environ.get("PROBE_MONITOR_TARGETS", "/etc/network-probe/monitor-targets.csv"))
 SERVICE_FILE = Path(os.environ.get("PROBE_MONITOR_SERVICES", "/etc/network-probe/monitor-services.csv"))
+PORT_FILE = Path(os.environ.get("PROBE_MONITOR_PORTS", "/etc/network-probe/monitor-ports.csv"))
 SERVICE_INTERVAL = int(os.environ.get("PROBE_MONITOR_SERVICE_INTERVAL", "60"))
+PORT_INTERVAL = int(os.environ.get("PROBE_MONITOR_PORT_INTERVAL", "60"))
 ROUTE_INTERVAL = int(os.environ.get("PROBE_MONITOR_ROUTE_INTERVAL", "300"))
 SNAPSHOT_IFACE = os.environ.get("PROBE_MONITOR_SNAPSHOT_IFACE", "")  # e.g. enp0s31f6
 SNAPSHOT_SECONDS = int(os.environ.get("PROBE_MONITOR_SNAPSHOT_SECONDS", "15"))
@@ -332,6 +337,47 @@ def load_services() -> list[dict]:
     return rows
 
 
+def load_ports() -> list[dict]:
+    """monitor-ports.csv: name,host,port,proto,send,expect
+    proto (tcp/udp), send and expect are optional; well-known ports supply a
+    default probe and expected response when send/expect are blank."""
+    rows: list[dict] = []
+    if not PORT_FILE.is_file():
+        return rows
+    with PORT_FILE.open(newline="", encoding="utf-8") as handle:
+        for row in csv.reader(line for line in handle if line.strip() and not line.lstrip().startswith("#")):
+            if len(row) < 3:
+                continue
+            row = (row + ["", "", ""])[:6]
+            name, host, port_text, proto, send, expect = (value.strip() for value in row)
+            if not (name and host and port_text.isdigit()):
+                continue
+            rows.append({
+                "name": name, "host": host, "port": int(port_text),
+                "proto": proto or "tcp",
+                "send": send.encode("utf-8").decode("unicode_escape").encode("latin-1") if send else None,
+                "expect": expect if expect else None,
+            })
+    return rows
+
+
+def port_check_loop(results: collections.deque) -> None:
+    """Probe configured ports every PORT_INTERVAL seconds and record the
+    result (ok, response time, matched/expected detail) into service_samples."""
+    while not stop_event.is_set():
+        for port in load_ports():
+            if stop_event.is_set():
+                return
+            spec = probes.spec_for(
+                port["port"], port["send"], port["expect"],
+                udp=(port["proto"] == "udp"), tls=False,
+            )
+            ok, duration, detail = probes.run_probe(port["host"], port["port"], spec)
+            kind = f"port/{spec.label}"
+            results.append(("service", (time.time(), port["name"], kind[:40], int(ok), duration, detail)))
+        stop_event.wait(PORT_INTERVAL)
+
+
 def check_dns(target: str) -> tuple[bool, float | None, str]:
     host, _, resolver = target.partition("@")
     command = ["dig", "+tries=1", "+time=2", "+noall", "+answer", "+stats", host]
@@ -508,6 +554,7 @@ def main() -> int:
 
     aux_results: collections.deque = collections.deque()
     threading.Thread(target=service_check_loop, args=(aux_results,), daemon=True).start()
+    threading.Thread(target=port_check_loop, args=(aux_results,), daemon=True).start()
     threading.Thread(target=route_check_loop, args=(targets, aux_results), daemon=True).start()
 
     def handle_signal(_signum, _frame):

@@ -27,6 +27,15 @@
     .statgrid strong{display:block;font:16px var(--mono);margin:8px 0 3px}
     .statgrid span{color:var(--muted);font-size:12px}
     .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}
+    .genform{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:14px}
+    .genform label{display:flex;flex-direction:column;gap:5px;font:12px var(--mono);color:var(--muted)}
+    .genform input,.genform select{background:#0d151d;border:1px solid var(--line);border-radius:6px;
+      color:var(--text);padding:8px 9px;font:13px var(--mono)}
+    .genform .wide{grid-column:1/-1}
+    .genrow{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
+    .genrow .bad{color:var(--series-8)}
+    #genResult{margin-top:14px;background:#0d151d;border:1px solid var(--line);border-radius:6px;
+      padding:12px;font:12px var(--mono);color:var(--text-secondary);white-space:pre-wrap;max-height:340px;overflow:auto;display:none}
   </style>
 </head>
 <body class="viz-root">
@@ -80,6 +89,38 @@
       <div class="panel-head"><div><p class="eyebrow">PATHS</p><h2>Routes and changes</h2></div></div>
       <div class="table-wrap"><table><thead><tr><th>Destination</th><th>Current hops</th><th>Checked</th></tr></thead><tbody id="routesNow"></tbody></table></div>
       <div class="table-wrap"><table><thead><tr><th>When</th><th>Destination</th><th>Old path</th><th>New path</th></tr></thead><tbody id="routeChanges"></tbody></table></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><div><p class="eyebrow">ACTIVE</p><h2>Traffic generator</h2></div></div>
+      <p class="hint">Sends a bounded number of TCP/UDP messages to an <b>allow-listed</b> destination
+        (edit <code>traffic-gen-allow.csv</code>). Capped at 1000 messages, 100/s, 60 s total.
+        Control-system ports (S7, Modbus, OPC UA, PROFINET, EtherNet/IP, BACnet, SNMP) are refused.</p>
+      <div class="genform">
+        <label>Destination
+          <select id="genDest"><option value="">— pick allow-listed —</option></select></label>
+        <label>Messages
+          <input id="genCount" type="number" min="1" max="1000" value="5"></label>
+        <label>Rate /s
+          <input id="genRate" type="number" min="1" max="100" value="2"></label>
+        <label>Payload mode
+          <select id="genMode">
+            <option value="text">Text (default port banner)</option>
+            <option value="hex">Hex bytes</option>
+            <option value="size">Fixed size</option>
+          </select></label>
+        <label class="wide" id="genDataWrap">Payload / data
+          <input id="genData" placeholder="e.g. GET / HTTP/1.0\r\n\r\n  (\\r \\n \\xNN escapes)"></label>
+        <label id="genRandWrap" style="display:none">Random bytes?
+          <select id="genRandom"><option value="">zeros</option><option value="1">random</option></select></label>
+        <label class="wide">Expect (regex, optional)
+          <input id="genExpect" placeholder="e.g. ^HTTP/1.[01] 200"></label>
+      </div>
+      <div class="genrow">
+        <button onclick="runTraffic()" id="genRun">Send</button>
+        <span id="genStatus"></span>
+      </div>
+      <pre id="genResult"></pre>
     </div>
 
     <div class="panel">
@@ -254,12 +295,68 @@
   }
   async function loadEvents(){ events = (await (await fetch("/api/monitor/events?limit=100")).json()).filter(e => e.started); loadEventsTable(); }
 
+  async function loadAllow(){
+    const sel = document.getElementById("genDest");
+    try {
+      const rows = await (await fetch("/api/traffic/allow")).json();
+      sel.innerHTML = '<option value="">— pick allow-listed —</option>' +
+        rows.map(r => `<option value="${r.host}|${r.port}|${r.proto}">${r.host}:${r.port} / ${r.proto}</option>`).join("");
+      if (!rows.length) sel.innerHTML = '<option value="">allow-list empty — edit traffic-gen-allow.csv</option>';
+    } catch (e){ sel.innerHTML = '<option value="">allow-list unavailable</option>'; }
+  }
+  document.getElementById("genMode").addEventListener("change", evt => {
+    const mode = evt.target.value;
+    document.getElementById("genRandWrap").style.display = mode === "size" ? "flex" : "none";
+    const data = document.getElementById("genData");
+    data.placeholder = mode === "hex" ? "e.g. 4745 5420 2f0d 0a0d 0a"
+      : mode === "size" ? "byte count, e.g. 512"
+      : "e.g. GET / HTTP/1.0\\r\\n\\r\\n  (\\r \\n \\xNN escapes)";
+  });
+
+  async function runTraffic(){
+    const dest = document.getElementById("genDest").value;
+    const status = document.getElementById("genStatus"), out = document.getElementById("genResult");
+    const btn = document.getElementById("genRun");
+    if (!dest){ status.innerHTML = '<span class="bad">pick an allow-listed destination</span>'; return; }
+    const [host, port, proto] = dest.split("|");
+    const mode = document.getElementById("genMode").value;
+    const body = {host, port:+port, proto, count:+document.getElementById("genCount").value,
+      rate:+document.getElementById("genRate").value,
+      expect:document.getElementById("genExpect").value.trim()};
+    const data = document.getElementById("genData").value;
+    if (mode === "hex"){ body.mode = "hex"; body.data = data; }
+    else if (mode === "size"){ body.mode = "size"; body.size = +data;
+      body.random = document.getElementById("genRandom").value === "1"; }
+    else if (data){ body.data = data; }
+
+    btn.disabled = true; status.textContent = "sending…"; out.style.display = "none";
+    try {
+      const res = await fetch("/api/traffic/generate", {method:"POST",
+        headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      const started = await res.json();
+      if (!res.ok){ status.innerHTML = `<span class="bad">${started.error || "rejected"}</span>`; btn.disabled = false; return; }
+      const jobId = started.job_id;
+      for (let i = 0; i < 40; i++){
+        await new Promise(r => setTimeout(r, 1500));
+        const jobs = await (await fetch("/api/jobs")).json();
+        const job = jobs.find(j => j.id === jobId);
+        if (job && job.state !== "running"){
+          status.innerHTML = job.state === "complete" ? '<span class="ok">done</span>' : '<span class="bad">failed</span>';
+          let text = job.output || "(no output)";
+          try { text = JSON.stringify(JSON.parse(job.output), null, 2); } catch (e){}
+          out.textContent = text; out.style.display = "block"; btn.disabled = false; return;
+        }
+      }
+      status.innerHTML = '<span class="bad">timed out waiting for result</span>'; btn.disabled = false;
+    } catch (e){ status.innerHTML = `<span class="bad">${e}</span>`; btn.disabled = false; }
+  }
+
   document.getElementById("ranges").addEventListener("click", evt => {
     if (evt.target.dataset.min){ minutes = +evt.target.dataset.min;
       document.querySelectorAll("#ranges button").forEach(b => b.classList.toggle("active", b === evt.target)); load(); }
   });
   setInterval(() => { document.getElementById("clock").textContent = new Date().toLocaleString(); }, 1000);
-  load(); setInterval(load, 30000);
+  load(); loadAllow(); setInterval(load, 30000);
   window.addEventListener("resize", () => load());
   </script>
 </body></html>

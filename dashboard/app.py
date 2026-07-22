@@ -7,6 +7,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -19,7 +20,9 @@ CAPTURE_DIR = Path(os.environ.get("PROBE_CAPTURE_DIR", ROOT / "captures")).resol
 SNAPSHOT_DIR = Path(os.environ.get("PROBE_SNAPSHOT_DIR", ROOT / "snapshots")).resolve()
 TARGET_FILE = Path(os.environ.get("PROBE_TARGET_FILE", ROOT / "config" / "targets.csv")).resolve()
 MONITOR_DB = Path(os.environ.get("PROBE_MONITOR_DB", "/var/lib/network-probe/monitor.db"))
+TRAFFIC_ALLOW_FILE = Path(os.environ.get("PROBE_TRAFFIC_ALLOW", "/etc/network-probe/traffic-gen-allow.csv"))
 MAX_OUTPUT = 120_000
+MAX_DURATION = float(os.environ.get("PROBE_TRAFFIC_MAX_DURATION", "60"))
 NAME_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
 app = Flask(__name__)
@@ -226,6 +229,56 @@ def summarize(name: str):
 @app.get("/api/download/<path:name>")
 def download(name: str):
     return send_from_directory(CAPTURE_DIR, Path(name).name, as_attachment=True)
+
+
+@app.get("/api/traffic/allow")
+def traffic_allow():
+    """List allow-listed traffic-generator destinations for the UI."""
+    entries = []
+    if TRAFFIC_ALLOW_FILE.is_file():
+        for line in TRAFFIC_ALLOW_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [value.strip() for value in line.split(",")]
+            if len(parts) == 3 and parts[1].isdigit() and parts[2] in {"tcp", "udp"}:
+                entries.append({"host": parts[0], "port": int(parts[1]), "proto": parts[2]})
+    return jsonify(entries)
+
+
+@app.post("/api/traffic/generate")
+def traffic_generate():
+    payload = request.get_json(silent=True) or {}
+    host = str(payload.get("host", ""))
+    proto = str(payload.get("proto", "tcp"))
+    try:
+        port = int(payload.get("port"))
+        count = int(payload.get("count", 1))
+        rate = float(payload.get("rate", 1))
+    except (TypeError, ValueError):
+        return jsonify(error="host, port, count and rate are required and numeric"), 400
+    if not NAME_RE.fullmatch(host) or proto not in {"tcp", "udp"}:
+        return jsonify(error="invalid host or protocol"), 400
+
+    generator = ROOT / "monitor" / "traffic_gen.py"
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(generator),
+               "--host", host, "--port", str(port), "--proto", proto,
+               "--count", str(count), "--rate", str(rate),
+               "--allow", str(TRAFFIC_ALLOW_FILE)]
+    mode = payload.get("mode")
+    if mode == "hex":
+        command += ["--hex", str(payload.get("data", ""))]
+    elif mode == "size":
+        command += ["--size", str(int(payload.get("size", 0)))]
+        if payload.get("random"):
+            command.append("--random")
+    elif payload.get("data"):
+        command += ["--data", str(payload.get("data"))]
+    if payload.get("expect"):
+        command += ["--expect", str(payload.get("expect"))]
+
+    job_id = launch_job("traffic-gen", command, timeout=int(MAX_DURATION) + 30)
+    return jsonify(job_id=job_id), 202
 
 
 @app.get("/api/wifi")

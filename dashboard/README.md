@@ -19,7 +19,12 @@ Open it through an SSH tunnel:
 ssh -L 8088:127.0.0.1:8088 probe-user@probe-address
 ```
 
-Then browse to `http://127.0.0.1:8088`. Localhost binding is intentional. Do not bind to all interfaces until authenticated HTTPS and management firewall rules are in place.
+Then browse to `http://127.0.0.1:8088`. Localhost is the default bind for a
+development run. For a real install, the systemd installer can bind to the
+management-LAN address behind an access token — see "Dashboard exposure and
+access token" in the top-level [README](../README.md). The transport stays
+plain HTTP (token-authenticated); acceptable on a trusted management network,
+never through a port-forward to the internet.
 
 ## First laptop installation
 
@@ -30,7 +35,7 @@ sudo ./scripts/install-dashboard-service.sh --apply
 ./scripts/verify-probe.sh
 ```
 
-The installer is intentionally limited to Ubuntu 24.04. It installs the core packages, creates an unprivileged `probe-dashboard` account, configures a private virtual environment and state directories, enables non-root Dumpcap through the Wireshark group, installs the localhost-only systemd service, and preserves an existing `/etc/network-probe/targets.csv`.
+The installer is intentionally limited to Ubuntu 24.04. It installs the core packages, creates an unprivileged `probe-dashboard` account, configures a private virtual environment and state directories, enables non-root Dumpcap through the Wireshark group, installs the systemd service (localhost by default, or the management-LAN address with a generated access token when run with `PROBE_EXPOSE=lan`), and preserves an existing `/etc/network-probe/targets.csv`.
 
 ## Capture permission
 
@@ -55,5 +60,7 @@ Grant the account write permission only to the chosen capture directory. Do not 
 - Wi-Fi: local `iw` interface/link state
 - Health sample: short passive Layer-2/protocol report
 - Snapshot: hashed local support/configuration bundle
+- Monitor: outage series/events, service and port checks, throughput and routes (read-only from the monitor DB)
+- Traffic generator: bounded, allow-listed TCP/UDP send with optional expected-response check
 
 See [../ARCHITECTURE.md](../ARCHITECTURE.md) for the planned scheduler, history/baselines, service profiles and authenticated device adapters.

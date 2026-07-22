@@ -19,7 +19,7 @@ Future use cases and prioritized features are tracked in [ROADMAP.md](ROADMAP.md
  Optional Wi-Fi adapter  -------------------------->  monitor capture
 ```
 
-- **Management NIC:** built-in Ethernet or a dedicated USB NIC, with one static IP. Remote UI and SSH live here.
+- **Management NIC:** built-in Ethernet or a dedicated USB NIC (this build uses the built-in Ethernet on DHCP, currently `10.0.255.7`). Remote UI and SSH live here.
 - **Capture NIC:** a separate Intel-based wired adapter, with no IP address. Feed it from a TAP or correctly configured SPAN port.
 - **Wi-Fi capture:** use a separate Linux-compatible USB adapter that supports monitor mode. One radio/channel cannot provide a complete view of all bands/channels. Capturing protected Wi-Fi payloads requires authorized access and appropriate keys; metadata is still useful without them.
 - **Do not use a hub-like laptop connection as an inline bridge.** A laptop failure must not interrupt production.
@@ -41,8 +41,8 @@ Packet retention, not the tools, usually determines storage: average traffic in 
 ## Install sequence
 
 1. Read [docs/01-design-and-safety.md](docs/01-design-and-safety.md) and obtain written authorization and network scope.
-2. Install **Ubuntu Server 24.04 LTS** with full-disk encryption. Do not use the Malcolm appliance ISO unless every internal disk may be erased; its installer can partition all non-removable storage without confirmation.
-3. Patch Ubuntu, create a non-root administrator, enable Secure Boot if supported, and give the management NIC a static address. Do not configure an address, route, DNS, or gateway on the capture NIC.
+2. Install **Ubuntu Desktop 24.04 LTS** (GUI needed to join Wi-Fi via NetworkManager) with full-disk encryption. Do not use the Malcolm appliance ISO unless every internal disk may be erased; its installer can partition all non-removable storage without confirmation.
+3. Patch Ubuntu, create a non-root administrator, and enable Secure Boot if supported. The management NIC takes its address from DHCP (this build: `10.0.255.7`); a static reservation on the switch/router is fine. Do not configure an address, route, DNS, or gateway on the capture NIC.
 4. Copy this repository to the probe, run `sudo ./scripts/preflight.sh`, then `sudo ./scripts/install-lightweight.sh`. The first is read-only; the second shows the package plan and asks before installing.
 5. Follow [docs/02-install-lightweight.md](docs/02-install-lightweight.md) to select optional ntopng, Zeek, and Suricata layers.
 6. To install the local dashboard as a restricted service, copy the repository to a system path first (Ubuntu home directories are mode 750, so the service user cannot read `/home/<user>`): `sudo cp -r ~/analyseLaptop /opt/analyseLaptop && sudo chmod -R a+rX /opt/analyseLaptop`. Then review and run `sudo /opt/analyseLaptop/scripts/install-dashboard-service.sh --apply`, validate with `./scripts/verify-probe.sh`, and add the outage monitor with `sudo /opt/analyseLaptop/scripts/install-outage-monitor.sh --apply`.
@@ -103,9 +103,27 @@ Install after the dashboard service:
 sudo ./scripts/install-outage-monitor.sh --apply
 ```
 
-Then edit `/etc/network-probe/monitor-targets.csv` (gateway, internal
-servers, external references, per interface) and
-`sudo systemctl restart network-probe-monitor`.
+This seeds three config files under `/etc/network-probe/` (edit them, then
+`sudo systemctl restart network-probe-monitor`):
+
+- `monitor-targets.csv` — ping targets (gateway, internal servers, external
+  references), one per interface, that drive outage detection.
+- `monitor-services.csv` — DNS/HTTP/HTTPS/TCP/NTP service checks with per-phase
+  timing.
+- `monitor-ports.csv` — per-port health checks. Well-known ports (80, 443, 22,
+  53, 25, 6379, …) probe and expect a valid response automatically; custom
+  ports take an optional `send`/`expect`. OT/control ports (S7 102, Modbus 502,
+  OPC UA 4840, PROFINET, EtherNet/IP, DNP3, BACnet, SNMP) are **connect-only** —
+  the probe never sends an application payload to them.
+
+### Traffic generator
+
+The `/monitor` page includes a bounded traffic generator for path/port testing
+(TCP/UDP, custom text/hex/sized payloads, optional expected-response regex). It
+only sends to destinations in `/etc/network-probe/traffic-gen-allow.csv`
+(`host,port,proto`, seeded empty) and is hard-capped at 1000 messages, 100/s,
+64 KB payload, 60 s total. Control-system ports are refused outright — it is a
+test tool, not a fuzzer or load flooder.
 
 ## What this detects
 
@@ -131,8 +149,11 @@ It cannot see traffic that does not cross the monitored link, encrypted applicat
 - `scripts/pcap-summary.sh` — passive endpoint/protocol/broadcast summary
 - `config/` — example scope and asset inventory files (never store passwords here)
 - `dashboard/` — local web UI/API for guarded jobs and results; see [dashboard/README.md](dashboard/README.md)
-- `monitor/outage_monitor.py` — continuous per-path ping/Wi-Fi recorder with outage events
+- `monitor/outage_monitor.py` — continuous per-path ping/Wi-Fi recorder with outage events, service checks, port checks, route tracking
+- `monitor/probes.py` — port-probe engine with well-known port→expected-response table and OT connect-only safety
+- `monitor/traffic_gen.py` — bounded, allow-listed TCP/UDP traffic generator
 - `scripts/install-outage-monitor.sh` — systemd service for the outage monitor
+- `config/monitor-{targets,services,ports}.example.csv`, `config/traffic-gen-allow.example.csv` — seed configs for the monitor and generator
 
 For a standalone evidence capture, run:
 

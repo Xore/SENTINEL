@@ -29,6 +29,16 @@ if [[ ! -e $config_dir/monitor-services.csv ]]; then
   install -o root -g "$service_user" -m 0640 "$repo_dir/config/monitor-services.example.csv" "$config_dir/monitor-services.csv"
   echo "Seeded $config_dir/monitor-services.csv - EDIT IT with the real DNS/HTTP/NTP checks."
 fi
+if [[ ! -e $config_dir/monitor-ports.csv ]]; then
+  install -o root -g "$service_user" -m 0640 "$repo_dir/config/monitor-ports.example.csv" "$config_dir/monitor-ports.csv"
+  echo "Seeded $config_dir/monitor-ports.csv - EDIT IT with the real port health checks."
+fi
+# Traffic-generator allow-list is dashboard-writable? No - keep it root-owned so
+# only an operator with shell access can add destinations. Empty by default.
+if [[ ! -e $config_dir/traffic-gen-allow.csv ]]; then
+  install -o root -g "$service_user" -m 0640 "$repo_dir/config/traffic-gen-allow.example.csv" "$config_dir/traffic-gen-allow.csv"
+  echo "Seeded $config_dir/traffic-gen-allow.csv (empty) - ADD destinations before using the generator."
+fi
 
 # Snapshot interface: first wired interface that is up, unless overridden.
 snapshot_iface=${PROBE_MONITOR_SNAPSHOT_IFACE:-$(ip -brief link | awk '$1 !~ /^(lo|wl)/ && $2 == "UP" {print $1; exit}')}
@@ -49,6 +59,7 @@ WorkingDirectory=$repo_dir
 Environment=PROBE_MONITOR_DB=$state_dir/monitor.db
 Environment=PROBE_MONITOR_TARGETS=$config_dir/monitor-targets.csv
 Environment=PROBE_MONITOR_SERVICES=$config_dir/monitor-services.csv
+Environment=PROBE_MONITOR_PORTS=$config_dir/monitor-ports.csv
 Environment=PROBE_MONITOR_SNAPSHOT_IFACE=${snapshot_iface:-}
 ExecStart=$venv_dir/bin/python $repo_dir/monitor/outage_monitor.py
 Restart=on-failure
