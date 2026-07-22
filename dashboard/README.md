@@ -68,6 +68,32 @@ Grant the account write permission only to the chosen capture directory. Do not 
 - Neighbours (LLDP): switch/port/VLAN the probe is plugged into, from a receive-only lldpd (needs `scripts/install-neighbors.sh`)
 - SNMP: read-only single-host `snmpget`/`snmpwalk` probe (system group + interface list) using credentials stored in Settings
 - Trace IP: on-demand `tracepath` to any IP seen in discovery, neighbours or alerts
+- Actions: a custom-target console — enter any IP/port (or pick a known IT/OT service) and run TCP reachability, trace, SNMP, add-to-scope or add-to-allow-list against it; plus the traffic generator with an in-page, dashboard-editable allow-list
+- Assets: the persistent inventory of every host the probe has observed or scanned (vendor/MAC/name, sources, first/last seen) and a durable scan/action history log — click a host for its per-host history
+- Attention (Overview): live data-freshness chips and an aggregated anomaly feed (stale feeds, open outages, packet loss, high-severity IDS alerts, NIC drops, LLDP topology drift, newly-seen hosts)
+- Alert drill-down: click any Suricata alert's **Details** to see every correlated EVE event for its `flow_id` (http/dns/tls/flow/fileinfo) plus the raw alert JSON
+- ntopng: passive flow analysis with its own web UI, linked from Overview once installed via `scripts/install-ntopng.sh`
+
+### Known IT/OT service catalog
+
+The Actions dropdowns are driven by `dashboard/services.py`: common IT services
+(ssh, dns, http/https, snmp, rdp, …) and OT/ICS protocols (S7/102, Modbus/502,
+DNP3/20000, EtherNet-IP/44818, PROFINET/34964, OPC UA/4840, BACnet/47808,
+FINS/9600, IEC-104/2404, MQTT/1883, …). OT entries are flagged so the UI warns
+before touching them — only inside a change window. Reachability stays TCP
+connect only (no UDP raw scan, version detection or scripts); UDP is exercised
+only through the payload-gated traffic generator.
+
+### History store
+
+The dashboard writes its own SQLite database at
+`/var/lib/network-probe/probe-web.db` (`PROBE_WEB_DB`), separate from the
+monitor-owned read-only `monitor.db`. It holds the host inventory, scan/action
+log, a persistent job copy and the LLDP inventory + change log. A background
+poller (`PROBE_LLDP_POLL_SECONDS`, default 120; disable with
+`PROBE_DISABLE_POLLER=1`) keeps the neighbour inventory and topology-drift
+detection current even when nobody has the page open. All history writes are
+best-effort — a failure to record never breaks a request.
 
 ## Settings (persistent, dashboard-editable)
 

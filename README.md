@@ -48,6 +48,7 @@ Packet retention, not the tools, usually determines storage: average traffic in 
 6. To install the local dashboard as a restricted service, copy the repository to a system path first (Ubuntu home directories are mode 750, so the service user cannot read `/home/<user>`): `sudo cp -r ~/analyseLaptop /opt/analyseLaptop && sudo chmod -R a+rX /opt/analyseLaptop`. Then review and run `sudo /opt/analyseLaptop/scripts/install-dashboard-service.sh --apply`, validate with `./scripts/verify-probe.sh`, and add the outage monitor with `sudo /opt/analyseLaptop/scripts/install-outage-monitor.sh --apply`.
 7. (Optional) Add passive attack detection: review and run `sudo /opt/analyseLaptop/scripts/install-ids.sh --apply [capture-interface]` to install Suricata (ET Open rules, AF_PACKET IDS mode). Alerts appear in the dashboard's Security tab. See "Attack detection (signature IDS)" below.
 8. (Optional) Add neighbour discovery: review and run `sudo /opt/analyseLaptop/scripts/install-neighbors.sh --apply` to install lldpd **receive-only** (passive: listens for LLDP/CDP frames, never transmits). The dashboard's Neighbours tab then shows which switch/port/VLAN the probe is plugged into. See "Neighbours and SNMP" below.
+9. (Optional) Add live flow analysis: review and run `sudo /opt/analyseLaptop/scripts/install-ntopng.sh --apply [capture-interface]` to install ntopng (passive libpcap capture, its own web UI on port 3000, first login forces a password change). Once detected, the dashboard's Overview tab shows a "ntopng flows" link.
 10. Configure the SPAN/TAP and validate packet visibility using [docs/03-capture-and-wifi.md](docs/03-capture-and-wifi.md).
 11. Enter known assets in `config/assets.csv`; it becomes the human-owned reference for results.
 12. Only after authorization, copy `config/targets.example.csv` to `config/targets.csv` and use `sudo ./scripts/ot-reachability.sh config/targets.csv` for narrowly scoped TCP checks.
@@ -232,8 +233,11 @@ It cannot see traffic that does not cross the monitored link, encrypted applicat
 - `scripts/install-ids.sh` — installs Suricata as a passive signature IDS (ET Open rules, AF_PACKET, systemd)
 - `monitor/snmp_probe.py` — read-only single-host SNMP probe (v2c/v3, system group + interface list)
 - `scripts/install-neighbors.sh` — installs lldpd receive-only for LLDP/CDP neighbour discovery
+- `scripts/install-ntopng.sh` — installs ntopng (passive flow analysis, own web UI on port 3000)
 - `scripts/rotate-dashboard-token.sh` — rotates the dashboard access token (wired as a restart hook)
-- `dashboard/settings.py` — persistent, dashboard-editable settings store (SNMP creds, capture overrides, approved scope; secrets 0600)
+- `dashboard/settings.py` — persistent, dashboard-editable settings store (SNMP creds, capture overrides, approved scope, traffic allow-list; secrets 0600)
+- `dashboard/services.py` — known IT/OT service catalog driving the Actions dropdowns
+- `dashboard/history.py` — web-writable SQLite store: host inventory, scan/action log, persistent jobs, LLDP inventory + change log
 - `scripts/wifi-monitor-capture.sh` — operator sudo tool: monitor-mode 802.11 mgmt-frame capture and summary
 - `scripts/install-outage-monitor.sh` — systemd service for the outage monitor
 - `config/monitor-{targets,services,ports}.example.csv`, `config/traffic-gen-allow.example.csv` — seed configs for the monitor and generator

@@ -18,8 +18,12 @@ from flask import Flask, jsonify, render_template, request, send_from_directory
 
 try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import settings as settings_store
+    from dashboard import history
+    from dashboard import services
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
+    import history
+    import services
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_DIR = Path(os.environ.get("PROBE_CAPTURE_DIR", ROOT / "captures")).resolve()
@@ -27,12 +31,16 @@ SNAPSHOT_DIR = Path(os.environ.get("PROBE_SNAPSHOT_DIR", ROOT / "snapshots")).re
 TARGET_FILE = Path(os.environ.get("PROBE_TARGET_FILE", ROOT / "config" / "targets.csv")).resolve()
 MONITOR_DB = Path(os.environ.get("PROBE_MONITOR_DB", "/var/lib/network-probe/monitor.db"))
 TRAFFIC_ALLOW_FILE = Path(os.environ.get("PROBE_TRAFFIC_ALLOW", "/etc/network-probe/traffic-gen-allow.csv"))
+# Effective (read-only /etc file + dashboard-added) allow-list, written to the
+# writable state dir so the generator subprocess can enforce against it.
+EFFECTIVE_ALLOW_FILE = Path(settings_store.SETTINGS_FILE).parent / "traffic-allow-effective.csv"
 MAX_OUTPUT = 120_000
 MAX_DURATION = float(os.environ.get("PROBE_TRAFFIC_MAX_DURATION", "60"))
 NAME_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
 app = Flask(__name__)
 jobs: dict[str, dict] = {}
+job_procs: dict[str, subprocess.Popen] = {}
 jobs_lock = threading.Lock()
 
 AUTH_TOKEN_FILE = Path(os.environ.get("PROBE_AUTH_TOKEN_FILE", "/etc/network-probe/dashboard-token"))
@@ -125,7 +133,7 @@ def interfaces() -> list[dict]:
     return found
 
 
-VALID_PROTOCOLS = {"tcp", "s7-tcp", "opcua-tcp"}
+VALID_PROTOCOLS = services.VALID_PROTOCOLS
 
 
 def _valid_target(name: str, address: str, protocol: str, port) -> bool:
@@ -160,18 +168,84 @@ def targets() -> list[dict]:
     return unique
 
 
-def launch_job(kind: str, command: list[str], timeout: int = 120) -> str:
+def _run_tracked(job_id: str, command: list[str], timeout: int) -> tuple[int, str]:
+    """Like run(), but registers the process so a job can be stopped mid-flight
+    (used for long captures that keep running after the operator leaves the
+    page). stdout+stderr are merged."""
+    try:
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    except (FileNotFoundError, OSError) as exc:
+        return 127, str(exc)
+    with jobs_lock:
+        job_procs[job_id] = proc
+    try:
+        output, _ = proc.communicate(timeout=timeout)
+        code = proc.returncode
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        output, _ = proc.communicate()
+        code = 124
+    finally:
+        with jobs_lock:
+            job_procs.pop(job_id, None)
+    return code, (output or "")[-MAX_OUTPUT:]
+
+
+def launch_job(kind: str, command: list[str], timeout: int = 120,
+               target: str = "", on_done=None) -> str:
     job_id = uuid.uuid4().hex[:12]
     with jobs_lock:
-        jobs[job_id] = {"id": job_id, "kind": kind, "state": "running", "started": time.time(), "output": ""}
+        jobs[job_id] = {"id": job_id, "kind": kind, "target": target,
+                        "state": "running", "started": time.time(), "output": ""}
+        snapshot = dict(jobs[job_id])
+    history.upsert_job(snapshot)
+    if target:
+        history.record_scan(kind, target, job_id=job_id)
+        if valid_ip(target):
+            history.record_host(target, source=kind, kind=kind)
 
     def worker() -> None:
-        code, output = run(command, timeout)
+        code, output = _run_tracked(job_id, command, timeout)
         with jobs_lock:
-            jobs[job_id].update(state="complete" if code == 0 else "failed", code=code, output=output, ended=time.time())
+            stopping = jobs[job_id].get("state") == "stopping"
+            final = "complete" if code == 0 else ("stopped" if stopping else "failed")
+            jobs[job_id].update(state=final, code=code, output=output, ended=time.time())
+            snap = dict(jobs[job_id])
+        history.upsert_job(snap)
+        if target:
+            history.update_scan_result(job_id, ok=(code == 0), summary=output[:1000])
+        if on_done:
+            try:
+                on_done(snap, output)
+            except Exception:  # never let post-processing break a job
+                pass
 
     threading.Thread(target=worker, daemon=True).start()
     return job_id
+
+
+def _record_discovery(_snapshot: dict, output: str) -> None:
+    """Fold discovered hosts into the persistent inventory."""
+    try:
+        data = json.loads(output)
+    except ValueError:
+        return
+    for host in data.get("hosts", []):
+        history.record_host(str(host.get("ip", "")), mac=str(host.get("mac", "")),
+                            vendor=str(host.get("vendor", "")), name=str(host.get("name", "")),
+                            source="discovery", kind="discovery")
+
+
+def _record_snmp(ip: str):
+    def cb(_snapshot: dict, output: str) -> None:
+        try:
+            data = json.loads(output)
+        except ValueError:
+            return
+        sysinfo = data.get("system", {}) if isinstance(data, dict) else {}
+        history.record_host(ip, name=str(sysinfo.get("sysName", "") or sysinfo.get("name", "")),
+                            source="snmp", kind="snmp")
+    return cb
 
 
 @app.get("/")
@@ -212,7 +286,7 @@ def check_target(name: str):
     if not target:
         return jsonify(error="Target is not in the approved target file"), 404
     command = ["nmap", "-n", "-Pn", "-sT", "-T2", "--max-retries", "1", "--host-timeout", "10s", "-p", str(target["port"]), "--", target["address"]]
-    return jsonify(job_id=launch_job("reachability", command, 20)), 202
+    return jsonify(job_id=launch_job("reachability", command, 20, target=target["address"])), 202
 
 
 @app.post("/api/trace/<name>")
@@ -220,7 +294,7 @@ def trace_target(name: str):
     target = next((item for item in targets() if item["name"] == name), None)
     if not target:
         return jsonify(error="Target is not in the approved target file"), 404
-    return jsonify(job_id=launch_job("route", ["tracepath", "-n", target["address"]], 45)), 202
+    return jsonify(job_id=launch_job("route", ["tracepath", "-n", target["address"]], 45, target=target["address"])), 202
 
 
 @app.post("/api/capture")
@@ -289,10 +363,10 @@ def download(name: str):
     return send_from_directory(CAPTURE_DIR, Path(name).name, as_attachment=True)
 
 
-@app.get("/api/traffic/allow")
-def traffic_allow():
-    """List allow-listed traffic-generator destinations for the UI."""
-    entries = []
+def _traffic_allow_entries() -> list[dict]:
+    """Effective allow-list: read-only /etc file (source=file) merged with the
+    dashboard-added entries in the settings store (source=dashboard)."""
+    entries: list[dict] = []
     if TRAFFIC_ALLOW_FILE.is_file():
         for line in TRAFFIC_ALLOW_FILE.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -300,8 +374,72 @@ def traffic_allow():
                 continue
             parts = [value.strip() for value in line.split(",")]
             if len(parts) == 3 and parts[1].isdigit() and parts[2] in {"tcp", "udp"}:
-                entries.append({"host": parts[0], "port": int(parts[1]), "proto": parts[2]})
-    return jsonify(entries)
+                entries.append({"host": parts[0], "port": int(parts[1]), "proto": parts[2], "source": "file"})
+    for e in settings_store.load().get("traffic_allow", []):
+        try:
+            host, port, proto = str(e.get("host", "")), int(e.get("port")), str(e.get("proto", "tcp"))
+        except (TypeError, ValueError):
+            continue
+        if NAME_RE.fullmatch(host) and proto in {"tcp", "udp"}:
+            entries.append({"host": host, "port": port, "proto": proto, "source": "dashboard"})
+    seen, unique = set(), []
+    for e in entries:
+        key = (e["host"], e["port"], e["proto"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(e)
+    return unique
+
+
+def _write_effective_allow() -> Path:
+    """Materialise the merged allow-list for the generator subprocess."""
+    lines = ["# generated - read-only /etc list + dashboard-added entries"]
+    for e in _traffic_allow_entries():
+        lines.append(f"{e['host']},{e['port']},{e['proto']}")
+    EFFECTIVE_ALLOW_FILE.parent.mkdir(parents=True, exist_ok=True)
+    EFFECTIVE_ALLOW_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return EFFECTIVE_ALLOW_FILE
+
+
+@app.get("/api/traffic/allow")
+def traffic_allow():
+    """List allow-listed traffic-generator destinations for the UI."""
+    return jsonify(_traffic_allow_entries())
+
+
+@app.post("/api/traffic/allow/add")
+def traffic_allow_add():
+    """Add a dashboard-managed traffic-generator destination (persistent)."""
+    payload = request.get_json(silent=True) or {}
+    host = str(payload.get("host", "")).strip()
+    proto = str(payload.get("proto", "tcp")).strip()
+    try:
+        port = int(payload.get("port"))
+    except (TypeError, ValueError):
+        return jsonify(error="port is required and numeric"), 400
+    if not NAME_RE.fullmatch(host) or proto not in {"tcp", "udp"} or not (0 < port < 65536):
+        return jsonify(error="invalid host/port/proto (proto must be tcp or udp)"), 400
+    current = settings_store.load()
+    allow = current.setdefault("traffic_allow", [])
+    if any(a.get("host") == host and int(a.get("port", -1)) == port and a.get("proto") == proto for a in allow):
+        return jsonify(status="exists"), 200
+    allow.append({"host": host, "port": port, "proto": proto})
+    settings_store.save(current)
+    return jsonify(status="added", count=len(allow)), 201
+
+
+@app.post("/api/traffic/allow/remove")
+def traffic_allow_remove():
+    payload = request.get_json(silent=True) or {}
+    host, port, proto = str(payload.get("host", "")), payload.get("port"), str(payload.get("proto", "tcp"))
+    current = settings_store.load()
+    allow = current.get("traffic_allow", [])
+    kept = [a for a in allow if not (a.get("host") == host and str(a.get("port")) == str(port) and a.get("proto") == proto)]
+    if len(kept) == len(allow):
+        return jsonify(error="not a dashboard-added destination"), 404
+    current["traffic_allow"] = kept
+    settings_store.save(current)
+    return jsonify(status="removed", count=len(kept))
 
 
 @app.post("/api/traffic/generate")
@@ -317,12 +455,17 @@ def traffic_generate():
         return jsonify(error="host, port, count and rate are required and numeric"), 400
     if not NAME_RE.fullmatch(host) or proto not in {"tcp", "udp"}:
         return jsonify(error="invalid host or protocol"), 400
+    # Sending payloads is an active action: enforce the effective allow-list
+    # (dashboard-added entries included) up front, then hand the generator the
+    # same list to re-check.
+    if not any(e["host"] == host and e["port"] == port and e["proto"] == proto for e in _traffic_allow_entries()):
+        return jsonify(error=f"{host}:{port}/{proto} is not in the traffic allow-list. Add it under Actions → Traffic first."), 403
 
     generator = ROOT / "monitor" / "traffic_gen.py"
     command = [os.environ.get("PROBE_PYTHON", sys.executable), str(generator),
                "--host", host, "--port", str(port), "--proto", proto,
                "--count", str(count), "--rate", str(rate),
-               "--allow", str(TRAFFIC_ALLOW_FILE)]
+               "--allow", str(_write_effective_allow())]
     mode = payload.get("mode")
     if mode == "hex":
         command += ["--hex", str(payload.get("data", ""))]
@@ -335,7 +478,7 @@ def traffic_generate():
     if payload.get("expect"):
         command += ["--expect", str(payload.get("expect"))]
 
-    job_id = launch_job("traffic-gen", command, timeout=int(MAX_DURATION) + 30)
+    job_id = launch_job("traffic-gen", command, timeout=int(MAX_DURATION) + 30, target=host)
     return jsonify(job_id=job_id), 202
 
 
@@ -389,7 +532,7 @@ def discovery():
         if not re.fullmatch(r"[0-9./]+", subnet):
             return jsonify(error="invalid subnet"), 400
         command += ["--subnet", subnet]
-    return jsonify(job_id=launch_job("lan-discovery", command, 180)), 202
+    return jsonify(job_id=launch_job("lan-discovery", command, 180, on_done=_record_discovery)), 202
 
 
 IDS_LOG = Path(os.environ.get("PROBE_IDS_LOG", "/var/log/suricata/eve.json"))
@@ -549,7 +692,7 @@ def snmp_probe():
                "--host", ip, "--settings", str(settings_store.SETTINGS_FILE)]
     if payload.get("walk_interfaces"):
         command.append("--interfaces")
-    return jsonify(job_id=launch_job("snmp-probe", command, 40)), 202
+    return jsonify(job_id=launch_job("snmp-probe", command, 40, target=ip, on_done=_record_snmp(ip))), 202
 
 
 def _lldpctl_path() -> str | None:
@@ -580,7 +723,12 @@ def lldp_neighbors():
         data = json.loads(output)
     except ValueError:
         return jsonify(status="error", neighbors=[], note="could not parse lldpctl output")
-    return jsonify(status="ok", neighbors=_parse_lldp(data))
+    neighbors = _parse_lldp(data)
+    history.record_lldp(neighbors)
+    for n in neighbors:
+        if n.get("mgmt_ip") and valid_ip(n["mgmt_ip"]):
+            history.record_host(n["mgmt_ip"], name=n.get("system", ""), source="lldp", kind="lldp")
+    return jsonify(status="ok", neighbors=neighbors, changes=history.get_lldp_changes(20))
 
 
 def _parse_lldp(data: dict) -> list[dict]:
@@ -623,6 +771,218 @@ def _lldp_first(node):
     if isinstance(node, list):
         return ", ".join(_lldp_first(n) for n in node)
     return str(node)
+
+
+# --- Custom-target actions (operator-entered, not from the allow-list) -----
+
+@app.get("/api/services/catalog")
+def services_catalog():
+    """Known IT/OT services so the UI can offer 'pick a service' dropdowns."""
+    return jsonify({"services": services.KNOWN_SERVICES, "protocols": sorted(services.VALID_PROTOCOLS)})
+
+
+@app.post("/api/actions/reachability")
+def actions_reachability():
+    """Bounded TCP-connect check to an operator-entered IP and port. Connect
+    only (nmap -sT): no version detection, scripts, or UDP raw scan."""
+    payload = request.get_json(silent=True) or {}
+    ip = valid_ip(str(payload.get("ip", "")))
+    if not ip:
+        return jsonify(error="a valid IP address is required"), 400
+    try:
+        port = int(payload.get("port"))
+    except (TypeError, ValueError):
+        return jsonify(error="a numeric port is required"), 400
+    if not 0 < port < 65536:
+        return jsonify(error="port out of range"), 400
+    command = ["nmap", "-n", "-Pn", "-sT", "-T2", "--max-retries", "1",
+               "--host-timeout", "10s", "-p", str(port), "--", ip]
+    return jsonify(job_id=launch_job("reachability", command, 20, target=ip)), 202
+
+
+# --- Persistent inventory and scan history ---------------------------------
+
+@app.get("/api/hosts")
+def hosts_list():
+    """Everything the probe has observed or scanned, one row per address."""
+    return jsonify(history.get_hosts(500))
+
+
+@app.get("/api/hosts/<path:address>")
+def host_detail(address: str):
+    item = history.get_host(address.strip())
+    if item is None:
+        return jsonify(error="host not seen yet"), 404
+    return jsonify(item)
+
+
+@app.get("/api/scans")
+def scans_list():
+    target = str(request.args.get("target", "")).strip()
+    try:
+        limit = max(1, min(int(request.args.get("limit", 200)), 1000))
+    except ValueError:
+        return jsonify(error="limit must be a number"), 400
+    return jsonify(history.get_scans(limit, target))
+
+
+# --- Staleness / freshness and anomaly aggregation -------------------------
+
+def _freshness_sources() -> list[dict]:
+    now = time.time()
+    out = []
+
+    def add(name: str, mtime: float | None, threshold: int, note: str = "") -> None:
+        if mtime is None:
+            out.append({"source": name, "present": False, "age_seconds": None,
+                        "stale": None, "threshold": threshold, "note": note})
+        else:
+            age = int(now - mtime)
+            out.append({"source": name, "present": True, "age_seconds": age,
+                        "stale": age > threshold, "threshold": threshold, "note": note})
+
+    # IDS eve.json
+    add("ids_eve", IDS_LOG.stat().st_mtime if IDS_LOG.exists() else None, 1800,
+        "Suricata alert log; updates only when it logs an event")
+    # Outage monitor DB (last ping sample)
+    monitor_mtime = None
+    db = monitor_db()
+    if db is not None:
+        try:
+            row = db.execute("SELECT MAX(ts) AS t FROM ping_samples").fetchone()
+            monitor_mtime = row["t"] if row and row["t"] else None
+        except sqlite3.Error:
+            monitor_mtime = None
+        db.close()
+    add("outage_monitor", monitor_mtime, 300, "Continuous ping monitor sample")
+    # LLDP inventory (last recorded neighbour update)
+    add("lldp_inventory", history.lldp_last_update(), 900, "Neighbour snapshot (frames ~every 30s)")
+    # Newest capture
+    cap_mtime = None
+    if CAPTURE_DIR.exists():
+        caps = sorted(CAPTURE_DIR.glob("*.pcapng"), key=lambda p: p.stat().st_mtime, reverse=True)
+        cap_mtime = caps[0].stat().st_mtime if caps else None
+    add("captures", cap_mtime, 86400, "Most recent PCAPNG file (informational)")
+    return out
+
+
+@app.get("/api/health/freshness")
+def health_freshness():
+    sources = _freshness_sources()
+    return jsonify({"time": time.time(), "sources": sources,
+                    "stale": [s["source"] for s in sources if s.get("stale")]})
+
+
+@app.get("/api/anomalies")
+def anomalies():
+    """Current things worth attention, aggregated from every subsystem. Read
+    only - it summarises, it does not act."""
+    items: list[dict] = []
+    now = time.time()
+
+    # Stale data feeds
+    for s in _freshness_sources():
+        if s.get("stale"):
+            items.append({"level": "warning", "kind": "stale-data",
+                          "message": f"{s['source']} has not updated in {s['age_seconds']}s",
+                          "detail": s.get("note", "")})
+
+    # Interface drops/errors
+    for iface in interfaces():
+        bad = iface.get("rx_dropped", 0) + iface.get("rx_errors", 0) + iface.get("tx_errors", 0)
+        if bad > 0:
+            items.append({"level": "warning" if bad > 100 else "info", "kind": "iface-errors",
+                          "message": f"{iface['name']}: {bad} drops/errors on NIC counters",
+                          "target": iface["name"]})
+
+    # Outage monitor: open events + high loss targets
+    db = monitor_db()
+    if db is not None:
+        try:
+            open_evt = db.execute("SELECT id, started FROM events WHERE ended IS NULL ORDER BY started DESC LIMIT 1").fetchone()
+            if open_evt:
+                mins = int((now - open_evt["started"]) / 60)
+                items.append({"level": "critical", "kind": "open-outage",
+                              "message": f"Outage event #{open_evt['id']} open for {mins} min"})
+            day_ago = now - 86400
+            loss = db.execute(
+                "SELECT target, COUNT(*) t, SUM(ok) ok FROM ping_samples WHERE ts >= ? GROUP BY target", (day_ago,)
+            ).fetchall()
+            for row in loss:
+                if row["t"] and (row["t"] - row["ok"]) / row["t"] > 0.1:
+                    pct = round(100.0 * (row["t"] - row["ok"]) / row["t"], 1)
+                    items.append({"level": "warning", "kind": "packet-loss",
+                                  "message": f"{row['target']}: {pct}% loss over 24h", "target": row["target"]})
+        except sqlite3.Error:
+            pass
+        db.close()
+
+    # IDS: recent high-severity counts
+    _, ids = _ids_summary(1)
+    by_sev = ids.get("by_severity", {}) if isinstance(ids, dict) else {}
+    for sev in ("critical", "major"):
+        if by_sev.get(sev):
+            items.append({"level": "critical" if sev == "critical" else "warning", "kind": "ids-alerts",
+                          "message": f"{by_sev[sev]} {sev} Suricata alert(s) in the recent window"})
+
+    # Topology drift + new hosts
+    changes = history.get_lldp_changes(50)
+    recent_changes = [c for c in changes if now - c["ts"] < 86400]
+    if recent_changes:
+        items.append({"level": "info", "kind": "topology-change",
+                      "message": f"{len(recent_changes)} LLDP neighbour change(s) in 24h",
+                      "detail": ", ".join(f"{c['local_port']}:{c['field']}" for c in recent_changes[:5])})
+    new_hosts = [h for h in history.get_hosts(500) if now - (h.get("first_seen") or 0) < 3600]
+    if new_hosts:
+        items.append({"level": "info", "kind": "new-hosts",
+                      "message": f"{len(new_hosts)} host(s) first seen in the last hour",
+                      "detail": ", ".join(h["address"] for h in new_hosts[:8])})
+
+    order = {"critical": 0, "warning": 1, "info": 2}
+    items.sort(key=lambda x: order.get(x["level"], 3))
+    return jsonify({"time": now, "count": len(items), "anomalies": items})
+
+
+# --- Job control -----------------------------------------------------------
+
+@app.post("/api/jobs/<job_id>/stop")
+def stop_job(job_id: str):
+    """Stop a running job (e.g. a long capture). The ring capture keeps the
+    files already written."""
+    with jobs_lock:
+        proc = job_procs.get(job_id)
+        if job_id in jobs and jobs[job_id]["state"] == "running":
+            jobs[job_id]["state"] = "stopping"
+    if not proc:
+        return jsonify(error="job is not running"), 404
+    proc.terminate()
+    return jsonify(status="stopping", id=job_id)
+
+
+@app.get("/api/jobs/history")
+def jobs_history():
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100)), 500))
+    except ValueError:
+        return jsonify(error="limit must be a number"), 400
+    return jsonify(history.get_jobs(limit))
+
+
+# --- IDS alert drill-down --------------------------------------------------
+
+@app.get("/api/ids/alert")
+def ids_alert_detail():
+    """Every EVE event for one flow_id - the full context around an alert."""
+    flow = str(request.args.get("flow", "")).strip()
+    if not re.fullmatch(r"[0-9]+", flow):
+        return jsonify(error="a numeric flow id is required"), 400
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "ids_reader.py"),
+               "--log", str(IDS_LOG), "--flow", flow]
+    code, output = run(command, 20)
+    try:
+        return jsonify(json.loads(output))
+    except ValueError:
+        return jsonify(status="error", note=(output or "no output")[:2000]), 500
 
 
 def monitor_db() -> sqlite3.Connection | None:
@@ -843,6 +1203,48 @@ def monitor_summary():
         "events_24h": events_24h,
         "open_event": dict(open_event) if open_event else None,
     })
+
+
+def _poll_lldp_once() -> None:
+    lldpctl = _lldpctl_path()
+    if not lldpctl:
+        return
+    code, output = run([lldpctl, "-f", "json"], 8)
+    if code != 0 or not output.strip():
+        return
+    try:
+        data = json.loads(output)
+    except ValueError:
+        return
+    neighbors = _parse_lldp(data)
+    if neighbors:
+        history.record_lldp(neighbors)
+        for n in neighbors:
+            if n.get("mgmt_ip") and valid_ip(n["mgmt_ip"]):
+                history.record_host(n["mgmt_ip"], name=n.get("system", ""), source="lldp", kind="lldp")
+
+
+def _background_poller() -> None:
+    interval = max(30, int(os.environ.get("PROBE_LLDP_POLL_SECONDS", "120")))
+    while True:
+        try:
+            _poll_lldp_once()
+        except Exception:  # a poll failure must never kill the loop
+            pass
+        time.sleep(interval)
+
+
+def _start_background_poller() -> None:
+    if os.environ.get("PROBE_DISABLE_POLLER"):
+        return
+    threading.Thread(target=_background_poller, name="lldp-poller", daemon=True).start()
+
+
+# Start the continuous-inventory poller when served under waitress (module
+# import) as well as the dev server. Guard so it starts once per process.
+if not getattr(app, "_poller_started", False):
+    app._poller_started = True  # type: ignore[attr-defined]
+    _start_background_poller()
 
 
 if __name__ == "__main__":
