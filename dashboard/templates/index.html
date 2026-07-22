@@ -7,7 +7,7 @@
 </head>
 <body>
   <header><div><p class="eyebrow">FIELDLINE / PASSIVE-FIRST</p><h1>Network Probe</h1></div><div id="clock" class="clock">—</div></header>
-  <nav><button data-view="overview" class="active">Overview</button><button data-view="actions">Actions</button><button data-view="assets">Assets</button><button data-view="discovery">Discovery</button><button data-view="health">Health</button><button data-view="endpoints">Endpoints</button><button data-view="captures">Captures</button><button data-view="wifi">Wi-Fi</button><button data-view="neighbours">Neighbours</button><button data-view="security">Security</button><button data-view="settings">Settings</button><button data-view="jobs">Activity</button><button onclick="location.href='/monitor'">Monitor</button></nav>
+  <nav><button data-view="overview" class="active">Overview</button><button data-view="actions">Actions</button><button data-view="assets">Assets</button><button data-view="discovery">Discovery</button><button data-view="health">Health</button><button data-view="endpoints">Endpoints</button><button data-view="captures">Captures</button><button data-view="wifi">Wi-Fi</button><button data-view="apwatch">Access Points</button><button data-view="neighbours">Neighbours</button><button data-view="security">Security</button><button data-view="settings">Settings</button><button data-view="jobs">Activity</button><button onclick="location.href='/monitor'">Monitor</button></nav>
   <main>
     <section id="overview" class="view active">
       <div class="metrics"><article><span>Probe</span><strong id="hostname">—</strong><small id="uptime">—</small></article><article><span>Load</span><strong id="load">—</strong><small>1 / 5 / 15 min</small></article><article><span>Capture disk</span><strong id="disk">—</strong><small id="diskDetail">—</small></article><article><span>Toolset</span><strong id="toolCount">—</strong><small>available locally</small></article></div>
@@ -18,7 +18,7 @@
     <section id="actions" class="view">
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">CUSTOM TARGET</p><h2>Run an action against any host</h2></div></div>
         <div class="form-row"><input id="actIp" placeholder="target IP (e.g. 10.0.255.1)" aria-label="Target IP"><select id="actService" onchange="actServicePick()" aria-label="Known service"><option value="">— known service (optional) —</option></select><input id="actPort" type="number" placeholder="port" style="max-width:7rem" aria-label="Port"></div>
-        <div class="form-row"><button class="primary" onclick="actReachability()">TCP reachability</button><button onclick="actTrace()">Trace route</button><button onclick="actSnmp()">SNMP query</button><button onclick="actAddScope()">Add to approved scope</button><button onclick="actAddMonitor()">Add to traffic allow-list</button></div>
+        <div class="form-row"><button class="primary" onclick="actReachability()">TCP reachability</button><button onclick="actServiceHealth()">Service health</button><button onclick="actTrace()">Trace route</button><button onclick="actSnmp()">SNMP query</button><button onclick="actAddScope()">Add to approved scope</button><button onclick="actAddMonitor()">Add to traffic allow-list</button></div>
         <p class="hint">TCP connect only (no UDP scan, no version detection, no scripts) — read-only. OT/ICS ports are marked in the picker; only touch them inside a change window. Every action is logged to Assets → history.</p>
         <div id="actStatus" class="hint"></div>
         <div id="actResult" class="table-wrap"></div>
@@ -52,7 +52,13 @@
     <section id="health" class="view">
       <div class="panel"><p class="eyebrow">PASSIVE DIAGNOSTICS</p><h2>Short Layer-2 health sample</h2><div class="form-row"><select id="healthIface"></select><input id="healthDuration" type="number" value="30" min="5" max="120" aria-label="Sample duration seconds"><button class="primary" onclick="startL2Health()">Analyze link</button></div><p class="hint">Reports traffic rate, broadcasts, multicast, ARP, STP, discovery, OT protocols, retransmissions, resets and NIC drops.</p></div>
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">SUPPORT BUNDLE</p><h2>System/network snapshot</h2></div><button onclick="job('/api/snapshot')">Collect snapshot</button></div><p class="hint">Records interfaces, routes, neighbors, DNS, time, driver counters, sockets and Wi-Fi state. The local result is hashed.</p></div>
-      <div class="panel"><p class="eyebrow">ROADMAP</p><h2>Prepared health profiles</h2><div class="check-grid"><div><strong>Path</strong><span>TCP, route, MTU, latency and loss</span></div><div><strong>Services</strong><span>DNS, NTP, TLS and HTTP</span></div><div><strong>Infrastructure</strong><span>SNMPv3 switch/AP counters</span></div><div><strong>OT</strong><span>OPC UA and validated S7 read-only profiles</span></div><div><strong>Baselines</strong><span>Time-aware anomaly thresholds</span></div><div><strong>Evidence</strong><span>Freeze, annotate, hash and report</span></div></div></div>
+      <div class="panel"><p class="eyebrow">HEALTH PROFILES</p><h2>Run a profile against a target</h2>
+        <div class="form-row"><input id="hpTarget" placeholder="host or IP (e.g. 10.0.255.1)" aria-label="Health profile target"><input id="hpPort" type="number" placeholder="port (optional)" style="max-width:8rem" aria-label="Health profile port"><button class="primary" onclick="hpRun('path')">Path</button><button onclick="hpRun('services')">Services</button><button onclick="hpRun('infra')">Infrastructure</button><button onclick="hpRun('baseline')">Baselines</button></div>
+        <p class="hint"><strong>Path</strong> route, path-MTU, latency and loss (tracepath + ICMP). <strong>Services</strong> DNS, clock, TCP, TLS and HTTP. <strong>Infrastructure</strong> read-only SNMP identity/interfaces (uses Settings credentials). <strong>Baselines</strong> 7-day median/p95 latency and loss vs the last hour, from the outage monitor's history. All read-only / safe-active.</p>
+        <div id="hpStatus" class="hint"></div>
+        <div id="hpResult" class="table-wrap"></div>
+        <div class="check-grid" style="margin-top:1rem"><div><strong>OT profiles</strong><span>OPC UA / validated read-only S7 stay change-window gated — run them from the Actions console against a single OT endpoint, never as a background profile.</span></div><div><strong>Evidence</strong><span>Use <em>Collect snapshot</em> above to freeze and hash a support bundle; every profile run is also saved as a job in Activity for later review.</span></div></div>
+      </div>
     </section>
     <section id="endpoints" class="view"><div class="panel"><div class="panel-head"><div><p class="eyebrow">APPROVED SCOPE</p><h2>Endpoint matrix</h2></div><small>TCP connect and route checks only</small></div><div id="targets" class="table-wrap"></div></div></section>
     <section id="captures" class="view"><div class="panel"><p class="eyebrow">BOUNDED EVIDENCE</p><h2>Start PCAPNG ring capture</h2><div class="form-row"><select id="captureIface"></select><input id="captureSeconds" type="number" value="300" min="30" max="3600" aria-label="Seconds per file"><input id="captureFiles" type="number" value="12" min="1" max="96" aria-label="File count"><input id="captureSize" type="number" value="512" min="16" max="4096" aria-label="MiB per file"><button class="primary" onclick="startCapture()">Start capture</button></div><p class="hint">Seconds/file · number of files · MiB/file. Capture ends after the ring has written the configured count in this dashboard job.</p></div><div class="panel"><h2>Capture files</h2><div id="capturesList" class="table-wrap"></div></div></section>
@@ -62,10 +68,21 @@
         <div id="surveyChannels" class="chips"></div>
         <div id="surveyResult" class="table-wrap"></div>
       </div>
-      <div class="panel"><p class="eyebrow">RADIO HEALTH</p><h2>Local Wi-Fi links</h2><p class="hint">Signal, bitrate, channel and association data from local adapters. Deeper 802.11 management-frame analysis: run <code>sudo scripts/wifi-monitor-capture.sh &lt;iface&gt; &lt;channels&gt;</code> on the probe.</p><pre id="wifiData">Loading…</pre></div><div class="panel"><h2>What to assess</h2><div class="check-grid"><div><strong>Coverage</strong><span>RSSI/SNR, channel width, PHY rate</span></div><div><strong>Airtime</strong><span>Channel utilization and retries</span></div><div><strong>RF design</strong><span>Co-channel overlap and band use</span></div><div><strong>Reliability</strong><span>Roaming, deauth/disassoc, loss</span></div><div><strong>Services</strong><span>DHCP, DNS and gateway latency</span></div><div><strong>Security</strong><span>Encryption, rogue/evil-twin clues</span></div></div></div></section>
+      <div class="panel"><p class="eyebrow">RADIO HEALTH</p><h2>Local Wi-Fi links</h2><p class="hint">Signal, bitrate, channel and association data from local adapters. Deeper 802.11 management-frame analysis: run <code>sudo scripts/wifi-monitor-capture.sh &lt;iface&gt; &lt;channels&gt;</code> on the probe.</p><pre id="wifiData">Loading…</pre></div><div class="panel"><h2>Assessment</h2><p class="hint">Computed from the survey above once you scan. Until then, this is what the survey evaluates.</p><div id="wifiAssess"><div class="check-grid"><div><strong>Coverage</strong><span>Signal strength across the visible APs</span></div><div><strong>RF design</strong><span>Band use and co-channel overlap</span></div><div><strong>Security</strong><span>Encryption mix, open networks</span></div><div><strong>Rogue/evil-twin clues</strong><span>Same SSID on multiple BSSIDs, hidden SSIDs</span></div></div></div></div></section>
+    <section id="apwatch" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">CONTINUOUS RF WATCH</p><h2>Access points</h2></div><button class="primary" onclick="apScanNow()">Scan now</button></div>
+        <p class="hint">A background scanner records every AP it can see and logs the moment one <strong>disappears</strong> (stops beaconing) or a new one appears. Unprivileged nmcli — needs the radio enabled; interval is set in Settings → Monitor. An empty scan (radio blocked) is ignored, never counted as a mass disappearance.</p>
+        <div id="apStatus" class="hint"></div>
+        <div id="apSummary" class="chips"></div>
+        <div class="grid-2">
+          <div><p class="eyebrow">INVENTORY</p><div id="apList" class="table-wrap"></div></div>
+          <div><p class="eyebrow">EVENT LOG</p><div id="apEvents" class="table-wrap"></div></div>
+        </div>
+      </div>
+    </section>
     <section id="security" class="view">
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">INTRUSION DETECTION</p><h2>Signature alerts (Suricata)</h2></div><button class="primary" onclick="loadIds()">Refresh</button></div>
-        <p class="hint">Passive signature-based IDS on the monitored interface (ET Open ruleset). Detection only — Suricata never blocks or alters traffic. If it is not installed, run <code>sudo scripts/install-ids.sh --apply</code> on the probe. Click any IP to trace it.</p>
+        <p class="hint">Passive signature-based IDS on the monitored interface (ET Open ruleset). Detection only — Suricata never blocks or alters traffic. If it is not installed, run <code>sudo scripts/install-ids.sh --apply</code> on the probe. Click any IP for its full dossier; click <strong>Details</strong> on an alert for every correlated event (domain, path, headers, DNS, TLS).</p>
         <div class="form-row"><select id="idsSev" onchange="renderIds()"><option value="">any severity</option><option value="critical">critical</option><option value="major">major</option><option value="minor">minor</option><option value="info">info</option></select><input id="idsQ" placeholder="filter signature/category" oninput="renderIds()" aria-label="Filter text"><input id="idsSrc" placeholder="source IP" oninput="renderIds()" aria-label="Source IP" style="max-width:11rem"><input id="idsDst" placeholder="dest IP" oninput="renderIds()" aria-label="Destination IP" style="max-width:11rem"><span id="idsCount" class="hint"></span></div>
         <div id="idsStatus" class="hint"></div>
         <div id="idsSummary" class="chips"></div>
@@ -100,6 +117,25 @@
           <div class="form-row"><select id="v3PrivProto"><option>AES</option><option>DES</option><option>AES-256</option></select><input id="v3PrivKey" type="password" placeholder="privacy key" aria-label="v3 privacy key"><span id="v3PrivKeySet" class="hint"></span></div>
         </div>
         <div class="form-row"><button class="primary" onclick="saveSnmp()">Save SNMP settings</button><span id="snmpSaveStatus" class="hint"></span></div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">SERVICE CATALOG</p><h2>Custom services</h2></div><button onclick="loadCustomServices()">Refresh</button></div>
+        <p class="hint">Save your own named ports (e.g. <code>plc-line3</code> · 2404/tcp). Saved services appear in the Actions “known service” picker under <strong>Custom</strong> and persist across restarts. Reference labels only — they never change how a probe runs.</p>
+        <div class="form-row"><input id="csName" placeholder="name (e.g. plc-line3)" aria-label="Custom service name"><input id="csPort" type="number" placeholder="port" style="max-width:7rem" aria-label="Custom service port"><select id="csProto" aria-label="Custom service protocol"><option>tcp</option><option>udp</option></select><button class="primary" onclick="addCustomService()">Save service</button></div>
+        <div id="customSvcList" class="table-wrap"></div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">OUTAGE MONITOR</p><h2>What to probe</h2></div><button onclick="loadMonitorConfig()">Refresh</button></div>
+        <p class="hint">Edit who the always-on outage monitor pings, which services and TCP ports it checks, and how often it scans for access points. Saved to a config the monitor <strong>hot-reloads within seconds</strong> — no restart. <span id="mcSource" class="hint"></span></p>
+        <div class="subhead"><strong>Ping targets</strong><button onclick="mcAddRow('targets')">+ target</button></div>
+        <p class="hint">The <em>interface</em> column picks which adapter each target is probed over (ping <em>and</em> the traceroute/hop-quality probe are both sourced from it). Leave it on <em>auto</em> to let the OS route it. Binding a target to a specific adapter tests that path independently — e.g. the wired uplink vs. a secondary NIC.</p>
+        <div id="mcTargets" class="table-wrap"></div>
+        <div class="subhead"><strong>Service checks</strong><button onclick="mcAddRow('services')">+ service</button></div>
+        <div id="mcServices" class="table-wrap"></div>
+        <div class="subhead"><strong>Port checks</strong><button onclick="mcAddRow('ports')">+ port</button></div>
+        <div id="mcPorts" class="table-wrap"></div>
+        <div class="subhead"><strong>Access-point watch</strong></div>
+        <div class="form-row"><label class="inline"><input type="checkbox" id="mcApEnabled"> enabled</label><label class="inline">scan every <input id="mcApInterval" type="number" min="20" max="3600" style="max-width:6rem"> s</label></div>
+        <div class="form-row"><button class="primary" onclick="saveMonitorConfig()">Save monitor config</button><span id="mcSaveStatus" class="hint"></span></div>
+        <div id="mcErrors" class="hint"></div>
       </div>
       <div class="panel"><p class="eyebrow">ACCESS</p><h2>Dashboard token</h2><p class="hint">The access token rotates on every dashboard restart, so a restart signs everyone out. Read the current token on the probe with <code>sudo cat /etc/network-probe/dashboard-token</code>.</p></div>
     </section>

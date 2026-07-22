@@ -45,6 +45,13 @@ DB_PATH = Path(os.environ.get("PROBE_MONITOR_DB", "/var/lib/network-probe/monito
 TARGET_FILE = Path(os.environ.get("PROBE_MONITOR_TARGETS", "/etc/network-probe/monitor-targets.csv"))
 SERVICE_FILE = Path(os.environ.get("PROBE_MONITOR_SERVICES", "/etc/network-probe/monitor-services.csv"))
 PORT_FILE = Path(os.environ.get("PROBE_MONITOR_PORTS", "/etc/network-probe/monitor-ports.csv"))
+# Dashboard-editable JSON config in the shared state dir. When it exists it is
+# authoritative for targets/services/ports (each defaulting to empty) and the
+# /etc CSVs are ignored; when absent, the legacy CSVs are used. See
+# dashboard/monitor_config.py. Targets are re-read live (TARGET_RELOAD_INTERVAL)
+# so web edits apply without a privileged restart.
+CONFIG_JSON = Path(os.environ.get("PROBE_MONITOR_CONFIG", "/var/lib/network-probe/monitor-config.json"))
+TARGET_RELOAD_INTERVAL = int(os.environ.get("PROBE_MONITOR_TARGET_RELOAD", "15"))
 SERVICE_INTERVAL = int(os.environ.get("PROBE_MONITOR_SERVICE_INTERVAL", "60"))
 PORT_INTERVAL = int(os.environ.get("PROBE_MONITOR_PORT_INTERVAL", "60"))
 ROUTE_INTERVAL = int(os.environ.get("PROBE_MONITOR_ROUTE_INTERVAL", "300"))
@@ -60,11 +67,36 @@ NO_ANSWER = re.compile(r"no answer yet for icmp_seq=(\d+)")
 stop_event = threading.Event()
 
 
+def _json_config() -> dict | None:
+    """The dashboard-editable JSON config, or None when it does not exist (so
+    the caller falls back to the legacy /etc CSVs)."""
+    if not CONFIG_JSON.is_file():
+        return None
+    try:
+        data = json.loads(CONFIG_JSON.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def load_targets() -> list[dict]:
-    """monitor-targets.csv: name,address,interface,group
-    interface may be empty (default route). group is one of
-    wifi-gateway, eth-gateway, internal, external, ap, custom."""
-    rows: list[dict] = []
+    """Targets to ping. From the JSON config when present, else
+    monitor-targets.csv (name,address,interface,group). interface may be empty
+    (default route). group is one of wifi-gateway, eth-gateway, internal,
+    external, ap, custom."""
+    config = _json_config()
+    if config is not None:
+        rows = []
+        for item in config.get("targets", []) or []:
+            if not isinstance(item, dict):
+                continue
+            name, address = str(item.get("name", "")).strip(), str(item.get("address", "")).strip()
+            if name and address:
+                rows.append({"name": name, "address": address,
+                             "interface": str(item.get("interface", "")).strip(),
+                             "group": str(item.get("group", "")).strip() or "custom"})
+        return rows
+    rows = []
     if not TARGET_FILE.is_file():
         return rows
     with TARGET_FILE.open(newline="", encoding="utf-8") as handle:
@@ -137,6 +169,14 @@ def open_db() -> sqlite3.Connection:
             old_hops TEXT,
             new_hops TEXT
         );
+        -- Latest per-hop quality (mtr) for each traced target: a JSON list of
+        -- hubs [{idx,host,loss,snt,last,avg,best,wrst,stdev}], overwritten each
+        -- cycle. Feeds the per-hop cards on the topology map.
+        CREATE TABLE IF NOT EXISTS route_metrics (
+            name TEXT PRIMARY KEY,
+            hubs TEXT,
+            updated REAL
+        );
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             started REAL NOT NULL,
@@ -161,6 +201,10 @@ class PingWorker(threading.Thread):
         self.consecutive_ok = 0
         self.down = False
         self.proc: subprocess.Popen | None = None
+        self._stopped = threading.Event()  # per-worker stop (target removed via config)
+
+    def should_stop(self) -> bool:
+        return stop_event.is_set() or self._stopped.is_set()
 
     def build_command(self) -> list[str]:
         command = ["ping", "-n", "-O", "-i", "1", "-W", "1"]
@@ -184,7 +228,7 @@ class PingWorker(threading.Thread):
             return True
 
     def run(self) -> None:
-        while not stop_event.is_set():
+        while not self.should_stop():
             if self.interface_down():
                 self.down = False
                 self.consecutive_fail = 0
@@ -200,7 +244,7 @@ class PingWorker(threading.Thread):
                 continue
             assert self.proc.stdout is not None
             for line in self.proc.stdout:
-                if stop_event.is_set():
+                if self.should_stop():
                     break
                 now = time.time()
                 if NO_ANSWER.search(line):
@@ -212,7 +256,7 @@ class PingWorker(threading.Thread):
                 elif match:
                     self.record(now, False, None)
             self.proc.wait()
-            if not stop_event.is_set():
+            if not self.should_stop():
                 # ping exits when the interface disappears or resolution fails;
                 # count the gap as loss and retry.
                 self.record(time.time(), False, None)
@@ -237,6 +281,7 @@ class PingWorker(threading.Thread):
         self.queue.append((ts, self.target["name"], int(ok), rtt))
 
     def terminate(self) -> None:
+        self._stopped.set()
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
 
@@ -324,6 +369,16 @@ def load_services() -> list[dict]:
     kind http -> target URL (http/https; https also times the TLS handshake)
     kind tcp  -> target "host:port"
     kind ntp  -> target "chrony" (reads chronyc tracking offset)"""
+    config = _json_config()
+    if config is not None:
+        rows = []
+        for item in config.get("services", []) or []:
+            if not isinstance(item, dict):
+                continue
+            name, kind, target = (str(item.get(k, "")).strip() for k in ("name", "kind", "target"))
+            if name and kind in {"dns", "http", "tcp", "ntp"} and target:
+                rows.append({"name": name, "kind": kind, "target": target})
+        return rows
     rows: list[dict] = []
     if not SERVICE_FILE.is_file():
         return rows
@@ -341,6 +396,28 @@ def load_ports() -> list[dict]:
     """monitor-ports.csv: name,host,port,proto,send,expect
     proto (tcp/udp), send and expect are optional; well-known ports supply a
     default probe and expected response when send/expect are blank."""
+    config = _json_config()
+    if config is not None:
+        rows = []
+        for item in config.get("ports", []) or []:
+            if not isinstance(item, dict):
+                continue
+            name, host = str(item.get("name", "")).strip(), str(item.get("host", "")).strip()
+            try:
+                port = int(item.get("port"))
+            except (TypeError, ValueError):
+                continue
+            if not (name and host and 0 < port < 65536):
+                continue
+            send = str(item.get("send", "")).strip()
+            expect = str(item.get("expect", "")).strip()
+            rows.append({
+                "name": name, "host": host, "port": port,
+                "proto": (str(item.get("proto", "")).strip() or "tcp"),
+                "send": send.encode("utf-8").decode("unicode_escape").encode("latin-1") if send else None,
+                "expect": expect or None,
+            })
+        return rows
     rows: list[dict] = []
     if not PORT_FILE.is_file():
         return rows
@@ -475,23 +552,51 @@ def service_check_loop(results: collections.deque) -> None:
         stop_event.wait(SERVICE_INTERVAL)
 
 
-def route_hops(address: str) -> str:
+ROUTE_MTR_CYCLES = 5  # probes per hop -> loss%/jitter (StDev) sample size
+
+
+def route_probe(address: str, interface: str = "") -> tuple[str, list[dict]]:
+    """Trace to `address` with mtr and return (hop_chain, hubs). hop_chain is the
+    deduped `>`-joined IP sequence used for route-change detection; hubs is the
+    per-hop quality list (idx, host, loss, snt, last, avg, best, wrst, stdev).
+    A non-responding hop keeps its slot with host '*' and null timings.
+    When `interface` is set the probe is sourced from that adapter (mtr -I),
+    matching the ping worker's per-target adapter binding."""
+    command = ["mtr", "-n", "-j", "-c", str(ROUTE_MTR_CYCLES), "-m", "12"]
+    if interface:
+        command += ["-I", interface]
+    command += ["--", address]
     try:
-        result = subprocess.run(["tracepath", "-n", "-m", "12", address], capture_output=True, text=True, timeout=45)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    hops = []
-    for line in result.stdout.splitlines():
-        match = re.match(r"\s*(\d+)[?:]?:\s+(\S+)", line)
-        if match and match.group(2) != "no":
-            hops.append(match.group(2))
-    return ">".join(dict.fromkeys(hops))
+        return "", []
+    try:
+        raw = json.loads(result.stdout)["report"]["hubs"]
+    except (ValueError, KeyError, TypeError):
+        return "", []
+    hubs = []
+    for hub in raw:
+        host = str(hub.get("host") or "").strip()
+        responded = host not in ("", "???")
+        hubs.append({
+            "idx": hub.get("count"),
+            "host": host if responded else "*",
+            "loss": hub.get("Loss%"),
+            "snt": hub.get("Snt"),
+            "last": hub.get("Last"),
+            "avg": hub.get("Avg"),
+            "best": hub.get("Best"),
+            "wrst": hub.get("Wrst"),
+            "stdev": hub.get("StDev"),
+        })
+    chain = ">".join(dict.fromkeys(h["host"] for h in hubs if h["host"] != "*"))
+    return chain, hubs
 
 
-def route_check_loop(targets: list[dict], results: collections.deque) -> None:
+def route_check_loop(results: collections.deque) -> None:
     """Tracks the hop sequence to external/internal references; a changed
-    sequence is recorded as a route event (path failover, new gateway)."""
-    watch = [t for t in targets if t["group"] in {"external", "internal"} and not t["interface"].startswith("wl")]
+    sequence is recorded as a route event (path failover, new gateway). Targets
+    are re-read each cycle so dashboard edits are honoured live."""
     seen: dict[str, str] = {}
     try:  # survive restarts: compare against the last known route
         with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as ro_db:
@@ -499,17 +604,22 @@ def route_check_loop(targets: list[dict], results: collections.deque) -> None:
     except sqlite3.Error:
         pass
     while not stop_event.is_set():
+        watch = [t for t in load_targets()
+                 if t["group"] in {"external", "internal"} and not t["interface"].startswith("wl")]
         for target in watch:
             if stop_event.is_set():
                 return
-            hops = route_hops(target["address"])
+            hops, hubs = route_probe(target["address"], target.get("interface", ""))
             if not hops:
                 continue
+            now = time.time()
+            # Fresh per-hop quality every cycle (latency/jitter/loss always move).
+            results.append(("route-metrics", (now, target["name"], json.dumps(hubs))))
             previous = seen.get(target["name"])
             if previous is not None and previous != hops:
-                results.append(("route-change", (time.time(), target["name"], previous, hops)))
+                results.append(("route-change", (now, target["name"], previous, hops)))
             elif previous is None:
-                results.append(("route-init", (time.time(), target["name"], None, hops)))
+                results.append(("route-init", (now, target["name"], None, hops)))
             seen[target["name"]] = hops
         stop_event.wait(ROUTE_INTERVAL)
 
@@ -533,8 +643,10 @@ def classify(failed: set[str], target_groups: dict[str, str]) -> str:
 def main() -> int:
     targets = load_targets()
     if not targets:
-        print(f"No targets in {TARGET_FILE}; nothing to monitor.", file=sys.stderr)
-        return 2
+        # Not fatal any more: the config may be empty because the operator has
+        # not added targets via the dashboard yet. Idle and pick them up live.
+        print(f"No targets configured yet; waiting for config at {CONFIG_JSON} "
+              f"or {TARGET_FILE}.", file=sys.stderr)
     db = open_db()
     # Close events left open by a previous run; their true end is unknown.
     db.execute(
@@ -543,10 +655,36 @@ def main() -> int:
     )
     db.commit()
     queue: collections.deque = collections.deque()
-    workers = [PingWorker(target, queue) for target in targets]
-    target_groups = {t["name"]: t["group"] for t in targets}
-    for worker in workers:
-        worker.start()
+    workers: dict[str, PingWorker] = {}
+    target_groups: dict[str, str] = {}
+
+    def reconcile_targets() -> None:
+        """Start workers for newly-added targets and stop removed ones, so a
+        dashboard edit to monitor-config.json takes effect without a restart."""
+        desired = {t["name"]: t for t in load_targets()}
+        for name in list(workers):
+            if name not in desired:
+                workers.pop(name).terminate()
+                target_groups.pop(name, None)
+                print(f"target removed: {name}")
+        for name, target in desired.items():
+            existing = workers.get(name)
+            if existing is None:
+                worker = PingWorker(target, queue)
+                workers[name] = worker
+                target_groups[name] = target["group"]
+                worker.start()
+                print(f"target added: {name} -> {target['address']}")
+            elif existing.target != target:
+                # address/interface/group changed: replace the worker.
+                existing.terminate()
+                worker = PingWorker(target, queue)
+                workers[name] = worker
+                target_groups[name] = target["group"]
+                worker.start()
+                print(f"target updated: {name} -> {target['address']}")
+
+    reconcile_targets()
     print(f"Monitoring {len(workers)} targets -> {DB_PATH}")
 
     wifi_ifaces = [p.name for p in Path("/sys/class/net").iterdir() if (p / "wireless").exists()] \
@@ -555,7 +693,7 @@ def main() -> int:
     aux_results: collections.deque = collections.deque()
     threading.Thread(target=service_check_loop, args=(aux_results,), daemon=True).start()
     threading.Thread(target=port_check_loop, args=(aux_results,), daemon=True).start()
-    threading.Thread(target=route_check_loop, args=(targets, aux_results), daemon=True).start()
+    threading.Thread(target=route_check_loop, args=(aux_results,), daemon=True).start()
 
     def handle_signal(_signum, _frame):
         stop_event.set()
@@ -568,10 +706,16 @@ def main() -> int:
     snapshot_results: collections.deque = collections.deque()
     last_wifi = 0.0
     last_flush = 0.0
+    last_target_reload = time.time()
 
     while not stop_event.is_set():
         stop_event.wait(1.0)
         now = time.time()
+
+        # Pick up dashboard edits to the target list without a restart.
+        if now - last_target_reload >= TARGET_RELOAD_INTERVAL:
+            last_target_reload = now
+            reconcile_targets()
 
         # flush ping samples
         batch = []
@@ -594,7 +738,7 @@ def main() -> int:
             )
 
         # event state machine
-        down_now = {worker.target["name"] for worker in workers if worker.down}
+        down_now = {name for name, worker in workers.items() if worker.down}
         if down_now and open_event_id is None:
             cursor = db.execute(
                 "INSERT INTO events (started, kind, failed_targets) VALUES (?, ?, ?)",
@@ -630,6 +774,13 @@ def main() -> int:
             kind, payload = aux_results.popleft()
             if kind == "service":
                 db.execute("INSERT INTO service_samples VALUES (?, ?, ?, ?, ?, ?)", payload)
+            elif kind == "route-metrics":
+                ts, name, hubs_json = payload
+                db.execute(
+                    "INSERT INTO route_metrics (name, hubs, updated) VALUES (?, ?, ?) "
+                    "ON CONFLICT(name) DO UPDATE SET hubs = excluded.hubs, updated = excluded.updated",
+                    (name, hubs_json, ts),
+                )
             elif kind in ("route-change", "route-init"):
                 ts, name, old_hops, new_hops = payload
                 if kind == "route-change":
@@ -656,7 +807,7 @@ def main() -> int:
             db.execute("DELETE FROM iface_samples WHERE ts < ?", (horizon,))
             db.execute("DELETE FROM service_samples WHERE ts < ?", (horizon,))
 
-    for worker in workers:
+    for worker in workers.values():
         worker.terminate()
     db.commit()
     db.close()

@@ -63,15 +63,20 @@ Grant the account write permission only to the chosen capture directory. Do not 
 - Monitor: outage series/events, service and port checks, throughput and routes (read-only from the monitor DB)
 - Traffic generator: bounded, allow-listed TCP/UDP send with optional expected-response check
 - Discovery: broad-view LAN host inventory (IP/MAC/vendor/name) of a connected subnet, discovery-only
-- Wi-Fi survey: AP/channel/band/security list plus per-channel occupancy (needs the radio enabled)
-- Security (IDS): recent Suricata signature alerts and engine status, read-only from `eve.json` (needs `scripts/install-ids.sh`); alerts are filterable by severity/text/source/destination and every IP is click-to-trace
+- Wi-Fi survey: AP/channel/band/security list plus per-channel occupancy AND a computed assessment (coverage buckets from signal, bands in use, co-channel congestion, security mix/open-network count, and rogue/evil-twin clues — same SSID on multiple BSSIDs, hidden SSIDs) rendered on the Wi-Fi tab from live scan data (needs the radio enabled)
+- Security (IDS): recent Suricata signature alerts and engine status, read-only from `eve.json` (needs `scripts/install-ids.sh`); alerts are filterable by severity/text/source/destination and every IP is click-to-dossier
 - Neighbours (LLDP): switch/port/VLAN the probe is plugged into, from a receive-only lldpd (needs `scripts/install-neighbors.sh`)
 - SNMP: read-only single-host `snmpget`/`snmpwalk` probe (system group + interface list) using credentials stored in Settings
-- Trace IP: on-demand `tracepath` to any IP seen in discovery, neighbours or alerts
-- Actions: a custom-target console — enter any IP/port (or pick a known IT/OT service) and run TCP reachability, trace, SNMP, add-to-scope or add-to-allow-list against it; plus the traffic generator with an in-page, dashboard-editable allow-list
+- IP dossier: click any IP (in discovery, neighbours, alerts, assets, scope) to open everything the probe knows about it — reverse-DNS, whether it is one of our own interfaces, approved-scope/traffic-allow membership, LLDP neighbour match, outage-monitor ping stats, every Suricata alert with it as source or destination, and its full scan/action history. Trace, SNMP and TCP reachability are explicit buttons inside the dossier (clicking an IP no longer auto-traces)
+- Actions: a custom-target console — enter any IP/port (or pick a known IT/OT service, including your own saved custom services) and run TCP reachability, service health, trace, SNMP, add-to-scope or add-to-allow-list against it; plus the traffic generator with an in-page, dashboard-editable allow-list
+- Path health: a read-only route/MTU/latency/loss profile for one host (Health tab, or `/api/actions/path-health`) — a capped `tracepath` (hop list + discovered path MTU), an unprivileged ICMP echo run (loss and RTT min/avg/max/jitter) and, when a port is given, one bounded TCP connect. Safe active: standard probe traffic only, no OT payloads, no sweep; each section returns its own ok/error so a blocked traceroute still yields latency
+- Baselines: `/api/health/baseline?target=<name>` summarises what the outage monitor already recorded — 7-day median/p95 latency and loss vs the last hour for one monitored target (the logical names from the Monitor tab, e.g. `gw-eth`), with an `elevated`/`ok` verdict. Pure read from the monitor DB — it probes nothing
+- Service health: a read-only DNS/clock/TCP/TLS/HTTP profile for one host+port — one resolver query (answers, server, timing), the probe's chrony clock (stratum/offset/leap), a bounded TCP connect, and — only on standard web/TLS ports — the TLS certificate (subject/issuer/SANs/days-to-expiry, version, cipher) and an HTTP status + connection-timing breakdown. Safe active: one connect/handshake/GET, no OT payloads, results saved like any job
+- Custom services (Settings): save named ports (name + port + tcp/udp) that persist across restarts and appear in the Actions service picker under “Custom”
+- Activity result viewer: every action runs server-side and is saved; open **View result** on any finished job to re-render its result later (discovery host table, Wi-Fi survey, SNMP table, or raw output) without staying on the launching page
 - Assets: the persistent inventory of every host the probe has observed or scanned (vendor/MAC/name, sources, first/last seen) and a durable scan/action history log — click a host for its per-host history
 - Attention (Overview): live data-freshness chips and an aggregated anomaly feed (stale feeds, open outages, packet loss, high-severity IDS alerts, NIC drops, LLDP topology drift, newly-seen hosts)
-- Alert drill-down: click any Suricata alert's **Details** to see every correlated EVE event for its `flow_id` (http/dns/tls/flow/fileinfo) plus the raw alert JSON
+- Alert drill-down: click any Suricata alert's **Details** to see every correlated EVE event for its `flow_id` — for HTTP the domain/subdomain, path, method, status, every request/response header and the request/response **body text** (POSTed form fields, JSON payloads) when Suricata buffered it (`install-ids.sh` sets `dump-all-headers: both` plus `http-body`/`http-body-printable`); DNS queries/answers; TLS SNI/subject/issuer/fingerprint; fileinfo; flow counters; plus the raw JSON of all events. Body text appears on alerted transactions (Suricata only reassembles a body when a rule inspects it — passive plain-HTTP events without an alert don't buffer one) and only for cleartext HTTP; HTTPS stays opaque (TLS handshake/SNI only). No on-disk file extraction is used, so the probe stays passive
 - ntopng: passive flow analysis with its own web UI, linked from Overview once installed via `scripts/install-ntopng.sh`
 
 ### Known IT/OT service catalog
@@ -110,6 +115,9 @@ The **Settings** view writes to `/var/lib/network-probe/settings.json` (mode
 - **Approved scope** — discovered endpoints can be promoted into the approved
   target scope with one button (or removed), merged with the file-based
   `targets.csv` allow-list.
+- **Custom services** — operator-defined named ports (name + port + tcp/udp),
+  stored in `custom_services` and merged into the known IT/OT catalogue so they
+  show up in the Actions service picker.
 
 ## Access-token rotation
 
