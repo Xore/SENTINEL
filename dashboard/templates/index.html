@@ -7,12 +7,39 @@
 </head>
 <body>
   <header><div><p class="eyebrow">FIELDLINE / PASSIVE-FIRST</p><h1>Network Probe</h1></div><div id="clock" class="clock">—</div></header>
-  <nav><button data-view="overview" class="active">Overview</button><button data-view="discovery">Discovery</button><button data-view="health">Health</button><button data-view="endpoints">Endpoints</button><button data-view="captures">Captures</button><button data-view="wifi">Wi-Fi</button><button data-view="neighbours">Neighbours</button><button data-view="security">Security</button><button data-view="settings">Settings</button><button data-view="jobs">Activity</button><button onclick="location.href='/monitor'">Monitor</button></nav>
+  <nav><button data-view="overview" class="active">Overview</button><button data-view="actions">Actions</button><button data-view="assets">Assets</button><button data-view="discovery">Discovery</button><button data-view="health">Health</button><button data-view="endpoints">Endpoints</button><button data-view="captures">Captures</button><button data-view="wifi">Wi-Fi</button><button data-view="neighbours">Neighbours</button><button data-view="security">Security</button><button data-view="settings">Settings</button><button data-view="jobs">Activity</button><button onclick="location.href='/monitor'">Monitor</button></nav>
   <main>
     <section id="overview" class="view active">
       <div class="metrics"><article><span>Probe</span><strong id="hostname">—</strong><small id="uptime">—</small></article><article><span>Load</span><strong id="load">—</strong><small>1 / 5 / 15 min</small></article><article><span>Capture disk</span><strong id="disk">—</strong><small id="diskDetail">—</small></article><article><span>Toolset</span><strong id="toolCount">—</strong><small>available locally</small></article></div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">ATTENTION</p><h2>Anomalies &amp; data freshness</h2></div><button onclick="loadAttention()">Refresh</button></div><div id="freshness" class="chips"></div><div id="attention" class="attention"></div></div>
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">LINK TELEMETRY</p><h2>Interfaces</h2></div><button onclick="refresh()">Refresh</button></div><div id="interfaces" class="table-wrap"></div></div>
       <div class="panel"><p class="eyebrow">CAPABILITIES</p><h2>Local tools</h2><div id="tools" class="chips"></div></div>
+    </section>
+    <section id="actions" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">CUSTOM TARGET</p><h2>Run an action against any host</h2></div></div>
+        <div class="form-row"><input id="actIp" placeholder="target IP (e.g. 10.0.255.1)" aria-label="Target IP"><select id="actService" onchange="actServicePick()" aria-label="Known service"><option value="">— known service (optional) —</option></select><input id="actPort" type="number" placeholder="port" style="max-width:7rem" aria-label="Port"></div>
+        <div class="form-row"><button class="primary" onclick="actReachability()">TCP reachability</button><button onclick="actTrace()">Trace route</button><button onclick="actSnmp()">SNMP query</button><button onclick="actAddScope()">Add to approved scope</button><button onclick="actAddMonitor()">Add to traffic allow-list</button></div>
+        <p class="hint">TCP connect only (no UDP scan, no version detection, no scripts) — read-only. OT/ICS ports are marked in the picker; only touch them inside a change window. Every action is logged to Assets → history.</p>
+        <div id="actStatus" class="hint"></div>
+        <div id="actResult" class="table-wrap"></div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">ACTIVE · ALLOW-LIST GATED</p><h2>Traffic generator</h2></div></div>
+        <p class="hint">Sends bounded TCP/UDP payloads to a destination. Active action: only allow-listed destinations are permitted — add yours below, then send. Never point it at production OT without a change window.</p>
+        <div class="form-row"><input id="tgHost" placeholder="host" aria-label="Traffic host"><input id="tgPort" type="number" placeholder="port" style="max-width:7rem" aria-label="Traffic port"><select id="tgProto" aria-label="Traffic protocol"><option>tcp</option><option>udp</option></select><input id="tgCount" type="number" value="1" min="1" max="1000" style="max-width:6rem" title="packet/connection count" aria-label="Count"><input id="tgRate" type="number" value="1" min="0.1" step="0.1" style="max-width:6rem" title="rate per second" aria-label="Rate"><input id="tgData" placeholder="payload text (optional)" aria-label="Payload"><button class="primary" onclick="tgSend()">Send</button></div>
+        <div id="tgStatus" class="hint"></div>
+        <div class="form-row"><input id="tgAllowHost" placeholder="allow: host" aria-label="Allow host"><input id="tgAllowPort" type="number" placeholder="port" style="max-width:7rem" aria-label="Allow port"><select id="tgAllowProto" aria-label="Allow protocol"><option>tcp</option><option>udp</option></select><button onclick="tgAllowAdd()">Add to allow-list</button></div>
+        <div id="tgAllowList" class="table-wrap"></div>
+      </div>
+    </section>
+    <section id="assets" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">INVENTORY</p><h2>Observed hosts</h2></div><button onclick="loadAssets()">Refresh</button></div>
+        <p class="hint">Every address the probe has seen or scanned — from discovery, SNMP, LLDP, traces and reachability. Persisted across restarts. Click a row for its per-host history.</p>
+        <div id="assetsResult" class="table-wrap"></div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">HISTORY</p><h2>Scan &amp; action log</h2></div></div>
+        <p class="hint" id="scanLogHint">Durable log of every operator-initiated action and its outcome.</p>
+        <div id="scanLog" class="table-wrap"></div>
+      </div>
     </section>
     <section id="discovery" class="view">
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">BROAD VIEW</p><h2>LAN host discovery</h2></div></div>
@@ -78,6 +105,7 @@
     </section>
     <section id="jobs" class="view"><div class="panel"><div class="panel-head"><h2>Recent activity</h2><button onclick="loadJobs()">Refresh</button></div><div id="jobsList"></div></div></section>
     <div id="ipTrace" class="ip-trace" style="display:none"><div class="panel-head"><h2 id="ipTraceTitle">Trace</h2><button onclick="document.querySelector('#ipTrace').style.display='none'">Close</button></div><pre id="ipTraceOut">…</pre></div>
+    <div id="alertDetail" class="modal" style="display:none"><div class="modal-box"><div class="panel-head"><h2 id="alertDetailTitle">Alert detail</h2><button onclick="document.querySelector('#alertDetail').style.display='none'">Close</button></div><div id="alertDetailBody">…</div></div></div>
   </main>
   <div id="toast" role="status"></div><script src="/static/app.js"></script>
 </body></html>

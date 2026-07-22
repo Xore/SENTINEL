@@ -117,6 +117,8 @@ def collect(log: str, limit: int, max_bytes: int) -> dict:
                 "sport": evt.get("src_port"),
                 "dst": evt.get("dest_ip", ""),
                 "dport": evt.get("dest_port"),
+                "flow_id": evt.get("flow_id"),
+                "app_proto": evt.get("app_proto", ""),
             })
         if len(rows) >= limit * 4:
             break
@@ -140,15 +142,52 @@ def collect(log: str, limit: int, max_bytes: int) -> dict:
     }
 
 
+def detail(log: str, flow_id: str, max_bytes: int) -> dict:
+    """Every EVE event sharing one flow_id - the alert plus any correlated
+    http/dns/tls/fileinfo/flow records. This is the 'everything around this
+    alert' drill-down for the dashboard."""
+    files = _log_family(log)
+    if not files:
+        return {"status": "no_log", "flow_id": flow_id, "events": []}
+    fid = str(flow_id)
+    events: list[dict] = []
+    for path in files:
+        for line in _tail_bytes(path, max_bytes).splitlines():
+            line = line.strip()
+            # Cheap pre-filter: the flow id must appear literally on the line.
+            if not line or line[0] != "{" or fid not in line:
+                continue
+            try:
+                evt = json.loads(line)
+            except ValueError:
+                continue
+            if str(evt.get("flow_id", "")) == fid:
+                events.append(evt)
+    events.sort(key=lambda e: e.get("timestamp", ""))
+    alert = next((e for e in events if e.get("event_type") == "alert"), None)
+    return {
+        "status": "ok" if events else "not_found",
+        "flow_id": flow_id,
+        "count": len(events),
+        "event_types": sorted({e.get("event_type", "") for e in events}),
+        "alert": alert,
+        "events": events[:200],
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Summarise recent Suricata IDS alerts (read-only).")
     ap.add_argument("--log", default=os.environ.get("PROBE_IDS_LOG", DEFAULT_LOG))
     ap.add_argument("--limit", type=int, default=100)
     ap.add_argument("--bytes", type=int, default=DEFAULT_BYTES, dest="max_bytes")
+    ap.add_argument("--flow", default="", help="return every EVE event for this flow_id")
     args = ap.parse_args()
     limit = max(1, min(args.limit, 1000))
     try:
-        result = collect(args.log, limit, max(65536, args.max_bytes))
+        if args.flow:
+            result = detail(args.log, args.flow, max(65536, args.max_bytes))
+        else:
+            result = collect(args.log, limit, max(65536, args.max_bytes))
     except PermissionError:
         result = {"status": "no_access", "alerts": [],
                   "note": f"Cannot read {args.log}. The dashboard account needs group read on /var/log/suricata."}

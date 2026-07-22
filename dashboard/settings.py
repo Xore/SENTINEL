@@ -39,6 +39,11 @@ DEFAULTS: dict = {
     "interface_overrides": {},
     # Dashboard-added approved endpoints, merged with the read-only targets.csv.
     "approved_scope": [],
+    # Dashboard-added traffic-generator destinations, merged with the read-only
+    # /etc allow-list. Each entry: {"host","port","proto"}. Sending payloads is
+    # an active action, so it stays allow-list-gated - but the list is now
+    # operator-editable from the dashboard instead of only /etc.
+    "traffic_allow": [],
 }
 
 # Dotted paths whose values are secrets: never returned to the browser in the
