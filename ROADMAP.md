@@ -67,27 +67,37 @@ The probe should work as a field laptop, a remote sensor left at a site, and an 
 - [x] Interface, tool, disk and Wi-Fi link dashboard
 - [x] System snapshot and short passive Layer-2 health scripts
 - [x] Local dashboard service bootstrap design
-- [ ] Validate NIC names, permissions, offloads and capture loss on target hardware
-- [ ] Validate the Wi-Fi adapter, driver and monitor mode
+- [x] Validate NIC names, permissions, offloads and capture loss on target hardware
+      (MGPNetworkAnalyses01: enp0s31f6 captures drop-free as the service user;
+      rx-checksumming/GRO on, TSO off)
+- [x] Validate the Wi-Fi adapter, driver and monitor mode
+      (wlp2s0 supports managed, monitor, AP and P2P modes)
 
 ### P1 — useful daily probe
 
-- SQLite history for jobs, measurements, events and annotations
-- Guarded scheduler with jitter, cooldown, backoff and OT/IT queues
-- DNS, NTP, TCP, TLS and HTTP profiles with duration metrics
-- Historical charts, availability windows and route-change detection
-- Disk reserve/capture policy and a freeze-evidence action
-- JSON/CSV/HTML session report with hashes
-- Configuration validation and an audit trail
+- [x] SQLite history for measurements and events (`monitor/outage_monitor.py`,
+      14-day retention, `/var/lib/network-probe/monitor.db`)
+- [x] Continuous per-path ping monitor with outage events, classification and
+      broadcast culprit snapshots
+- [x] DNS, NTP, TCP, TLS and HTTP profiles with duration metrics
+      (`monitor-services.csv`, 60 s interval, TLS handshake timed separately)
+- [x] Historical charts and route-change detection (`/monitor` page; tracepath
+      hop-sequence tracking every 5 min with change events)
+- [ ] Guarded scheduler with jitter, cooldown, backoff and OT/IT queues
+- [ ] Disk reserve/capture policy and a freeze-evidence action
+- [ ] JSON/CSV/HTML session report with hashes
+- [ ] Configuration validation and an audit trail
 
 ### P2 — network and Wi-Fi health
 
-- Live packets/s and bit/s by unicast/broadcast/multicast
-- Top broadcast source/protocol and ARP/ND anomaly drill-down
-- TCP retransmission/reset and DNS failure trends
-- LLDP/CDP/STP observations
-- Wi-Fi beacon inventory, channel/security matrix and retry/roam timeline
-- Baselines by segment, hour and production state
+- [x] Live packets/s and multicast/s per interface with drop/error rates
+      (derived from NIC counters, charted on `/monitor`)
+- [x] Top broadcast source/protocol drill-down (automatic on outage events;
+      on demand via the Layer-2 health job)
+- [ ] TCP retransmission/reset and DNS failure trends
+- [ ] LLDP/CDP/STP observations as a continuous inventory
+- [ ] Wi-Fi beacon inventory, channel/security matrix and retry/roam timeline
+- [ ] Baselines by segment, hour and production state
 
 ### P3 — authenticated infrastructure profiles
 

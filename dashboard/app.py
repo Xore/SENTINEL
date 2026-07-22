@@ -26,6 +26,31 @@ app = Flask(__name__)
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 
+AUTH_TOKEN_FILE = Path(os.environ.get("PROBE_AUTH_TOKEN_FILE", "/etc/network-probe/dashboard-token"))
+
+
+def auth_token() -> str:
+    """Non-empty token = HTTP Basic auth required (any username). The install
+    script generates the token; an empty/missing file disables auth, which is
+    acceptable only when the dashboard binds to 127.0.0.1."""
+    try:
+        return AUTH_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+@app.before_request
+def require_token():
+    token = auth_token()
+    if not token or request.path == "/healthz":
+        return None
+    supplied = request.authorization
+    if supplied and supplied.password == token:
+        return None
+    return app.response_class(
+        "Authentication required.\n", 401, {"WWW-Authenticate": 'Basic realm="network-probe"'}
+    )
+
 
 def run(command: list[str], timeout: int = 15) -> tuple[int, str]:
     try:
@@ -307,6 +332,97 @@ def monitor_events():
         }
         for row in rows
     ])
+
+
+@app.get("/api/monitor/services")
+def monitor_services():
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    try:
+        minutes = max(5, min(int(request.args.get("minutes", 360)), 14 * 1440))
+    except ValueError:
+        return jsonify(error="minutes must be a number"), 400
+    since = time.time() - minutes * 60
+    bucket = max(60, minutes * 60 // 600)
+    rows = db.execute(
+        """
+        SELECT name, kind, CAST(ts / ? AS INTEGER) * ? AS bucket_ts,
+               COUNT(*) AS total, SUM(ok) AS ok, AVG(CASE WHEN ok = 1 THEN duration_ms END) AS duration_ms
+        FROM service_samples WHERE ts >= ? GROUP BY name, bucket_ts ORDER BY bucket_ts
+        """,
+        (bucket, bucket, since),
+    ).fetchall()
+    series: dict[str, dict] = {}
+    for row in rows:
+        entry = series.setdefault(row["name"], {"kind": row["kind"], "ts": [], "ok_pct": [], "duration_ms": []})
+        entry["ts"].append(row["bucket_ts"])
+        entry["ok_pct"].append(round(100.0 * row["ok"] / row["total"], 1) if row["total"] else None)
+        entry["duration_ms"].append(round(row["duration_ms"], 1) if row["duration_ms"] is not None else None)
+    latest = db.execute(
+        """
+        SELECT s1.name, s1.kind, s1.ok, s1.duration_ms, s1.detail, s1.ts FROM service_samples s1
+        JOIN (SELECT name, MAX(ts) AS mts FROM service_samples GROUP BY name) s2
+          ON s1.name = s2.name AND s1.ts = s2.mts
+        """
+    ).fetchall()
+    db.close()
+    return jsonify({"bucket_seconds": bucket, "series": series, "latest": [dict(row) for row in latest]})
+
+
+@app.get("/api/monitor/routes")
+def monitor_routes():
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    state = db.execute("SELECT name, hops, updated FROM route_state ORDER BY name").fetchall()
+    changes = db.execute(
+        "SELECT ts, name, old_hops, new_hops FROM route_events ORDER BY ts DESC LIMIT 50"
+    ).fetchall()
+    db.close()
+    return jsonify({"current": [dict(row) for row in state], "changes": [dict(row) for row in changes]})
+
+
+@app.get("/api/monitor/throughput")
+def monitor_throughput():
+    """Packets/s and multicast/s per interface, derived from counter deltas."""
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    try:
+        minutes = max(5, min(int(request.args.get("minutes", 360)), 14 * 1440))
+    except ValueError:
+        return jsonify(error="minutes must be a number"), 400
+    since = time.time() - minutes * 60
+    rows = db.execute(
+        "SELECT ts, interface, rx_packets, tx_packets, rx_dropped, rx_errors, multicast "
+        "FROM iface_samples WHERE ts >= ? ORDER BY interface, ts",
+        (since,),
+    ).fetchall()
+    step = max(1, len(rows) // 1200)
+    series: dict[str, dict] = {}
+    previous: dict[str, sqlite3.Row] = {}
+    index = 0
+    for row in rows:
+        iface = row["interface"]
+        last = previous.get(iface)
+        previous[iface] = row
+        if last is None:
+            continue
+        dt = row["ts"] - last["ts"]
+        if dt <= 0 or dt > 120:
+            continue
+        index += 1
+        if index % step:
+            continue
+        entry = series.setdefault(iface, {"ts": [], "rx_pps": [], "tx_pps": [], "mcast_pps": [], "drop_pps": []})
+        entry["ts"].append(row["ts"])
+        entry["rx_pps"].append(round(max(0, row["rx_packets"] - last["rx_packets"]) / dt, 1))
+        entry["tx_pps"].append(round(max(0, row["tx_packets"] - last["tx_packets"]) / dt, 1))
+        entry["mcast_pps"].append(round(max(0, row["multicast"] - last["multicast"]) / dt, 1))
+        entry["drop_pps"].append(round(max(0, (row["rx_dropped"] - last["rx_dropped"]) + (row["rx_errors"] - last["rx_errors"])) / dt, 2))
+    db.close()
+    return jsonify(series)
 
 
 @app.get("/api/monitor/summary")

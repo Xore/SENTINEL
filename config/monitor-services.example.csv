@@ -1,0 +1,12 @@
+# Service-health checks run every PROBE_MONITOR_SERVICE_INTERVAL seconds (default 60).
+# name,kind,target
+#   dns  -> "hostname@resolver-ip" (resolver optional = system default)
+#   http -> URL; https also times the TLS handshake separately
+#   tcp  -> "host:port" plain connect timing
+#   ntp  -> "chrony" reads the local chrony sync offset
+dns-internal-1,dns,www.google.com@192.0.2.250
+dns-default,dns,www.google.com
+web-external,http,https://www.google.com/generate_204
+time-sync,ntp,chrony
+# intranet,http,https://intranet.example.local/
+# fileserver,tcp,192.0.2.50:445

@@ -71,8 +71,31 @@ dead for 1–2 minutes while 1.1.1.1 still answers":
   records the top-talking MAC addresses — a broadcast storm from one client
   keeps flowing while unicast is dead, so the snapshot frequently names the
   culprit.
-- Plots (loss, RTT, Wi-Fi signal, outage bands) and the event timeline live
-  at `http://127.0.0.1:8088/monitor`.
+- Service-health profiles every 60 s from `monitor-services.csv`: DNS query
+  time (per resolver), HTTP/HTTPS with separate connect/TLS/response timings,
+  plain TCP connect, and chrony NTP sync offset.
+- Route-change detection: the tracepath hop sequence to internal/external
+  references is recorded every 5 min; a changed path becomes a route event.
+- Per-interface packets/s, multicast/s and drop rates derived from NIC
+  counters.
+- Plots (loss, RTT, Wi-Fi signal, service latency, traffic rate, outage
+  bands), route tables and the event timeline live at `/monitor`.
+
+### Dashboard exposure and access token
+
+By default the dashboard binds to `127.0.0.1` (SSH tunnel to view). To expose
+it on the management-LAN address instead, install with:
+
+```bash
+sudo PROBE_EXPOSE=lan /opt/analyseLaptop/scripts/install-dashboard-service.sh --apply
+```
+
+This binds to the current IPv4 address of the default-route interface and
+generates an access token in `/etc/network-probe/dashboard-token` (shown once
+by the installer; readable with sudo). Sign in with **any username** and the
+token as password. The transport is plain HTTP: acceptable on a trusted
+management network, never through a port-forward to the internet. If the LAN
+address changes (DHCP), re-run the installer.
 
 Install after the dashboard service:
 

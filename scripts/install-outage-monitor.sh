@@ -25,6 +25,10 @@ if [[ ! -e $config_dir/monitor-targets.csv ]]; then
   install -o root -g "$service_user" -m 0640 "$repo_dir/config/monitor-targets.example.csv" "$config_dir/monitor-targets.csv"
   echo "Seeded $config_dir/monitor-targets.csv - EDIT IT with the real gateway/server addresses."
 fi
+if [[ ! -e $config_dir/monitor-services.csv ]]; then
+  install -o root -g "$service_user" -m 0640 "$repo_dir/config/monitor-services.example.csv" "$config_dir/monitor-services.csv"
+  echo "Seeded $config_dir/monitor-services.csv - EDIT IT with the real DNS/HTTP/NTP checks."
+fi
 
 # Snapshot interface: first wired interface that is up, unless overridden.
 snapshot_iface=${PROBE_MONITOR_SNAPSHOT_IFACE:-$(ip -brief link | awk '$1 !~ /^(lo|wl)/ && $2 == "UP" {print $1; exit}')}
@@ -44,6 +48,7 @@ SupplementaryGroups=wireshark
 WorkingDirectory=$repo_dir
 Environment=PROBE_MONITOR_DB=$state_dir/monitor.db
 Environment=PROBE_MONITOR_TARGETS=$config_dir/monitor-targets.csv
+Environment=PROBE_MONITOR_SERVICES=$config_dir/monitor-services.csv
 Environment=PROBE_MONITOR_SNAPSHOT_IFACE=${snapshot_iface:-}
 ExecStart=$venv_dir/bin/python $repo_dir/monitor/outage_monitor.py
 Restart=on-failure
@@ -67,7 +72,8 @@ echo 'net.ipv4.ping_group_range = 0 2147483647' > "$sysctl_file"
 sysctl -p "$sysctl_file" >/dev/null
 
 systemctl daemon-reload
-systemctl enable --now network-probe-monitor.service
+systemctl enable network-probe-monitor.service
+systemctl restart network-probe-monitor.service
 sleep 2
 systemctl --no-pager --full status network-probe-monitor.service || true
 echo "Outage monitor installed. Data: $state_dir/monitor.db - plots at http://127.0.0.1:8088/monitor"

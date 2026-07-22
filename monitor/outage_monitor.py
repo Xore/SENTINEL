@@ -40,6 +40,9 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("PROBE_MONITOR_DB", "/var/lib/network-probe/monitor.db"))
 TARGET_FILE = Path(os.environ.get("PROBE_MONITOR_TARGETS", "/etc/network-probe/monitor-targets.csv"))
+SERVICE_FILE = Path(os.environ.get("PROBE_MONITOR_SERVICES", "/etc/network-probe/monitor-services.csv"))
+SERVICE_INTERVAL = int(os.environ.get("PROBE_MONITOR_SERVICE_INTERVAL", "60"))
+ROUTE_INTERVAL = int(os.environ.get("PROBE_MONITOR_ROUTE_INTERVAL", "300"))
 SNAPSHOT_IFACE = os.environ.get("PROBE_MONITOR_SNAPSHOT_IFACE", "")  # e.g. enp0s31f6
 SNAPSHOT_SECONDS = int(os.environ.get("PROBE_MONITOR_SNAPSHOT_SECONDS", "15"))
 FAIL_THRESHOLD = int(os.environ.get("PROBE_MONITOR_FAIL_THRESHOLD", "3"))
@@ -107,6 +110,28 @@ def open_db() -> sqlite3.Connection:
             multicast INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_iface_ts ON iface_samples (ts);
+        CREATE TABLE IF NOT EXISTS service_samples (
+            ts REAL NOT NULL,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            ok INTEGER NOT NULL,
+            duration_ms REAL,
+            detail TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_service_ts ON service_samples (ts);
+        CREATE INDEX IF NOT EXISTS idx_service_name_ts ON service_samples (name, ts);
+        CREATE TABLE IF NOT EXISTS route_state (
+            name TEXT PRIMARY KEY,
+            hops TEXT,
+            updated REAL
+        );
+        CREATE TABLE IF NOT EXISTS route_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts REAL NOT NULL,
+            name TEXT NOT NULL,
+            old_hops TEXT,
+            new_hops TEXT
+        );
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             started REAL NOT NULL,
@@ -288,6 +313,161 @@ def broadcast_snapshot(interface: str, seconds: int) -> str:
     return "\n".join(lines)
 
 
+def load_services() -> list[dict]:
+    """monitor-services.csv: name,kind,target
+    kind dns  -> target "hostname@resolver-ip" (resolver optional)
+    kind http -> target URL (http/https; https also times the TLS handshake)
+    kind tcp  -> target "host:port"
+    kind ntp  -> target "chrony" (reads chronyc tracking offset)"""
+    rows: list[dict] = []
+    if not SERVICE_FILE.is_file():
+        return rows
+    with SERVICE_FILE.open(newline="", encoding="utf-8") as handle:
+        for row in csv.reader(line for line in handle if line.strip() and not line.lstrip().startswith("#")):
+            if len(row) != 3:
+                continue
+            name, kind, target = (value.strip() for value in row)
+            if name and kind in {"dns", "http", "tcp", "ntp"} and target:
+                rows.append({"name": name, "kind": kind, "target": target})
+    return rows
+
+
+def check_dns(target: str) -> tuple[bool, float | None, str]:
+    host, _, resolver = target.partition("@")
+    command = ["dig", "+tries=1", "+time=2", "+noall", "+answer", "+stats", host]
+    if resolver:
+        command.append(f"@{resolver}")
+    started = time.monotonic()
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, None, str(exc)
+    elapsed = (time.monotonic() - started) * 1000
+    match = re.search(r"Query time: (\d+) msec", result.stdout)
+    answered = bool(re.search(r"\bIN\s+(A|AAAA|CNAME)\b", result.stdout))
+    if result.returncode != 0 or not answered:
+        return False, None, (result.stdout + result.stderr)[-200:].strip() or "no answer"
+    return True, float(match.group(1)) if match else round(elapsed, 1), ""
+
+
+def check_http(target: str) -> tuple[bool, float | None, str]:
+    import http.client
+    import ssl
+    import urllib.parse
+
+    url = urllib.parse.urlsplit(target)
+    if url.scheme not in {"http", "https"} or not url.hostname:
+        return False, None, "invalid URL"
+    port = url.port or (443 if url.scheme == "https" else 80)
+    timings: dict[str, float] = {}
+    try:
+        started = time.monotonic()
+        import socket as socket_module
+        raw = socket_module.create_connection((url.hostname, port), timeout=5)
+        timings["connect"] = (time.monotonic() - started) * 1000
+        if url.scheme == "https":
+            tls_started = time.monotonic()
+            raw = ssl.create_default_context().wrap_socket(raw, server_hostname=url.hostname)
+            timings["tls"] = (time.monotonic() - tls_started) * 1000
+        connection = http.client.HTTPConnection(url.hostname, port, timeout=5)
+        connection.sock = raw
+        request_started = time.monotonic()
+        connection.request("GET", url.path or "/", headers={"Host": url.hostname, "User-Agent": "network-probe-monitor"})
+        response = connection.getresponse()
+        response.read(4096)
+        timings["response"] = (time.monotonic() - request_started) * 1000
+        total = (time.monotonic() - started) * 1000
+        connection.close()
+        detail = " ".join(f"{key}={value:.0f}ms" for key, value in timings.items()) + f" status={response.status}"
+        return response.status < 500, round(total, 1), detail
+    except Exception as exc:  # noqa: BLE001 - any network/TLS failure is a legitimate DOWN sample
+        return False, None, f"{type(exc).__name__}: {exc}"[:200]
+
+
+def check_tcp(target: str) -> tuple[bool, float | None, str]:
+    import socket as socket_module
+
+    host, _, port_text = target.rpartition(":")
+    if not host or not port_text.isdigit():
+        return False, None, "target must be host:port"
+    started = time.monotonic()
+    try:
+        socket_module.create_connection((host, int(port_text)), timeout=5).close()
+        return True, round((time.monotonic() - started) * 1000, 1), ""
+    except OSError as exc:
+        return False, None, str(exc)[:200]
+
+
+def check_ntp(_target: str) -> tuple[bool, float | None, str]:
+    try:
+        result = subprocess.run(["chronyc", "-c", "tracking"], capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, None, str(exc)
+    fields = result.stdout.strip().split(",")
+    if result.returncode != 0 or len(fields) < 6:
+        return False, None, (result.stdout + result.stderr)[-200:].strip()
+    try:
+        offset_ms = float(fields[4]) * 1000
+        stratum = int(fields[2])
+    except ValueError:
+        return False, None, result.stdout[:200]
+    synced = stratum > 0 and stratum < 16 and abs(offset_ms) < 100
+    return synced, round(abs(offset_ms), 3), f"stratum={stratum} offset={offset_ms:.3f}ms"
+
+
+SERVICE_CHECKS = {"dns": check_dns, "http": check_http, "tcp": check_tcp, "ntp": check_ntp}
+
+
+def service_check_loop(results: collections.deque) -> None:
+    """Runs every SERVICE_INTERVAL seconds; sequential and low-rate on purpose."""
+    while not stop_event.is_set():
+        for service in load_services():
+            if stop_event.is_set():
+                return
+            ok, duration, detail = SERVICE_CHECKS[service["kind"]](service["target"])
+            results.append(("service", (time.time(), service["name"], service["kind"], int(ok), duration, detail)))
+        stop_event.wait(SERVICE_INTERVAL)
+
+
+def route_hops(address: str) -> str:
+    try:
+        result = subprocess.run(["tracepath", "-n", "-m", "12", address], capture_output=True, text=True, timeout=45)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    hops = []
+    for line in result.stdout.splitlines():
+        match = re.match(r"\s*(\d+)[?:]?:\s+(\S+)", line)
+        if match and match.group(2) != "no":
+            hops.append(match.group(2))
+    return ">".join(dict.fromkeys(hops))
+
+
+def route_check_loop(targets: list[dict], results: collections.deque) -> None:
+    """Tracks the hop sequence to external/internal references; a changed
+    sequence is recorded as a route event (path failover, new gateway)."""
+    watch = [t for t in targets if t["group"] in {"external", "internal"} and not t["interface"].startswith("wl")]
+    seen: dict[str, str] = {}
+    try:  # survive restarts: compare against the last known route
+        with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as ro_db:
+            seen = dict(ro_db.execute("SELECT name, hops FROM route_state"))
+    except sqlite3.Error:
+        pass
+    while not stop_event.is_set():
+        for target in watch:
+            if stop_event.is_set():
+                return
+            hops = route_hops(target["address"])
+            if not hops:
+                continue
+            previous = seen.get(target["name"])
+            if previous is not None and previous != hops:
+                results.append(("route-change", (time.time(), target["name"], previous, hops)))
+            elif previous is None:
+                results.append(("route-init", (time.time(), target["name"], None, hops)))
+            seen[target["name"]] = hops
+        stop_event.wait(ROUTE_INTERVAL)
+
+
 def classify(failed: set[str], target_groups: dict[str, str]) -> str:
     groups = {target_groups.get(name, "custom") for name in failed}
     has = groups.__contains__
@@ -325,6 +505,10 @@ def main() -> int:
 
     wifi_ifaces = [p.name for p in Path("/sys/class/net").iterdir() if (p / "wireless").exists()] \
         if Path("/sys/class/net").exists() else []
+
+    aux_results: collections.deque = collections.deque()
+    threading.Thread(target=service_check_loop, args=(aux_results,), daemon=True).start()
+    threading.Thread(target=route_check_loop, args=(targets, aux_results), daemon=True).start()
 
     def handle_signal(_signum, _frame):
         stop_event.set()
@@ -395,6 +579,22 @@ def main() -> int:
             open_event_id = None
             event_failed = set()
 
+        while aux_results:
+            kind, payload = aux_results.popleft()
+            if kind == "service":
+                db.execute("INSERT INTO service_samples VALUES (?, ?, ?, ?, ?, ?)", payload)
+            elif kind in ("route-change", "route-init"):
+                ts, name, old_hops, new_hops = payload
+                if kind == "route-change":
+                    db.execute("INSERT INTO route_events (ts, name, old_hops, new_hops) VALUES (?, ?, ?, ?)",
+                               (ts, name, old_hops, new_hops))
+                    print(f"ROUTE change for {name}: {old_hops} -> {new_hops}")
+                db.execute(
+                    "INSERT INTO route_state (name, hops, updated) VALUES (?, ?, ?) "
+                    "ON CONFLICT(name) DO UPDATE SET hops = excluded.hops, updated = excluded.updated",
+                    (name, new_hops, ts),
+                )
+
         while snapshot_results:
             event_id, report = snapshot_results.popleft()
             db.execute("UPDATE events SET snapshot = ? WHERE id = ?", (report, event_id))
@@ -407,6 +607,7 @@ def main() -> int:
             db.execute("DELETE FROM ping_samples WHERE ts < ?", (horizon,))
             db.execute("DELETE FROM wifi_samples WHERE ts < ?", (horizon,))
             db.execute("DELETE FROM iface_samples WHERE ts < ?", (horizon,))
+            db.execute("DELETE FROM service_samples WHERE ts < ?", (horizon,))
 
     for worker in workers:
         worker.terminate()

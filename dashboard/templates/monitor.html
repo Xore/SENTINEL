@@ -64,6 +64,24 @@
       <p class="hint">Falling signal or rising retries at outage time points to the radio; stable signal with dead traffic points to the AP/controller or upstream.</p>
     </div>
 
+    <div class="panel"><p class="eyebrow">SERVICES</p><h2>Service response time (ms)</h2>
+      <div class="chart-wrap"><canvas id="svcChart"></canvas><div class="tooltip" id="svcTip"></div></div>
+      <div class="legend" id="svcLegend"></div>
+      <div class="table-wrap"><table><thead><tr><th>Service</th><th>Kind</th><th>State</th><th>Last</th><th>Detail</th></tr></thead><tbody id="svcLatest"></tbody></table></div>
+    </div>
+
+    <div class="panel"><p class="eyebrow">TRAFFIC</p><h2>Interface rate (packets/s)</h2>
+      <div class="chart-wrap"><canvas id="tputChart"></canvas><div class="tooltip" id="tputTip"></div></div>
+      <div class="legend" id="tputLegend"></div>
+      <p class="hint">Sudden multicast/drop spikes at outage time indicate a storm or a saturated NIC.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><div><p class="eyebrow">PATHS</p><h2>Routes and changes</h2></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Destination</th><th>Current hops</th><th>Checked</th></tr></thead><tbody id="routesNow"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>When</th><th>Destination</th><th>Old path</th><th>New path</th></tr></thead><tbody id="routeChanges"></tbody></table></div>
+    </div>
+
     <div class="panel">
       <div class="panel-head"><div><p class="eyebrow">TIMELINE</p><h2>Outage events</h2></div><button onclick="loadEvents()">Refresh</button></div>
       <div class="table-wrap"><table><thead><tr><th>Start</th><th>Duration</th><th>Classification</th><th>Failed targets</th><th>Culprit snapshot</th></tr></thead><tbody id="events"></tbody></table></div>
@@ -179,6 +197,49 @@
     for (const [iface, s] of Object.entries(data.wifi || {})) wifi[iface + " signal"] = {ts: s.ts, v: s.signal_dbm};
     drawChart("wifiChart", "wifiTip", "wifiLegend", wifi, {min:-95, max:-20, fmt:v => v.toFixed(0)});
     loadEventsTable();
+    loadServices(); loadThroughput(); loadRoutes();
+  }
+
+  async function loadServices(){
+    const res = await fetch(`/api/monitor/services?minutes=${minutes}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const svc = {};
+    for (const [name, s] of Object.entries(data.series || {})) svc[name] = {ts: s.ts, v: s.duration_ms};
+    drawChart("svcChart", "svcTip", "svcLegend", svc, {min:0, nice:true, fmt:v => v.toFixed(0)});
+    document.getElementById("svcLatest").innerHTML = (data.latest || []).map(s => `
+      <tr><td>${s.name}</td><td>${s.kind}</td>
+      <td class="${s.ok ? "ok" : "bad"}">${s.ok ? "OK" : "FAIL"}</td>
+      <td>${s.duration_ms != null ? s.duration_ms + " ms" : "—"}</td>
+      <td>${(s.detail || "").replace(/</g,"&lt;")}</td></tr>`).join("")
+      || '<tr><td colspan="5">no services configured — edit monitor-services.csv</td></tr>';
+  }
+
+  async function loadThroughput(){
+    const res = await fetch(`/api/monitor/throughput?minutes=${minutes}`);
+    if (!res.ok) return;
+    const data = await res.json(), tput = {};
+    for (const [iface, s] of Object.entries(data)){
+      tput[iface + " rx"] = {ts: s.ts, v: s.rx_pps};
+      tput[iface + " mcast"] = {ts: s.ts, v: s.mcast_pps};
+      if (s.drop_pps.some(v => v > 0)) tput[iface + " drops"] = {ts: s.ts, v: s.drop_pps};
+    }
+    drawChart("tputChart", "tputTip", "tputLegend", tput, {min:0, nice:true, fmt:v => v >= 1000 ? (v/1000).toFixed(1) + "k" : v.toFixed(0)});
+  }
+
+  async function loadRoutes(){
+    const res = await fetch("/api/monitor/routes");
+    if (!res.ok) return;
+    const data = await res.json();
+    const hopsFmt = h => (h || "").split(">").join(" › ");
+    document.getElementById("routesNow").innerHTML = (data.current || []).map(r => `
+      <tr><td>${r.name}</td><td class="event-row">${hopsFmt(r.hops)}</td>
+      <td>${new Date(r.updated*1000).toLocaleTimeString()}</td></tr>`).join("")
+      || '<tr><td colspan="3">no route data yet</td></tr>';
+    document.getElementById("routeChanges").innerHTML = (data.changes || []).map(c => `
+      <tr class="event-row"><td>${new Date(c.ts*1000).toLocaleString()}</td><td>${c.name}</td>
+      <td>${hopsFmt(c.old_hops)}</td><td>${hopsFmt(c.new_hops)}</td></tr>`).join("")
+      || '<tr><td colspan="4">no route changes recorded</td></tr>';
   }
 
   function loadEventsTable(){
