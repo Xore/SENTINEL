@@ -62,5 +62,11 @@ Grant the account write permission only to the chosen capture directory. Do not 
 - Snapshot: hashed local support/configuration bundle
 - Monitor: outage series/events, service and port checks, throughput and routes (read-only from the monitor DB)
 - Traffic generator: bounded, allow-listed TCP/UDP send with optional expected-response check
+- Discovery: broad-view LAN host inventory (IP/MAC/vendor/name) of a connected subnet, discovery-only
+- Wi-Fi survey: AP/channel/band/security list plus per-channel occupancy (needs the radio enabled)
+
+Deeper 802.11 management-frame capture is an operator sudo tool
+(`scripts/wifi-monitor-capture.sh`), not a web job — monitor mode needs
+`CAP_NET_ADMIN` and the web process stays unprivileged.
 
 See [../ARCHITECTURE.md](../ARCHITECTURE.md) for the planned scheduler, history/baselines, service profiles and authenticated device adapters.

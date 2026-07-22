@@ -125,6 +125,34 @@ only sends to destinations in `/etc/network-probe/traffic-gen-allow.csv`
 64 KB payload, 60 s total. Control-system ports are refused outright — it is a
 test tool, not a fuzzer or load flooder.
 
+### Broad view: LAN discovery and Wi-Fi survey
+
+Beyond the outage instrument, the main dashboard gives the wide network picture
+the probe was built for:
+
+- **Discovery** tab — a device inventory of a directly-connected subnet: IP,
+  MAC, best-effort vendor (OUI table skewed toward IT/OT/network gear) and
+  reverse-DNS name, from a light ICMP/ARP host sweep plus the kernel neighbour
+  cache (`monitor/discovery.py`). Host discovery only — no port scan, and never
+  a payload to OT devices. The subnet is bounded to the probe's own connected
+  networks (prefix /22–/30) so a typo cannot sweep the internet.
+- **Wi-Fi** tab — an AP/channel survey (`monitor/wifi_survey.py`): every SSID
+  on air with BSSID, channel, band, signal and security label, plus a
+  per-channel occupancy summary — the "which AP is the Wi-Fi coming from and
+  how busy is the RF neighbourhood" view. It reads NetworkManager's scan cache
+  (no root) and needs the radio enabled.
+- For deeper 802.11 work, `sudo scripts/wifi-monitor-capture.sh <iface>
+  <channels> [seconds]` puts a radio into monitor mode, channel-hops, captures
+  management/control frames and summarises the beaconing APs and client
+  stations. It needs `CAP_NET_ADMIN`, so it is an operator sudo tool and is
+  deliberately not a dashboard button (the web process stays unprivileged).
+
+> **Wi-Fi note:** this build's Intel 8260 radio driver (`iwlwifi`) and firmware
+> are present and monitor-mode is supported, but the radio can be **rfkill
+> hard-blocked** by the Dell wireless switch/BIOS. If the survey reports the
+> radio is off, enable the wireless switch or the WLAN radio in BIOS/UEFI, then
+> join the network through the desktop GUI.
+
 ## What this detects
 
 - Optional Suricata signature alerts and Zeek notices/weird events
@@ -152,6 +180,9 @@ It cannot see traffic that does not cross the monitored link, encrypted applicat
 - `monitor/outage_monitor.py` — continuous per-path ping/Wi-Fi recorder with outage events, service checks, port checks, route tracking
 - `monitor/probes.py` — port-probe engine with well-known port→expected-response table and OT connect-only safety
 - `monitor/traffic_gen.py` — bounded, allow-listed TCP/UDP traffic generator
+- `monitor/discovery.py` — broad-view LAN host inventory (IP/MAC/vendor/name), discovery-only
+- `monitor/wifi_survey.py` — Wi-Fi AP/channel survey (nmcli/iw), with per-channel occupancy
+- `scripts/wifi-monitor-capture.sh` — operator sudo tool: monitor-mode 802.11 mgmt-frame capture and summary
 - `scripts/install-outage-monitor.sh` — systemd service for the outage monitor
 - `config/monitor-{targets,services,ports}.example.csv`, `config/traffic-gen-allow.example.csv` — seed configs for the monitor and generator
 

@@ -292,6 +292,48 @@ def wifi():
     return jsonify(devices)
 
 
+def _wireless_interfaces() -> list[str]:
+    names = []
+    for iface in interfaces():
+        code, _ = run(["iw", "dev", iface["name"], "info"], 3)
+        if code == 0:
+            names.append(iface["name"])
+    return names
+
+
+@app.post("/api/wifi/survey")
+def wifi_survey():
+    payload = request.get_json(silent=True) or {}
+    iface = str(payload.get("interface", ""))
+    wireless = _wireless_interfaces()
+    if iface not in wireless:
+        iface = wireless[0] if wireless else ""
+    if not iface:
+        return jsonify(error="no wireless interface detected"), 400
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "wifi_survey.py"),
+               "--iface", iface]
+    if payload.get("rescan"):
+        command.append("--rescan")
+    return jsonify(job_id=launch_job("wifi-survey", command, 45)), 202
+
+
+@app.post("/api/discovery")
+def discovery():
+    payload = request.get_json(silent=True) or {}
+    iface = str(payload.get("interface", ""))
+    selected = next((item for item in interfaces() if item["name"] == iface), None)
+    if not selected:
+        return jsonify(error="select an existing interface"), 400
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "discovery.py"),
+               "--iface", iface]
+    subnet = str(payload.get("subnet", "")).strip()
+    if subnet:
+        if not re.fullmatch(r"[0-9./]+", subnet):
+            return jsonify(error="invalid subnet"), 400
+        command += ["--subnet", subnet]
+    return jsonify(job_id=launch_job("lan-discovery", command, 180)), 202
+
+
 def monitor_db() -> sqlite3.Connection | None:
     if not MONITOR_DB.is_file():
         return None
