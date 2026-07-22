@@ -1,0 +1,17 @@
+# Continuous outage-monitor targets: name,address,interface,group
+# - interface empty = default route; set it to force the probe out of a
+#   specific NIC (this is how Wi-Fi and Ethernet paths are separated).
+# - group drives outage classification. Use:
+#     eth-gateway   default gateway probed via the wired NIC
+#     wifi-gateway  default gateway probed via the Wi-Fi NIC
+#     internal      internal servers/switches (wired path)
+#     external      internet references (1.1.1.1 etc.)
+#     ap            the access point's management address
+# name,address,interface,group
+gw-eth,10.0.255.254,enp0s31f6,eth-gateway
+gw-wifi,10.0.255.254,wlp2s0,wifi-gateway
+cloudflare-eth,1.1.1.1,enp0s31f6,external
+cloudflare-wifi,1.1.1.1,wlp2s0,external
+# internal-server,10.0.1.10,enp0s31f6,internal
+# core-switch,10.0.255.1,enp0s31f6,internal
+# access-point,10.0.255.2,enp0s31f6,ap

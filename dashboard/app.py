@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import csv
+import ipaddress
+import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -12,16 +16,49 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
+try:  # package import (waitress-serve dashboard.app:app)
+    from dashboard import settings as settings_store
+except ImportError:  # run from inside the dashboard directory
+    import settings as settings_store
+
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_DIR = Path(os.environ.get("PROBE_CAPTURE_DIR", ROOT / "captures")).resolve()
 SNAPSHOT_DIR = Path(os.environ.get("PROBE_SNAPSHOT_DIR", ROOT / "snapshots")).resolve()
 TARGET_FILE = Path(os.environ.get("PROBE_TARGET_FILE", ROOT / "config" / "targets.csv")).resolve()
+MONITOR_DB = Path(os.environ.get("PROBE_MONITOR_DB", "/var/lib/network-probe/monitor.db"))
+TRAFFIC_ALLOW_FILE = Path(os.environ.get("PROBE_TRAFFIC_ALLOW", "/etc/network-probe/traffic-gen-allow.csv"))
 MAX_OUTPUT = 120_000
+MAX_DURATION = float(os.environ.get("PROBE_TRAFFIC_MAX_DURATION", "60"))
 NAME_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
 app = Flask(__name__)
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
+
+AUTH_TOKEN_FILE = Path(os.environ.get("PROBE_AUTH_TOKEN_FILE", "/etc/network-probe/dashboard-token"))
+
+
+def auth_token() -> str:
+    """Non-empty token = HTTP Basic auth required (any username). The install
+    script generates the token; an empty/missing file disables auth, which is
+    acceptable only when the dashboard binds to 127.0.0.1."""
+    try:
+        return AUTH_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+@app.before_request
+def require_token():
+    token = auth_token()
+    if not token or request.path == "/healthz":
+        return None
+    supplied = request.authorization
+    if supplied and supplied.password == token:
+        return None
+    return app.response_class(
+        "Authentication required.\n", 401, {"WWW-Authenticate": 'Basic realm="network-probe"'}
+    )
 
 
 def run(command: list[str], timeout: int = 15) -> tuple[int, str]:
@@ -33,11 +70,31 @@ def run(command: list[str], timeout: int = 15) -> tuple[int, str]:
         return 127, str(exc)
 
 
+def _iface_bus(item: Path) -> tuple[str, str]:
+    """Return (kind, bus): kind in wired/wireless/loopback/virtual, bus in
+    usb/pci/... Used to label and auto-surface hot-plugged USB adapters."""
+    name = item.name
+    if name == "lo":
+        return "loopback", ""
+    kind = "wireless" if (item / "wireless").exists() or (item / "phy80211").exists() else "wired"
+    bus = ""
+    try:
+        # .../devices/.../usb.../net/<if> or .../pci.../net/<if>
+        real = os.path.realpath(item / "device" / "subsystem")
+        bus = os.path.basename(real)
+    except OSError:
+        pass
+    if not bus and not (item / "device").exists():
+        kind = "virtual" if kind == "wired" else kind
+    return kind, bus
+
+
 def interfaces() -> list[dict]:
     found = []
     net_root = Path("/sys/class/net")
     if not net_root.exists():
         return found
+    overrides = settings_store.load().get("interface_overrides", {})
     for item in sorted(net_root.iterdir()):
         name = item.name
         _, address_text = run(["ip", "-brief", "address", "show", "dev", name])
@@ -47,29 +104,60 @@ def interfaces() -> list[dict]:
                 stats[key] = int((item / "statistics" / key).read_text().strip())
             except (OSError, ValueError):
                 stats[key] = 0
+        capture_safe = not bool(re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}/|\b[0-9a-fA-F:]+/", address_text))
+        kind, bus = _iface_bus(item)
+        override = overrides.get(name, {}).get("capture_allowed")
         found.append({
             "name": name,
             "state": (item / "operstate").read_text().strip(),
             "mac": (item / "address").read_text().strip(),
             "addresses": address_text.strip(),
-            "capture_safe": not bool(re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}/|\b[0-9a-fA-F:]+/", address_text)),
+            "kind": kind,
+            "bus": bus,
+            "usb": bus == "usb",
+            "capture_safe": capture_safe,
+            # Eligible for capture/health/monitor jobs. Safe by default (no IP);
+            # an operator override can enable an addressed interface too.
+            "capture_allowed": bool(override) if override is not None else capture_safe,
+            "capture_override": override,
             **stats,
         })
     return found
 
 
+VALID_PROTOCOLS = {"tcp", "s7-tcp", "opcua-tcp"}
+
+
+def _valid_target(name: str, address: str, protocol: str, port) -> bool:
+    return bool(NAME_RE.fullmatch(name) and NAME_RE.fullmatch(address)
+                and protocol in VALID_PROTOCOLS and str(port).isdigit())
+
+
 def targets() -> list[dict]:
-    if not TARGET_FILE.is_file():
-        return []
-    rows = []
-    with TARGET_FILE.open(newline="", encoding="utf-8") as handle:
-        for row in csv.reader(line for line in handle if not line.lstrip().startswith("#")):
-            if len(row) != 4:
-                continue
-            name, address, protocol, port = (value.strip() for value in row)
-            if NAME_RE.fullmatch(name) and NAME_RE.fullmatch(address) and protocol in {"tcp", "s7-tcp", "opcua-tcp"} and port.isdigit():
-                rows.append({"name": name, "address": address, "protocol": protocol, "port": int(port)})
-    return rows
+    """Approved scope = the read-only operator CSV plus any endpoints added
+    through the dashboard (persisted in the settings store). Deduplicated by
+    (address, port)."""
+    rows: list[dict] = []
+    if TARGET_FILE.is_file():
+        with TARGET_FILE.open(newline="", encoding="utf-8") as handle:
+            for row in csv.reader(line for line in handle if not line.lstrip().startswith("#")):
+                if len(row) != 4:
+                    continue
+                name, address, protocol, port = (value.strip() for value in row)
+                if _valid_target(name, address, protocol, port):
+                    rows.append({"name": name, "address": address, "protocol": protocol, "port": int(port), "source": "file"})
+    for entry in settings_store.load().get("approved_scope", []):
+        name, address = str(entry.get("name", "")), str(entry.get("address", ""))
+        protocol, port = str(entry.get("protocol", "tcp")), entry.get("port")
+        if _valid_target(name, address, protocol, port):
+            rows.append({"name": name, "address": address, "protocol": protocol, "port": int(port), "source": "dashboard"})
+    seen, unique = set(), []
+    for row in rows:
+        key = (row["address"], row["port"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(row)
+    return unique
 
 
 def launch_job(kind: str, command: list[str], timeout: int = 120) -> str:
@@ -100,7 +188,8 @@ def status():
         "uptime_seconds": float(Path("/proc/uptime").read_text().split()[0]) if Path("/proc/uptime").exists() else 0,
         "load": list(os.getloadavg()) if hasattr(os, "getloadavg") else [0, 0, 0],
         "disk": {"total": disk.total, "used": disk.used, "free": disk.free},
-        "tools": {name: bool(shutil.which(name)) for name in ("dumpcap", "tshark", "nmap", "tracepath", "iw", "zeek", "suricata", "ntopng")},
+        "tools": {name: (bool(_lldpctl_path()) if name == "lldpctl" else bool(shutil.which(name)))
+                  for name in ("dumpcap", "tshark", "nmap", "tracepath", "iw", "snmpget", "lldpctl", "suricata", "ntopng")},
         "interfaces": interfaces(),
         "targets": targets(),
     })
@@ -145,8 +234,8 @@ def capture():
     except (TypeError, ValueError):
         return jsonify(error="Capture limits must be numbers"), 400
     selected = next((item for item in interfaces() if item["name"] == iface), None)
-    if not selected or not selected["capture_safe"]:
-        return jsonify(error="Select an existing interface with no IP address"), 400
+    if not selected or not selected["capture_allowed"]:
+        return jsonify(error="Interface is not enabled for capture. Enable it in Settings → Interfaces (interfaces with an IP are off by default)."), 400
     if not (30 <= seconds <= 3600 and 1 <= files <= 96 and 16 <= size <= 4096):
         return jsonify(error="Capture limits are outside the allowed range"), 400
     command = [str(ROOT / "scripts" / "capture-pcapng.sh"), iface, str(CAPTURE_DIR), str(seconds), str(files), str(size)]
@@ -168,8 +257,8 @@ def l2_health():
     except (TypeError, ValueError):
         return jsonify(error="Duration must be a number"), 400
     selected = next((item for item in interfaces() if item["name"] == iface), None)
-    if not selected or not selected["capture_safe"]:
-        return jsonify(error="Select an existing no-IP capture interface"), 400
+    if not selected or not selected["capture_allowed"]:
+        return jsonify(error="Interface is not enabled for capture. Enable it in Settings → Interfaces."), 400
     if not 5 <= duration <= 120:
         return jsonify(error="Duration must be 5-120 seconds"), 400
     command = [str(ROOT / "scripts" / "l2-health.sh"), iface, str(duration)]
@@ -200,6 +289,56 @@ def download(name: str):
     return send_from_directory(CAPTURE_DIR, Path(name).name, as_attachment=True)
 
 
+@app.get("/api/traffic/allow")
+def traffic_allow():
+    """List allow-listed traffic-generator destinations for the UI."""
+    entries = []
+    if TRAFFIC_ALLOW_FILE.is_file():
+        for line in TRAFFIC_ALLOW_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [value.strip() for value in line.split(",")]
+            if len(parts) == 3 and parts[1].isdigit() and parts[2] in {"tcp", "udp"}:
+                entries.append({"host": parts[0], "port": int(parts[1]), "proto": parts[2]})
+    return jsonify(entries)
+
+
+@app.post("/api/traffic/generate")
+def traffic_generate():
+    payload = request.get_json(silent=True) or {}
+    host = str(payload.get("host", ""))
+    proto = str(payload.get("proto", "tcp"))
+    try:
+        port = int(payload.get("port"))
+        count = int(payload.get("count", 1))
+        rate = float(payload.get("rate", 1))
+    except (TypeError, ValueError):
+        return jsonify(error="host, port, count and rate are required and numeric"), 400
+    if not NAME_RE.fullmatch(host) or proto not in {"tcp", "udp"}:
+        return jsonify(error="invalid host or protocol"), 400
+
+    generator = ROOT / "monitor" / "traffic_gen.py"
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(generator),
+               "--host", host, "--port", str(port), "--proto", proto,
+               "--count", str(count), "--rate", str(rate),
+               "--allow", str(TRAFFIC_ALLOW_FILE)]
+    mode = payload.get("mode")
+    if mode == "hex":
+        command += ["--hex", str(payload.get("data", ""))]
+    elif mode == "size":
+        command += ["--size", str(int(payload.get("size", 0)))]
+        if payload.get("random"):
+            command.append("--random")
+    elif payload.get("data"):
+        command += ["--data", str(payload.get("data"))]
+    if payload.get("expect"):
+        command += ["--expect", str(payload.get("expect"))]
+
+    job_id = launch_job("traffic-gen", command, timeout=int(MAX_DURATION) + 30)
+    return jsonify(job_id=job_id), 202
+
+
 @app.get("/api/wifi")
 def wifi():
     devices = []
@@ -209,6 +348,501 @@ def wifi():
             _, station = run(["iw", "dev", iface["name"], "link"], 3)
             devices.append({"interface": iface["name"], "info": info, "link": station})
     return jsonify(devices)
+
+
+def _wireless_interfaces() -> list[str]:
+    names = []
+    for iface in interfaces():
+        code, _ = run(["iw", "dev", iface["name"], "info"], 3)
+        if code == 0:
+            names.append(iface["name"])
+    return names
+
+
+@app.post("/api/wifi/survey")
+def wifi_survey():
+    payload = request.get_json(silent=True) or {}
+    iface = str(payload.get("interface", ""))
+    wireless = _wireless_interfaces()
+    if iface not in wireless:
+        iface = wireless[0] if wireless else ""
+    if not iface:
+        return jsonify(error="no wireless interface detected"), 400
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "wifi_survey.py"),
+               "--iface", iface]
+    if payload.get("rescan"):
+        command.append("--rescan")
+    return jsonify(job_id=launch_job("wifi-survey", command, 45)), 202
+
+
+@app.post("/api/discovery")
+def discovery():
+    payload = request.get_json(silent=True) or {}
+    iface = str(payload.get("interface", ""))
+    selected = next((item for item in interfaces() if item["name"] == iface), None)
+    if not selected:
+        return jsonify(error="select an existing interface"), 400
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "discovery.py"),
+               "--iface", iface]
+    subnet = str(payload.get("subnet", "")).strip()
+    if subnet:
+        if not re.fullmatch(r"[0-9./]+", subnet):
+            return jsonify(error="invalid subnet"), 400
+        command += ["--subnet", subnet]
+    return jsonify(job_id=launch_job("lan-discovery", command, 180)), 202
+
+
+IDS_LOG = Path(os.environ.get("PROBE_IDS_LOG", "/var/log/suricata/eve.json"))
+
+
+def _ids_summary(limit: int) -> tuple[int, dict]:
+    """Run the read-only EVE reader and return (http_status, payload)."""
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "ids_reader.py"),
+               "--log", str(IDS_LOG), "--limit", str(limit)]
+    code, output = run(command, 20)
+    try:
+        return 200, json.loads(output)
+    except ValueError:
+        return 500, {"status": "error", "note": (output or "ids_reader produced no output")[:2000]}
+
+
+@app.get("/api/ids/status")
+def ids_status():
+    """Engine health only (installed / active / log freshness) - cheap poll."""
+    _, payload = _ids_summary(1)
+    payload.pop("alerts", None)
+    return jsonify(payload)
+
+
+@app.get("/api/ids/alerts")
+def ids_alerts():
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100)), 500))
+    except ValueError:
+        return jsonify(error="limit must be a number"), 400
+    # Server-side filters (also filterable in the UI without a re-fetch).
+    sev = request.args.get("severity", "").strip().lower()
+    text = request.args.get("q", "").strip().lower()
+    src = request.args.get("src", "").strip()
+    dst = request.args.get("dst", "").strip()
+    # Fetch a wider window when filtering so matches are not truncated first.
+    _, payload = _ids_summary(limit if not (sev or text or src or dst) else 500)
+    alerts = payload.get("alerts")
+    if isinstance(alerts, list) and (sev or text or src or dst):
+        def keep(a: dict) -> bool:
+            if sev and str(a.get("severity_label", "")).lower() != sev:
+                return False
+            if src and src not in str(a.get("src", "")):
+                return False
+            if dst and dst not in str(a.get("dst", "")):
+                return False
+            if text and text not in (str(a.get("signature", "")) + " " + str(a.get("category", ""))).lower():
+                return False
+            return True
+        payload["alerts"] = [a for a in alerts if keep(a)][:limit]
+        payload["filtered"] = True
+    return jsonify(payload)
+
+
+def valid_ip(value: str) -> str:
+    """Return a normalised IP string, or '' if not a plain IPv4/IPv6 address."""
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return ""
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Redacted settings for the UI (secrets returned only as *_set booleans)."""
+    return jsonify(settings_store.redacted())
+
+
+@app.put("/api/settings")
+def put_settings():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(error="expected a JSON object"), 400
+    # Only known top-level sections are accepted.
+    allowed = {"snmp", "interface_overrides", "approved_scope"}
+    update = {k: v for k, v in payload.items() if k in allowed}
+    if not update:
+        return jsonify(error="no editable settings in request"), 400
+    try:
+        return jsonify(settings_store.apply_update(update))
+    except OSError as exc:
+        return jsonify(error=f"could not save settings: {exc}"), 500
+
+
+@app.post("/api/interfaces/<name>/capture")
+def set_capture(name: str):
+    """Enable/disable an interface for capture/monitor jobs (persistent)."""
+    if not any(item["name"] == name for item in interfaces()):
+        return jsonify(error="unknown interface"), 404
+    payload = request.get_json(silent=True) or {}
+    allowed = bool(payload.get("capture_allowed"))
+    current = settings_store.load()
+    overrides = current.setdefault("interface_overrides", {})
+    overrides.setdefault(name, {})["capture_allowed"] = allowed
+    settings_store.save(current)
+    return jsonify(name=name, capture_allowed=allowed)
+
+
+@app.post("/api/scope/add")
+def scope_add():
+    """Promote a host (e.g. from Discovery) into the approved-scope list."""
+    payload = request.get_json(silent=True) or {}
+    address = valid_ip(str(payload.get("address", ""))) or str(payload.get("address", "")).strip()
+    protocol = str(payload.get("protocol", "tcp"))
+    name = str(payload.get("name", "")).strip() or f"host-{address}"
+    name = re.sub(r"[^A-Za-z0-9._:-]", "-", name)[:48]
+    try:
+        port = int(payload.get("port"))
+    except (TypeError, ValueError):
+        return jsonify(error="port is required and numeric"), 400
+    if not _valid_target(name, address, protocol, port) or not (0 < port < 65536):
+        return jsonify(error="invalid endpoint (name/address/protocol/port)"), 400
+    current = settings_store.load()
+    scope = current.setdefault("approved_scope", [])
+    if any(e.get("address") == address and int(e.get("port", -1)) == port for e in scope):
+        return jsonify(status="exists", name=name), 200
+    scope.append({"name": name, "address": address, "protocol": protocol, "port": port})
+    settings_store.save(current)
+    return jsonify(status="added", name=name, count=len(scope)), 201
+
+
+@app.post("/api/scope/remove")
+def scope_remove():
+    """Remove a dashboard-added endpoint (file-provided ones are read-only)."""
+    payload = request.get_json(silent=True) or {}
+    address, port = str(payload.get("address", "")).strip(), payload.get("port")
+    current = settings_store.load()
+    scope = current.get("approved_scope", [])
+    kept = [e for e in scope if not (e.get("address") == address and str(e.get("port")) == str(port))]
+    if len(kept) == len(scope):
+        return jsonify(error="not a dashboard-added endpoint"), 404
+    current["approved_scope"] = kept
+    settings_store.save(current)
+    return jsonify(status="removed", count=len(kept))
+
+
+@app.post("/api/trace-ip")
+def trace_ip():
+    """Traceroute (tracepath) to any valid IP - used by click-to-trace on
+    Discovery/IDS/monitor events. Read-only and bounded."""
+    payload = request.get_json(silent=True) or {}
+    ip = valid_ip(str(payload.get("ip", "")))
+    if not ip:
+        return jsonify(error="a valid IP address is required"), 400
+    return jsonify(job_id=launch_job("trace-ip", ["tracepath", "-n", ip], 45)), 202
+
+
+@app.post("/api/snmp")
+def snmp_probe():
+    """Single-target, read-only SNMP identity read using stored credentials.
+    Deliberately not a sweep: one host, a small OID set, short timeout."""
+    payload = request.get_json(silent=True) or {}
+    ip = valid_ip(str(payload.get("ip", "")))
+    if not ip:
+        return jsonify(error="a valid IP address is required"), 400
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "snmp_probe.py"),
+               "--host", ip, "--settings", str(settings_store.SETTINGS_FILE)]
+    if payload.get("walk_interfaces"):
+        command.append("--interfaces")
+    return jsonify(job_id=launch_job("snmp-probe", command, 40)), 202
+
+
+def _lldpctl_path() -> str | None:
+    """Resolve lldpctl by absolute path.
+
+    lldpctl lives in /usr/sbin, which the service's default PATH may omit, and
+    the binary is group-execute-only (adm), so shutil.which()/PATH lookup can
+    miss it even when installed. Probe known locations directly.
+    """
+    for candidate in ("/usr/sbin/lldpctl", "/usr/bin/lldpctl", "/sbin/lldpctl"):
+        if os.path.exists(candidate):
+            return candidate
+    return shutil.which("lldpctl")
+
+
+@app.get("/api/lldp")
+def lldp_neighbors():
+    """Discovered LLDP/CDP neighbours from a locally running lldpd."""
+    lldpctl = _lldpctl_path()
+    if not lldpctl:
+        return jsonify(status="unavailable", neighbors=[],
+                       note="lldpd is not installed. Run scripts/install-neighbors.sh --apply on the probe.")
+    code, output = run([lldpctl, "-f", "json"], 8)
+    if code != 0 or not output.strip():
+        return jsonify(status="no_data", neighbors=[],
+                       note="lldpd is installed but returned no neighbours yet (frames are sent ~every 30s).")
+    try:
+        data = json.loads(output)
+    except ValueError:
+        return jsonify(status="error", neighbors=[], note="could not parse lldpctl output")
+    return jsonify(status="ok", neighbors=_parse_lldp(data))
+
+
+def _parse_lldp(data: dict) -> list[dict]:
+    """Flatten lldpctl JSON into rows: local port, remote system, port, mgmt IP."""
+    rows = []
+    interfaces_node = (data.get("lldp") or {}).get("interface") or data.get("interface") or []
+    if isinstance(interfaces_node, dict):
+        interfaces_node = [{"name": k, **v} if isinstance(v, dict) else {"name": k} for k, v in interfaces_node.items()]
+    for iface in interfaces_node:
+        local = iface.get("name", "")
+        chassis = iface.get("chassis", {})
+        # chassis may be {"SYSNAME": {...}} or a flat dict.
+        sysname, mgmt = "", ""
+        if isinstance(chassis, dict) and chassis:
+            first = next(iter(chassis.values())) if not chassis.get("id") else chassis
+            sysname = next(iter(chassis)) if not chassis.get("id") else (first.get("name", "") if isinstance(first, dict) else "")
+            node = first if isinstance(first, dict) else chassis
+            mgmt = _lldp_first(node.get("mgmt-ip"))
+            descr = _lldp_first(node.get("descr"))
+        else:
+            descr = ""
+        port = iface.get("port", {})
+        port_id = _lldp_first(port.get("id")) if isinstance(port, dict) else ""
+        port_descr = _lldp_first(port.get("descr")) if isinstance(port, dict) else ""
+        vlan = iface.get("vlan", {})
+        vlan_id = _lldp_first(vlan.get("vlan-id") if isinstance(vlan, dict) else vlan) if vlan else ""
+        rows.append({
+            "local_port": local, "system": sysname, "mgmt_ip": mgmt,
+            "port_id": port_id, "port_descr": port_descr, "descr": descr, "vlan": vlan_id,
+        })
+    return rows
+
+
+def _lldp_first(node):
+    """lldpctl JSON wraps scalars as {'value': x} or lists; pull a plain string."""
+    if node is None:
+        return ""
+    if isinstance(node, dict):
+        return str(node.get("value", node.get("name", "")))
+    if isinstance(node, list):
+        return ", ".join(_lldp_first(n) for n in node)
+    return str(node)
+
+
+def monitor_db() -> sqlite3.Connection | None:
+    if not MONITOR_DB.is_file():
+        return None
+    db = sqlite3.connect(f"file:{MONITOR_DB}?mode=ro", uri=True)
+    db.row_factory = sqlite3.Row
+    return db
+
+
+@app.get("/monitor")
+def monitor_page():
+    return render_template("monitor.html")
+
+
+@app.get("/api/monitor/series")
+def monitor_series():
+    """Downsampled ping series: per target, per bucket -> loss %% and median-ish RTT."""
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    try:
+        minutes = max(5, min(int(request.args.get("minutes", 60)), 14 * 1440))
+    except ValueError:
+        return jsonify(error="minutes must be a number"), 400
+    since = time.time() - minutes * 60
+    bucket = max(1, minutes * 60 // 600)  # aim for <=600 points per target
+    rows = db.execute(
+        """
+        SELECT target,
+               CAST(ts / ? AS INTEGER) * ? AS bucket_ts,
+               COUNT(*) AS total,
+               SUM(ok) AS ok,
+               AVG(CASE WHEN ok = 1 THEN rtt_ms END) AS rtt_avg,
+               MAX(CASE WHEN ok = 1 THEN rtt_ms END) AS rtt_max
+        FROM ping_samples WHERE ts >= ?
+        GROUP BY target, bucket_ts ORDER BY bucket_ts
+        """,
+        (bucket, bucket, since),
+    ).fetchall()
+    series: dict[str, dict] = {}
+    for row in rows:
+        entry = series.setdefault(row["target"], {"ts": [], "loss_pct": [], "rtt_avg": [], "rtt_max": []})
+        entry["ts"].append(row["bucket_ts"])
+        entry["loss_pct"].append(round(100.0 * (row["total"] - row["ok"]) / row["total"], 1) if row["total"] else None)
+        entry["rtt_avg"].append(round(row["rtt_avg"], 2) if row["rtt_avg"] is not None else None)
+        entry["rtt_max"].append(round(row["rtt_max"], 2) if row["rtt_max"] is not None else None)
+    wifi = db.execute(
+        """
+        SELECT CAST(ts / ? AS INTEGER) * ? AS bucket_ts,
+               interface, MIN(connected) AS connected, AVG(signal_dbm) AS signal_dbm,
+               AVG(tx_bitrate_mbps) AS tx_bitrate, MAX(tx_retries) AS tx_retries, MAX(tx_failed) AS tx_failed
+        FROM wifi_samples WHERE ts >= ? GROUP BY interface, bucket_ts ORDER BY bucket_ts
+        """,
+        (bucket, bucket, since),
+    ).fetchall()
+    wifi_series: dict[str, dict] = {}
+    for row in wifi:
+        entry = wifi_series.setdefault(row["interface"], {"ts": [], "connected": [], "signal_dbm": [], "tx_bitrate": [], "tx_retries": [], "tx_failed": []})
+        entry["ts"].append(row["bucket_ts"])
+        entry["connected"].append(row["connected"])
+        entry["signal_dbm"].append(round(row["signal_dbm"], 1) if row["signal_dbm"] is not None else None)
+        entry["tx_bitrate"].append(round(row["tx_bitrate"], 1) if row["tx_bitrate"] is not None else None)
+        entry["tx_retries"].append(row["tx_retries"])
+        entry["tx_failed"].append(row["tx_failed"])
+    db.close()
+    return jsonify({"bucket_seconds": bucket, "since": since, "ping": series, "wifi": wifi_series})
+
+
+@app.get("/api/monitor/events")
+def monitor_events():
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    try:
+        limit = max(1, min(int(request.args.get("limit", 50)), 500))
+    except ValueError:
+        return jsonify(error="limit must be a number"), 400
+    rows = db.execute(
+        "SELECT id, started, ended, kind, failed_targets, snapshot FROM events ORDER BY started DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    db.close()
+    return jsonify([
+        {
+            "id": row["id"],
+            "started": row["started"],
+            "ended": row["ended"],
+            "duration_s": round(row["ended"] - row["started"], 1) if row["ended"] else None,
+            "kind": row["kind"],
+            "failed_targets": json.loads(row["failed_targets"] or "[]"),
+            "snapshot": row["snapshot"],
+        }
+        for row in rows
+    ])
+
+
+@app.get("/api/monitor/services")
+def monitor_services():
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    try:
+        minutes = max(5, min(int(request.args.get("minutes", 360)), 14 * 1440))
+    except ValueError:
+        return jsonify(error="minutes must be a number"), 400
+    since = time.time() - minutes * 60
+    bucket = max(60, minutes * 60 // 600)
+    rows = db.execute(
+        """
+        SELECT name, kind, CAST(ts / ? AS INTEGER) * ? AS bucket_ts,
+               COUNT(*) AS total, SUM(ok) AS ok, AVG(CASE WHEN ok = 1 THEN duration_ms END) AS duration_ms
+        FROM service_samples WHERE ts >= ? GROUP BY name, bucket_ts ORDER BY bucket_ts
+        """,
+        (bucket, bucket, since),
+    ).fetchall()
+    series: dict[str, dict] = {}
+    for row in rows:
+        entry = series.setdefault(row["name"], {"kind": row["kind"], "ts": [], "ok_pct": [], "duration_ms": []})
+        entry["ts"].append(row["bucket_ts"])
+        entry["ok_pct"].append(round(100.0 * row["ok"] / row["total"], 1) if row["total"] else None)
+        entry["duration_ms"].append(round(row["duration_ms"], 1) if row["duration_ms"] is not None else None)
+    latest = db.execute(
+        """
+        SELECT s1.name, s1.kind, s1.ok, s1.duration_ms, s1.detail, s1.ts FROM service_samples s1
+        JOIN (SELECT name, MAX(ts) AS mts FROM service_samples GROUP BY name) s2
+          ON s1.name = s2.name AND s1.ts = s2.mts
+        """
+    ).fetchall()
+    db.close()
+    return jsonify({"bucket_seconds": bucket, "series": series, "latest": [dict(row) for row in latest]})
+
+
+@app.get("/api/monitor/routes")
+def monitor_routes():
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    state = db.execute("SELECT name, hops, updated FROM route_state ORDER BY name").fetchall()
+    changes = db.execute(
+        "SELECT ts, name, old_hops, new_hops FROM route_events ORDER BY ts DESC LIMIT 50"
+    ).fetchall()
+    db.close()
+    return jsonify({"current": [dict(row) for row in state], "changes": [dict(row) for row in changes]})
+
+
+@app.get("/api/monitor/throughput")
+def monitor_throughput():
+    """Packets/s and multicast/s per interface, derived from counter deltas."""
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    try:
+        minutes = max(5, min(int(request.args.get("minutes", 360)), 14 * 1440))
+    except ValueError:
+        return jsonify(error="minutes must be a number"), 400
+    since = time.time() - minutes * 60
+    rows = db.execute(
+        "SELECT ts, interface, rx_packets, tx_packets, rx_dropped, rx_errors, multicast "
+        "FROM iface_samples WHERE ts >= ? ORDER BY interface, ts",
+        (since,),
+    ).fetchall()
+    step = max(1, len(rows) // 1200)
+    series: dict[str, dict] = {}
+    previous: dict[str, sqlite3.Row] = {}
+    index = 0
+    for row in rows:
+        iface = row["interface"]
+        last = previous.get(iface)
+        previous[iface] = row
+        if last is None:
+            continue
+        dt = row["ts"] - last["ts"]
+        if dt <= 0 or dt > 120:
+            continue
+        index += 1
+        if index % step:
+            continue
+        entry = series.setdefault(iface, {"ts": [], "rx_pps": [], "tx_pps": [], "mcast_pps": [], "drop_pps": []})
+        entry["ts"].append(row["ts"])
+        entry["rx_pps"].append(round(max(0, row["rx_packets"] - last["rx_packets"]) / dt, 1))
+        entry["tx_pps"].append(round(max(0, row["tx_packets"] - last["tx_packets"]) / dt, 1))
+        entry["mcast_pps"].append(round(max(0, row["multicast"] - last["multicast"]) / dt, 1))
+        entry["drop_pps"].append(round(max(0, (row["rx_dropped"] - last["rx_dropped"]) + (row["rx_errors"] - last["rx_errors"])) / dt, 2))
+    db.close()
+    return jsonify(series)
+
+
+@app.get("/api/monitor/summary")
+def monitor_summary():
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    day_ago = time.time() - 86400
+    per_target = db.execute(
+        """
+        SELECT target, COUNT(*) AS total, SUM(ok) AS ok,
+               AVG(CASE WHEN ok = 1 THEN rtt_ms END) AS rtt_avg, MAX(ts) AS last_ts,
+               (SELECT ok FROM ping_samples p2 WHERE p2.target = p1.target ORDER BY ts DESC LIMIT 1) AS last_ok
+        FROM ping_samples p1 WHERE ts >= ? GROUP BY target
+        """,
+        (day_ago,),
+    ).fetchall()
+    events_24h = db.execute("SELECT COUNT(*) AS n FROM events WHERE started >= ?", (day_ago,)).fetchone()["n"]
+    open_event = db.execute("SELECT id, started, failed_targets FROM events WHERE ended IS NULL ORDER BY started DESC LIMIT 1").fetchone()
+    db.close()
+    return jsonify({
+        "targets": [
+            {
+                "target": row["target"],
+                "loss_pct_24h": round(100.0 * (row["total"] - row["ok"]) / row["total"], 2) if row["total"] else None,
+                "rtt_avg_ms": round(row["rtt_avg"], 2) if row["rtt_avg"] is not None else None,
+                "last_seen": row["last_ts"],
+                "up": bool(row["last_ok"]),
+            }
+            for row in per_target
+        ],
+        "events_24h": events_24h,
+        "open_event": dict(open_event) if open_event else None,
+    })
 
 
 if __name__ == "__main__":

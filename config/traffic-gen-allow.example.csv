@@ -1,0 +1,9 @@
+# Allow-list for the traffic generator. A destination MUST be listed here
+# before the generator will send anything to it. One destination per line.
+# OT/control ports (S7 102, Modbus 502, OPC UA 4840, PROFINET, EtherNet/IP,
+# BACnet, SNMP 161) are refused even if listed.
+#
+# host,port,proto
+# 10.0.0.30,9000,tcp
+# 10.0.0.30,9001,udp
+# 192.168.42.250,53,udp

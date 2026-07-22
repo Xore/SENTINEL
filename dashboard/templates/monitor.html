@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Outage Monitor — Fieldline Network Probe</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    /* dataviz palette (dark-mode categorical steps, validated set) */
+    .viz-root{color-scheme:dark;
+      --surface-1:#111922;--text-primary:#e8eef4;--text-secondary:#8fa1b2;
+      --series-1:#3987e5;--series-2:#d95926;--series-3:#199e70;--series-4:#c98500;
+      --series-5:#d55181;--series-6:#008300;--series-7:#9085e9;--series-8:#e66767;
+      --grid-line:#263442;--event-band:rgba(230,103,103,.16)}
+    .chart-wrap{position:relative;margin-top:14px}
+    .chart-wrap canvas{width:100%;height:240px;display:block}
+    .legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;font:12px var(--mono);color:var(--text-secondary)}
+    .legend span{display:inline-flex;align-items:center;gap:6px}
+    .legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
+    .tooltip{position:absolute;pointer-events:none;background:#0d151d;border:1px solid var(--line);
+      border-radius:6px;padding:8px 10px;font:12px var(--mono);color:var(--text);display:none;z-index:5;white-space:nowrap}
+    .ranges{display:flex;gap:8px;margin-top:4px}
+    .ranges button.active{color:var(--text);border-color:var(--cyan)}
+    .event-row td{white-space:normal}
+    details pre{margin-top:8px}
+    .statgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-top:14px}
+    .statgrid article{border:1px solid var(--line);border-radius:8px;padding:14px}
+    .statgrid strong{display:block;font:16px var(--mono);margin:8px 0 3px}
+    .statgrid span{color:var(--muted);font-size:12px}
+    .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}
+    .genform{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:14px}
+    .genform label{display:flex;flex-direction:column;gap:5px;font:12px var(--mono);color:var(--muted)}
+    .genform input,.genform select{background:#0d151d;border:1px solid var(--line);border-radius:6px;
+      color:var(--text);padding:8px 9px;font:13px var(--mono)}
+    .genform .wide{grid-column:1/-1}
+    .genrow{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
+    .genrow .bad{color:var(--series-8)}
+    #genResult{margin-top:14px;background:#0d151d;border:1px solid var(--line);border-radius:6px;
+      padding:12px;font:12px var(--mono);color:var(--text-secondary);white-space:pre-wrap;max-height:340px;overflow:auto;display:none}
+  </style>
+</head>
+<body class="viz-root">
+  <header><div><p class="eyebrow">FIELDLINE / CONTINUOUS</p><h1>Outage Monitor</h1></div><div id="clock" class="clock">—</div></header>
+  <nav>
+    <button onclick="location.href='/'">Overview</button>
+    <button class="active">Monitor</button>
+  </nav>
+  <main>
+    <div class="panel">
+      <div class="panel-head">
+        <div><p class="eyebrow">LAST 24 H</p><h2>Path status</h2></div>
+        <div class="ranges" id="ranges">
+          <button data-min="60">1 h</button><button data-min="360" class="active">6 h</button>
+          <button data-min="1440">24 h</button><button data-min="10080">7 d</button>
+        </div>
+      </div>
+      <div id="summary" class="statgrid"></div>
+    </div>
+
+    <div class="panel"><p class="eyebrow">PACKET LOSS</p><h2>Loss per target (%)</h2>
+      <div class="chart-wrap"><canvas id="lossChart"></canvas><div class="tooltip" id="lossTip"></div></div>
+      <div class="legend" id="lossLegend"></div>
+      <p class="hint">Red bands mark recorded outage events. Wi-Fi vs. wired targets separate radio problems from network problems.</p>
+    </div>
+
+    <div class="panel"><p class="eyebrow">LATENCY</p><h2>Round-trip time (ms, bucket average)</h2>
+      <div class="chart-wrap"><canvas id="rttChart"></canvas><div class="tooltip" id="rttTip"></div></div>
+      <div class="legend" id="rttLegend"></div>
+    </div>
+
+    <div class="panel"><p class="eyebrow">RADIO</p><h2>Wi-Fi signal (dBm)</h2>
+      <div class="chart-wrap"><canvas id="wifiChart"></canvas><div class="tooltip" id="wifiTip"></div></div>
+      <div class="legend" id="wifiLegend"></div>
+      <p class="hint">Falling signal or rising retries at outage time points to the radio; stable signal with dead traffic points to the AP/controller or upstream.</p>
+    </div>
+
+    <div class="panel"><p class="eyebrow">SERVICES</p><h2>Service response time (ms)</h2>
+      <div class="chart-wrap"><canvas id="svcChart"></canvas><div class="tooltip" id="svcTip"></div></div>
+      <div class="legend" id="svcLegend"></div>
+      <div class="table-wrap"><table><thead><tr><th>Service</th><th>Kind</th><th>State</th><th>Last</th><th>Detail</th></tr></thead><tbody id="svcLatest"></tbody></table></div>
+    </div>
+
+    <div class="panel"><p class="eyebrow">TRAFFIC</p><h2>Interface rate (packets/s)</h2>
+      <div class="chart-wrap"><canvas id="tputChart"></canvas><div class="tooltip" id="tputTip"></div></div>
+      <div class="legend" id="tputLegend"></div>
+      <p class="hint">Sudden multicast/drop spikes at outage time indicate a storm or a saturated NIC.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><div><p class="eyebrow">PATHS</p><h2>Routes and changes</h2></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Destination</th><th>Current hops</th><th>Checked</th></tr></thead><tbody id="routesNow"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>When</th><th>Destination</th><th>Old path</th><th>New path</th></tr></thead><tbody id="routeChanges"></tbody></table></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><div><p class="eyebrow">ACTIVE</p><h2>Traffic generator</h2></div></div>
+      <p class="hint">Sends a bounded number of TCP/UDP messages to an <b>allow-listed</b> destination
+        (edit <code>traffic-gen-allow.csv</code>). Capped at 1000 messages, 100/s, 60 s total.
+        Control-system ports (S7, Modbus, OPC UA, PROFINET, EtherNet/IP, BACnet, SNMP) are refused.</p>
+      <div class="genform">
+        <label>Destination
+          <select id="genDest"><option value="">— pick allow-listed —</option></select></label>
+        <label>Messages
+          <input id="genCount" type="number" min="1" max="1000" value="5"></label>
+        <label>Rate /s
+          <input id="genRate" type="number" min="1" max="100" value="2"></label>
+        <label>Payload mode
+          <select id="genMode">
+            <option value="text">Text (default port banner)</option>
+            <option value="hex">Hex bytes</option>
+            <option value="size">Fixed size</option>
+          </select></label>
+        <label class="wide" id="genDataWrap">Payload / data
+          <input id="genData" placeholder="e.g. GET / HTTP/1.0\r\n\r\n  (\\r \\n \\xNN escapes)"></label>
+        <label id="genRandWrap" style="display:none">Random bytes?
+          <select id="genRandom"><option value="">zeros</option><option value="1">random</option></select></label>
+        <label class="wide">Expect (regex, optional)
+          <input id="genExpect" placeholder="e.g. ^HTTP/1.[01] 200"></label>
+      </div>
+      <div class="genrow">
+        <button onclick="runTraffic()" id="genRun">Send</button>
+        <span id="genStatus"></span>
+      </div>
+      <pre id="genResult"></pre>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><div><p class="eyebrow">TIMELINE</p><h2>Outage events</h2></div><button onclick="loadEvents()">Refresh</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Start</th><th>Duration</th><th>Classification</th><th>Failed targets</th><th>Culprit snapshot</th></tr></thead><tbody id="events"></tbody></table></div>
+    </div>
+  </main>
+  <script>
+  "use strict";
+  const PALETTE = ["--series-1","--series-2","--series-3","--series-4","--series-5","--series-6","--series-7","--series-8"]
+    .map(v => getComputedStyle(document.body).getPropertyValue(v).trim());
+  let minutes = 360, events = [];
+  const colorOf = (() => { const assigned = new Map(); return name => {
+    if (!assigned.has(name)) assigned.set(name, PALETTE[assigned.size % PALETTE.length]);
+    return assigned.get(name); }; })();
+
+  function fmtTime(ts){ const d = new Date(ts*1000);
+    return minutes > 1440 ? d.toLocaleString([], {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})
+                          : d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}); }
+
+  function drawChart(canvasId, tipId, legendId, seriesMap, opts){
+    const canvas = document.getElementById(canvasId), tip = document.getElementById(tipId);
+    const dpr = window.devicePixelRatio || 1, cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+    canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+    const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+    const pad = {l:46, r:10, t:10, b:24}, W = cssW - pad.l - pad.r, H = cssH - pad.t - pad.b;
+    const names = Object.keys(seriesMap);
+    const allTs = names.flatMap(n => seriesMap[n].ts);
+    if (!allTs.length){ ctx.fillStyle = "#8fa1b2"; ctx.font = "13px monospace";
+      ctx.fillText("no data yet — monitor collecting…", pad.l, cssH/2); return; }
+    const t0 = Math.min(...allTs), t1 = Math.max(...allTs);
+    let vMax = opts.max ?? Math.max(1, ...names.flatMap(n => seriesMap[n].v.filter(x => x != null)));
+    let vMin = opts.min ?? 0;
+    if (opts.nice){ vMax = Math.ceil(vMax * 1.1) || 1; }
+    const x = ts => pad.l + (t1 === t0 ? 0 : (ts - t0) / (t1 - t0)) * W;
+    const y = v => pad.t + H - (v - vMin) / (vMax - vMin || 1) * H;
+
+    // event bands
+    ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--event-band").trim();
+    for (const ev of events){
+      if (!ev.ended && !ev.started) continue;
+      const bx0 = Math.max(pad.l, x(ev.started)), bx1 = Math.min(pad.l + W, x(ev.ended || t1));
+      if (bx1 > bx0 && ev.started <= t1 && (ev.ended || t1) >= t0) ctx.fillRect(bx0, pad.t, Math.max(bx1 - bx0, 2), H);
+    }
+    // grid + axis labels
+    ctx.strokeStyle = getComputedStyle(document.body).getPropertyValue("--grid-line").trim();
+    ctx.fillStyle = "#8fa1b2"; ctx.font = "11px monospace"; ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++){
+      const v = vMin + (vMax - vMin) * i / 4, gy = y(v);
+      ctx.beginPath(); ctx.moveTo(pad.l, gy); ctx.lineTo(pad.l + W, gy); ctx.stroke();
+      ctx.fillText(opts.fmt ? opts.fmt(v) : v.toFixed(0), 4, gy + 4);
+    }
+    for (let i = 0; i <= 5; i++){
+      const ts = t0 + (t1 - t0) * i / 5;
+      const label = fmtTime(ts), tw = ctx.measureText(label).width;
+      ctx.fillText(label, Math.min(Math.max(x(ts) - tw/2, pad.l), pad.l + W - tw), cssH - 7);
+    }
+    // series lines
+    for (const name of names){
+      const s = seriesMap[name];
+      ctx.strokeStyle = colorOf(name); ctx.lineWidth = 2; ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < s.ts.length; i++){
+        if (s.v[i] == null){ started = false; continue; }
+        const px = x(s.ts[i]), py = y(Math.min(s.v[i], vMax));
+        if (!started){ ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    // legend
+    document.getElementById(legendId).innerHTML = names.map(n =>
+      `<span><i style="background:${colorOf(n)}"></i>${n}</span>`).join("");
+    // hover crosshair + tooltip
+    canvas.onmousemove = evt => {
+      const rect = canvas.getBoundingClientRect(), mx = evt.clientX - rect.left;
+      if (mx < pad.l || mx > pad.l + W){ tip.style.display = "none"; return; }
+      const ts = t0 + (mx - pad.l) / W * (t1 - t0);
+      let html = `<b>${fmtTime(ts)}</b>`;
+      for (const name of names){
+        const s = seriesMap[name];
+        let best = -1, bd = Infinity;
+        for (let i = 0; i < s.ts.length; i++){ const d = Math.abs(s.ts[i] - ts); if (d < bd){ bd = d; best = i; } }
+        if (best >= 0 && s.v[best] != null)
+          html += `<br><i style="color:${colorOf(name)}">●</i> ${name}: ${opts.fmt ? opts.fmt(s.v[best]) : s.v[best]}`;
+      }
+      tip.innerHTML = html; tip.style.display = "block";
+      tip.style.left = Math.min(mx + 14, cssW - tip.offsetWidth - 4) + "px"; tip.style.top = "12px";
+    };
+    canvas.onmouseleave = () => { tip.style.display = "none"; };
+  }
+
+  async function load(){
+    const [seriesRes, evRes, sumRes] = await Promise.all([
+      fetch(`/api/monitor/series?minutes=${minutes}`), fetch("/api/monitor/events?limit=100"), fetch("/api/monitor/summary")]);
+    if (!seriesRes.ok){ document.getElementById("summary").innerHTML =
+      "<article><span>monitor offline</span><strong>no data</strong><span>start the outage-monitor service</span></article>"; return; }
+    const data = await seriesRes.json(); events = (await evRes.json()).filter(e => e.started);
+    const summary = await sumRes.json();
+
+    document.getElementById("summary").innerHTML = (summary.targets || []).map(t => {
+      const cls = t.up ? "ok" : "bad";
+      return `<article><span><i class="dot" style="background:var(${t.up ? "--series-3" : "--series-8"})"></i>${t.target}</span>
+        <strong class="${cls}">${t.up ? "UP" : "DOWN"}</strong>
+        <span>${t.loss_pct_24h ?? "?"}% loss / 24 h · ${t.rtt_avg_ms ?? "–"} ms avg</span></article>`;
+    }).join("") + `<article><span>outage events / 24 h</span><strong>${summary.events_24h}</strong>
+      <span>${summary.open_event ? "one is OPEN now" : "none open"}</span></article>`;
+
+    const loss = {}, rtt = {};
+    for (const [name, s] of Object.entries(data.ping || {})){
+      loss[name] = {ts: s.ts, v: s.loss_pct}; rtt[name] = {ts: s.ts, v: s.rtt_avg};
+    }
+    drawChart("lossChart", "lossTip", "lossLegend", loss, {min:0, max:100, fmt:v => v.toFixed(0) + "%"});
+    drawChart("rttChart", "rttTip", "rttLegend", rtt, {min:0, nice:true, fmt:v => v.toFixed(1)});
+    const wifi = {};
+    for (const [iface, s] of Object.entries(data.wifi || {})) wifi[iface + " signal"] = {ts: s.ts, v: s.signal_dbm};
+    drawChart("wifiChart", "wifiTip", "wifiLegend", wifi, {min:-95, max:-20, fmt:v => v.toFixed(0)});
+    loadEventsTable();
+    loadServices(); loadThroughput(); loadRoutes();
+  }
+
+  async function loadServices(){
+    const res = await fetch(`/api/monitor/services?minutes=${minutes}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const svc = {};
+    for (const [name, s] of Object.entries(data.series || {})) svc[name] = {ts: s.ts, v: s.duration_ms};
+    drawChart("svcChart", "svcTip", "svcLegend", svc, {min:0, nice:true, fmt:v => v.toFixed(0)});
+    document.getElementById("svcLatest").innerHTML = (data.latest || []).map(s => `
+      <tr><td>${s.name}</td><td>${s.kind}</td>
+      <td class="${s.ok ? "ok" : "bad"}">${s.ok ? "OK" : "FAIL"}</td>
+      <td>${s.duration_ms != null ? s.duration_ms + " ms" : "—"}</td>
+      <td>${(s.detail || "").replace(/</g,"&lt;")}</td></tr>`).join("")
+      || '<tr><td colspan="5">no services configured — edit monitor-services.csv</td></tr>';
+  }
+
+  async function loadThroughput(){
+    const res = await fetch(`/api/monitor/throughput?minutes=${minutes}`);
+    if (!res.ok) return;
+    const data = await res.json(), tput = {};
+    for (const [iface, s] of Object.entries(data)){
+      tput[iface + " rx"] = {ts: s.ts, v: s.rx_pps};
+      tput[iface + " mcast"] = {ts: s.ts, v: s.mcast_pps};
+      if (s.drop_pps.some(v => v > 0)) tput[iface + " drops"] = {ts: s.ts, v: s.drop_pps};
+    }
+    drawChart("tputChart", "tputTip", "tputLegend", tput, {min:0, nice:true, fmt:v => v >= 1000 ? (v/1000).toFixed(1) + "k" : v.toFixed(0)});
+  }
+
+  async function loadRoutes(){
+    const res = await fetch("/api/monitor/routes");
+    if (!res.ok) return;
+    const data = await res.json();
+    const hopsFmt = h => (h || "").split(">").join(" › ");
+    document.getElementById("routesNow").innerHTML = (data.current || []).map(r => `
+      <tr><td>${r.name}</td><td class="event-row">${hopsFmt(r.hops)}</td>
+      <td>${new Date(r.updated*1000).toLocaleTimeString()}</td></tr>`).join("")
+      || '<tr><td colspan="3">no route data yet</td></tr>';
+    document.getElementById("routeChanges").innerHTML = (data.changes || []).map(c => `
+      <tr class="event-row"><td>${new Date(c.ts*1000).toLocaleString()}</td><td>${c.name}</td>
+      <td>${hopsFmt(c.old_hops)}</td><td>${hopsFmt(c.new_hops)}</td></tr>`).join("")
+      || '<tr><td colspan="4">no route changes recorded</td></tr>';
+  }
+
+  function loadEventsTable(){
+    document.getElementById("events").innerHTML = events.length ? events.map(e => `
+      <tr class="event-row">
+        <td>${new Date(e.started*1000).toLocaleString()}</td>
+        <td>${e.duration_s != null ? e.duration_s + " s" : '<span class="bad">open</span>'}</td>
+        <td>${e.kind || "—"}</td>
+        <td>${(e.failed_targets || []).join(", ")}</td>
+        <td>${e.snapshot ? `<details><summary>view</summary><pre>${e.snapshot.replace(/</g,"&lt;")}</pre></details>` : "—"}</td>
+      </tr>`).join("") : '<tr><td colspan="5">no outages recorded</td></tr>';
+  }
+  async function loadEvents(){ events = (await (await fetch("/api/monitor/events?limit=100")).json()).filter(e => e.started); loadEventsTable(); }
+
+  async function loadAllow(){
+    const sel = document.getElementById("genDest");
+    try {
+      const rows = await (await fetch("/api/traffic/allow")).json();
+      sel.innerHTML = '<option value="">— pick allow-listed —</option>' +
+        rows.map(r => `<option value="${r.host}|${r.port}|${r.proto}">${r.host}:${r.port} / ${r.proto}</option>`).join("");
+      if (!rows.length) sel.innerHTML = '<option value="">allow-list empty — edit traffic-gen-allow.csv</option>';
+    } catch (e){ sel.innerHTML = '<option value="">allow-list unavailable</option>'; }
+  }
+  document.getElementById("genMode").addEventListener("change", evt => {
+    const mode = evt.target.value;
+    document.getElementById("genRandWrap").style.display = mode === "size" ? "flex" : "none";
+    const data = document.getElementById("genData");
+    data.placeholder = mode === "hex" ? "e.g. 4745 5420 2f0d 0a0d 0a"
+      : mode === "size" ? "byte count, e.g. 512"
+      : "e.g. GET / HTTP/1.0\\r\\n\\r\\n  (\\r \\n \\xNN escapes)";
+  });
+
+  async function runTraffic(){
+    const dest = document.getElementById("genDest").value;
+    const status = document.getElementById("genStatus"), out = document.getElementById("genResult");
+    const btn = document.getElementById("genRun");
+    if (!dest){ status.innerHTML = '<span class="bad">pick an allow-listed destination</span>'; return; }
+    const [host, port, proto] = dest.split("|");
+    const mode = document.getElementById("genMode").value;
+    const body = {host, port:+port, proto, count:+document.getElementById("genCount").value,
+      rate:+document.getElementById("genRate").value,
+      expect:document.getElementById("genExpect").value.trim()};
+    const data = document.getElementById("genData").value;
+    if (mode === "hex"){ body.mode = "hex"; body.data = data; }
+    else if (mode === "size"){ body.mode = "size"; body.size = +data;
+      body.random = document.getElementById("genRandom").value === "1"; }
+    else if (data){ body.data = data; }
+
+    btn.disabled = true; status.textContent = "sending…"; out.style.display = "none";
+    try {
+      const res = await fetch("/api/traffic/generate", {method:"POST",
+        headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      const started = await res.json();
+      if (!res.ok){ status.innerHTML = `<span class="bad">${started.error || "rejected"}</span>`; btn.disabled = false; return; }
+      const jobId = started.job_id;
+      for (let i = 0; i < 40; i++){
+        await new Promise(r => setTimeout(r, 1500));
+        const jobs = await (await fetch("/api/jobs")).json();
+        const job = jobs.find(j => j.id === jobId);
+        if (job && job.state !== "running"){
+          status.innerHTML = job.state === "complete" ? '<span class="ok">done</span>' : '<span class="bad">failed</span>';
+          let text = job.output || "(no output)";
+          try { text = JSON.stringify(JSON.parse(job.output), null, 2); } catch (e){}
+          out.textContent = text; out.style.display = "block"; btn.disabled = false; return;
+        }
+      }
+      status.innerHTML = '<span class="bad">timed out waiting for result</span>'; btn.disabled = false;
+    } catch (e){ status.innerHTML = `<span class="bad">${e}</span>`; btn.disabled = false; }
+  }
+
+  document.getElementById("ranges").addEventListener("click", evt => {
+    if (evt.target.dataset.min){ minutes = +evt.target.dataset.min;
+      document.querySelectorAll("#ranges button").forEach(b => b.classList.toggle("active", b === evt.target)); load(); }
+  });
+  setInterval(() => { document.getElementById("clock").textContent = new Date().toLocaleString(); }, 1000);
+  load(); loadAllow(); setInterval(load, 30000);
+  window.addEventListener("resize", () => load());
+  </script>
+</body></html>
