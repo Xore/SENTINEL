@@ -14,6 +14,7 @@ check command -v dumpcap
 check command -v tshark
 check command -v nmap
 check command -v tracepath
+check command -v mtr
 check command -v iw
 check command -v ethtool
 check command -v python3
@@ -21,6 +22,11 @@ venv_python=/opt/network-probe-venv/bin/python; [[ -x $venv_python ]] || venv_py
 check test -r /proc/net/dev
 check test -d /sys/class/net
 if command -v dumpcap >/dev/null 2>&1; then check dumpcap -D; fi
+# mtr-packet must carry cap_net_raw so the unprivileged monitor can trace per-hop
+# latency/jitter/loss (the route probe and topology map depend on it).
+if command -v mtr-packet >/dev/null 2>&1; then
+  check bash -c 'getcap "$(command -v mtr-packet)" | grep -q cap_net_raw'
+fi
 if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files network-probe-dashboard.service >/dev/null 2>&1; then
   check systemctl is-enabled network-probe-dashboard.service
   check systemctl is-active network-probe-dashboard.service

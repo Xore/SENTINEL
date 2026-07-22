@@ -60,7 +60,7 @@ Grant the account write permission only to the chosen capture directory. Do not 
 - Wi-Fi: local `iw` interface/link state
 - Health sample: short passive Layer-2/protocol report
 - Snapshot: hashed local support/configuration bundle
-- Monitor: outage series/events, service and port checks, throughput and routes (read-only from the monitor DB)
+- Monitor: outage series/events, service and port checks, throughput and routes (read-only from the monitor DB), plus per-hop path quality — an `mtr`-derived latency/jitter/loss profile for every hop to each monitored target, rendered as an internal path map (SVG topology trimmed at the WAN gateway) and one hop-quality card per hop toward the WAN (`/api/monitor/topology`)
 - Traffic generator: bounded, allow-listed TCP/UDP send with optional expected-response check
 - Discovery: broad-view LAN host inventory (IP/MAC/vendor/name) of a connected subnet, discovery-only
 - Wi-Fi survey: AP/channel/band/security list plus per-channel occupancy AND a computed assessment (coverage buckets from signal, bands in use, co-channel congestion, security mix/open-network count, and rogue/evil-twin clues — same SSID on multiple BSSIDs, hidden SSIDs) rendered on the Wi-Fi tab from live scan data (needs the radio enabled)
@@ -118,6 +118,14 @@ The **Settings** view writes to `/var/lib/network-probe/settings.json` (mode
 - **Custom services** — operator-defined named ports (name + port + tcp/udp),
   stored in `custom_services` and merged into the known IT/OT catalogue so they
   show up in the Actions service picker.
+- **What to probe** — the outage monitor's live probe list (ping targets,
+  service checks, port checks, AP-watch interval), written to
+  `/var/lib/network-probe/monitor-config.json` and hot-reloaded by the monitor
+  within ~15 s (no restart). Each ping target carries an **interface (adapter)
+  dropdown** — the source NIC for that target's ping and route probe (blank =
+  OS routes). The dropdown is populated from `GET /api/monitor/config`
+  (`adapters[]`, auto-enumerated). Delete the JSON to revert to the seeded
+  `/etc/network-probe/monitor-*.csv` files.
 
 ## Access-token rotation
 

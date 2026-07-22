@@ -8,7 +8,7 @@ set -euo pipefail
   exit 2
 }
 
-packages=(tshark wireshark nmap ethtool iw jq curl git dnsutils snmp traceroute chrony python3-venv python3-pip)
+packages=(tshark wireshark nmap ethtool iw jq curl git dnsutils snmp traceroute mtr-tiny chrony python3-venv python3-pip)
 echo "Packages to install from configured Ubuntu repositories: ${packages[*]}"
 echo "No services, repositories, firewall rules, or interfaces will be changed by this script."
 read -r -p "Continue [type YES]: " confirmation

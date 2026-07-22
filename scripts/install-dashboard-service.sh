@@ -19,7 +19,7 @@ venv_dir=/opt/network-probe-venv
 export DEBIAN_FRONTEND=noninteractive
 echo 'wireshark-common wireshark-common/install-setuid boolean true' | debconf-set-selections
 apt-get update
-apt-get install -y python3-venv python3-pip tshark wireshark nmap ethtool iw jq curl git dnsutils snmp traceroute chrony
+apt-get install -y python3-venv python3-pip tshark wireshark nmap ethtool iw jq curl git dnsutils snmp traceroute mtr-tiny chrony
 getent group wireshark >/dev/null || groupadd --system wireshark
 id "$service_user" >/dev/null 2>&1 || useradd --system --home-dir "$state_dir" --create-home --shell /usr/sbin/nologin "$service_user"
 usermod -aG wireshark "$service_user"
