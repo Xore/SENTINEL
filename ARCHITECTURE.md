@@ -74,7 +74,8 @@ Core tools:
 - `ip`, `ethtool`, `ss`: local links, drivers, counters and sockets
 - `iw`: Wi-Fi capability, association, signal, channel and bitrate
 - `nmap -sT`: explicit allow-listed TCP connect only
-- `tracepath`: route and path-MTU clues
+- `tracepath`: route and path-MTU clues (Actions path-health job)
+- `mtr`: per-hop latency/jitter/loss for the continuous route probe and path map
 - `dig` and `chronyc`: DNS and time profiles
 
 Optional continuous tools:

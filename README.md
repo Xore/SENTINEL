@@ -63,7 +63,10 @@ dead for 1–2 minutes while 1.1.1.1 still answers":
 
 - One `ping -O` stream per (target, interface) pair, one sample per second.
   Probing the same destinations via the Wi-Fi *and* wired NICs separates
-  radio problems from network problems.
+  radio problems from network problems. Each target's source adapter is
+  editable from **Settings → What to probe** (an interface dropdown); blank
+  means the OS routes it. Both the ping stream (`ping -I <iface>`) and the
+  route probe (`mtr -I <iface>`) honour the choice.
 - Wi-Fi link telemetry every 5 s (signal, bitrate, tx retries/failures,
   beacon loss) plus per-NIC drop/error counters.
 - Everything lands in SQLite (`/var/lib/network-probe/monitor.db`, 14-day
@@ -77,12 +80,20 @@ dead for 1–2 minutes while 1.1.1.1 still answers":
 - Service-health profiles every 60 s from `monitor-services.csv`: DNS query
   time (per resolver), HTTP/HTTPS with separate connect/TLS/response timings,
   plain TCP connect, and chrony NTP sync offset.
-- Route-change detection: the tracepath hop sequence to internal/external
-  references is recorded every 5 min; a changed path becomes a route event.
+- Route and per-hop quality: every 5 min an `mtr -n -j` run to each
+  internal/external reference records the full hop chain **and** per-hop
+  metrics (loss %, last/avg/best/worst RTT and StDev as jitter). A changed
+  hop sequence becomes a route event; the latest per-hop metrics are stored
+  in `route_metrics` for the map below. `mtr` runs unprivileged because
+  `/usr/bin/mtr-packet` carries `cap_net_raw` (installed via `mtr-tiny`).
 - Per-interface packets/s, multicast/s and drop rates derived from NIC
   counters.
 - Plots (loss, RTT, Wi-Fi signal, service latency, traffic rate, outage
-  bands), route tables and the event timeline live at `/monitor`.
+  bands), route tables and the event timeline live at `/monitor`, together
+  with two path views built from the mtr data: an **internal path map**
+  (SVG topology of the hops between the probe and each target, trimmed at
+  the WAN gateway) and **hop-quality cards** — one card per hop toward the
+  WAN, each showing that hop's latency, jitter and loss.
 
 ### Dashboard exposure and access token
 

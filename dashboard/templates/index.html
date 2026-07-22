@@ -7,7 +7,32 @@
 </head>
 <body>
   <header><div><p class="eyebrow">FIELDLINE / PASSIVE-FIRST</p><h1>Network Probe</h1></div><div id="clock" class="clock">—</div></header>
-  <nav><button data-view="overview" class="active">Overview</button><button data-view="actions">Actions</button><button data-view="assets">Assets</button><button data-view="discovery">Discovery</button><button data-view="health">Health</button><button data-view="endpoints">Endpoints</button><button data-view="captures">Captures</button><button data-view="wifi">Wi-Fi</button><button data-view="apwatch">Access Points</button><button data-view="neighbours">Neighbours</button><button data-view="security">Security</button><button data-view="settings">Settings</button><button data-view="jobs">Activity</button><button onclick="location.href='/monitor'">Monitor</button></nav>
+  <nav>
+    <div class="nav-group"><span class="nav-label">Home</span><div class="nav-btns">
+      <button data-view="overview" class="active" title="Probe status, anomalies and interfaces at a glance">Overview</button>
+    </div></div>
+    <div class="nav-group"><span class="nav-label">Watch</span><div class="nav-btns">
+      <button onclick="location.href='/monitor'" title="Always-on outage, latency and path monitoring (opens the Monitor page)">Monitor</button>
+      <button data-view="security" title="Passive intrusion-detection alerts from Suricata">Security</button>
+      <button data-view="apwatch" title="Continuous Wi-Fi watch — logs when an access point appears or disappears">Access Points</button>
+    </div></div>
+    <div class="nav-group"><span class="nav-label">Investigate</span><div class="nav-btns">
+      <button data-view="assets" title="Every host the probe has seen, with per-host history">Assets</button>
+      <button data-view="discovery" title="Sweep a subnet for live hosts (IP, MAC, vendor, name)">Discovery</button>
+      <button data-view="neighbours" title="Which switch/port you're plugged into (LLDP) plus single-host SNMP">Neighbours</button>
+      <button data-view="wifi" title="One-off scan of nearby access points and local radio health">Wi-Fi</button>
+      <button data-view="endpoints" title="Approved-scope targets, checked by TCP-connect and route only">Endpoints</button>
+    </div></div>
+    <div class="nav-group"><span class="nav-label">Diagnose</span><div class="nav-btns">
+      <button data-view="actions" title="Run a read-only check against any host (reachability, trace, SNMP)">Actions</button>
+      <button data-view="health" title="Link-health samples and diagnostic profiles (path / services / infra / baseline)">Health</button>
+      <button data-view="captures" title="Start a bounded PCAP ring capture for evidence">Captures</button>
+    </div></div>
+    <div class="nav-group"><span class="nav-label">System</span><div class="nav-btns">
+      <button data-view="jobs" title="Log of recent jobs and their results">Activity</button>
+      <button data-view="settings" title="Interfaces, SNMP credentials, custom services and the outage monitor">Settings</button>
+    </div></div>
+  </nav>
   <main>
     <section id="overview" class="view active">
       <div class="metrics"><article><span>Probe</span><strong id="hostname">—</strong><small id="uptime">—</small></article><article><span>Load</span><strong id="load">—</strong><small>1 / 5 / 15 min</small></article><article><span>Capture disk</span><strong id="disk">—</strong><small id="diskDetail">—</small></article><article><span>Toolset</span><strong id="toolCount">—</strong><small>available locally</small></article></div>

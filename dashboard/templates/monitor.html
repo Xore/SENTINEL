@@ -65,20 +65,30 @@
 <body class="viz-root">
   <header><div><p class="eyebrow">FIELDLINE / CONTINUOUS</p><h1>Outage Monitor</h1></div><div id="clock" class="clock">—</div></header>
   <nav>
-    <button onclick="location.href='/?view=overview'">Overview</button>
-    <button onclick="location.href='/?view=actions'">Actions</button>
-    <button onclick="location.href='/?view=assets'">Assets</button>
-    <button onclick="location.href='/?view=discovery'">Discovery</button>
-    <button onclick="location.href='/?view=health'">Health</button>
-    <button onclick="location.href='/?view=endpoints'">Endpoints</button>
-    <button onclick="location.href='/?view=captures'">Captures</button>
-    <button onclick="location.href='/?view=wifi'">Wi-Fi</button>
-    <button onclick="location.href='/?view=apwatch'">Access Points</button>
-    <button onclick="location.href='/?view=neighbours'">Neighbours</button>
-    <button onclick="location.href='/?view=security'">Security</button>
-    <button onclick="location.href='/?view=settings'">Settings</button>
-    <button onclick="location.href='/?view=jobs'">Activity</button>
-    <button class="active">Monitor</button>
+    <div class="nav-group"><span class="nav-label">Home</span><div class="nav-btns">
+      <button onclick="location.href='/?view=overview'" title="Probe status, anomalies and interfaces at a glance">Overview</button>
+    </div></div>
+    <div class="nav-group"><span class="nav-label">Watch</span><div class="nav-btns">
+      <button class="active" title="Always-on outage, latency and path monitoring (this page)">Monitor</button>
+      <button onclick="location.href='/?view=security'" title="Passive intrusion-detection alerts from Suricata">Security</button>
+      <button onclick="location.href='/?view=apwatch'" title="Continuous Wi-Fi watch — logs when an access point appears or disappears">Access Points</button>
+    </div></div>
+    <div class="nav-group"><span class="nav-label">Investigate</span><div class="nav-btns">
+      <button onclick="location.href='/?view=assets'" title="Every host the probe has seen, with per-host history">Assets</button>
+      <button onclick="location.href='/?view=discovery'" title="Sweep a subnet for live hosts (IP, MAC, vendor, name)">Discovery</button>
+      <button onclick="location.href='/?view=neighbours'" title="Which switch/port you're plugged into (LLDP) plus single-host SNMP">Neighbours</button>
+      <button onclick="location.href='/?view=wifi'" title="One-off scan of nearby access points and local radio health">Wi-Fi</button>
+      <button onclick="location.href='/?view=endpoints'" title="Approved-scope targets, checked by TCP-connect and route only">Endpoints</button>
+    </div></div>
+    <div class="nav-group"><span class="nav-label">Diagnose</span><div class="nav-btns">
+      <button onclick="location.href='/?view=actions'" title="Run a read-only check against any host (reachability, trace, SNMP)">Actions</button>
+      <button onclick="location.href='/?view=health'" title="Link-health samples and diagnostic profiles (path / services / infra / baseline)">Health</button>
+      <button onclick="location.href='/?view=captures'" title="Start a bounded PCAP ring capture for evidence">Captures</button>
+    </div></div>
+    <div class="nav-group"><span class="nav-label">System</span><div class="nav-btns">
+      <button onclick="location.href='/?view=jobs'" title="Log of recent jobs and their results">Activity</button>
+      <button onclick="location.href='/?view=settings'" title="Interfaces, SNMP credentials, custom services and the outage monitor">Settings</button>
+    </div></div>
   </nav>
   <main>
     <div class="panel">
