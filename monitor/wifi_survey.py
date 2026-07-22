@@ -134,6 +134,85 @@ def radio_enabled() -> bool:
         return True  # can't tell; don't claim it's off
 
 
+def _signal_label(ap: dict) -> tuple[float | None, str]:
+    """Normalise either back-end's signal to an approximate dBm and a word.
+    nmcli gives a 0-100%, iw gives dBm; map % to a rough dBm for one scale."""
+    dbm = ap.get("signal_dbm")
+    if dbm is None and ap.get("signal_pct") is not None:
+        dbm = ap["signal_pct"] / 2.0 - 100.0  # 100% -> -50, 50% -> -75
+    if dbm is None:
+        return None, "unknown"
+    if dbm >= -60:
+        return dbm, "strong"
+    if dbm >= -72:
+        return dbm, "fair"
+    return dbm, "weak"
+
+
+def assess(aps: list[dict]) -> dict:
+    """Turn the raw AP list into the survey's answers: coverage, band/RF design,
+    security posture and rogue/evil-twin clues. Everything here is derived from
+    the passive scan already taken - it sends nothing new."""
+    if not aps:
+        return {}
+    bands: dict[str, int] = {}
+    security: dict[str, int] = {}
+    per_channel: dict[tuple, int] = {}
+    ssid_bssids: dict[str, set] = {}
+    hidden = 0
+    coverage = {"strong": 0, "fair": 0, "weak": 0, "unknown": 0}
+    best = None
+    for ap in aps:
+        bands[ap["band"]] = bands.get(ap["band"], 0) + 1
+        sec = ap.get("security") or "Open"
+        security[sec] = security.get(sec, 0) + 1
+        per_channel[(ap["band"], ap["channel"])] = per_channel.get((ap["band"], ap["channel"]), 0) + 1
+        ssid = ap.get("ssid", "")
+        if ssid and ssid != "(hidden)":
+            ssid_bssids.setdefault(ssid, set()).add(ap["bssid"])
+        else:
+            hidden += 1
+        dbm, word = _signal_label(ap)
+        coverage[word] += 1
+        if dbm is not None and (best is None or dbm > best[0]):
+            best = (dbm, ap)
+
+    overlap = [{"band": b, "channel": c, "ap_count": n}
+               for (b, c), n in sorted(per_channel.items(), key=lambda kv: -kv[1]) if n > 1]
+    twins = [{"ssid": s, "bssid_count": len(bs), "bssids": sorted(bs)}
+             for s, bs in ssid_bssids.items() if len(bs) > 1]
+    open_count = sum(n for s, n in security.items() if s.lower() in ("open", "", "--"))
+    weak_enc = sum(n for s, n in security.items() if "wep" in s.lower())
+
+    notes = []
+    if open_count:
+        notes.append(f"{open_count} open (unencrypted) network(s) on air")
+    if weak_enc:
+        notes.append(f"{weak_enc} network(s) using deprecated WEP")
+    if twins:
+        notes.append(f"{len(twins)} SSID(s) advertised by multiple BSSIDs "
+                     "(normal for roaming/mesh, but also the evil-twin signature - verify the BSSIDs are yours)")
+    if overlap:
+        worst = overlap[0]
+        notes.append(f"channel congestion: {worst['ap_count']} APs share {worst['band']} ch{worst['channel']}")
+    if coverage["weak"] and not coverage["strong"]:
+        notes.append("no strong-signal AP visible from here - coverage or antenna placement may be poor")
+
+    return {
+        "coverage": coverage,
+        "strongest": ({"ssid": best[1]["ssid"], "bssid": best[1]["bssid"],
+                       "band": best[1]["band"], "channel": best[1]["channel"],
+                       "approx_dbm": round(best[0], 1)} if best else None),
+        "bands": [{"band": b, "ap_count": n} for b, n in sorted(bands.items(), key=lambda kv: -kv[1])],
+        "security": [{"type": s, "ap_count": n} for s, n in sorted(security.items(), key=lambda kv: -kv[1])],
+        "open_count": open_count,
+        "co_channel": overlap[:8],
+        "same_ssid_multi_bssid": twins,
+        "hidden_count": hidden,
+        "notes": notes,
+    }
+
+
 def channel_summary(aps: list[dict]) -> list[dict]:
     counts: dict[tuple, int] = {}
     for ap in aps:
@@ -178,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(json.dumps({
         "interface": args.iface, "backend": backend, "ap_count": len(aps),
-        "channels": channel_summary(aps), "aps": aps, "note": note,
+        "channels": channel_summary(aps), "assessment": assess(aps),
+        "aps": aps, "note": note,
     }, indent=1))
     return 0
 

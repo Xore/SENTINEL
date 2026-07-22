@@ -36,6 +36,30 @@
     .genrow .bad{color:var(--series-8)}
     #genResult{margin-top:14px;background:#0d151d;border:1px solid var(--line);border-radius:6px;
       padding:12px;font:12px var(--mono);color:var(--text-secondary);white-space:pre-wrap;max-height:340px;overflow:auto;display:none}
+    /* per-hop quality lanes */
+    .hoplanes{display:flex;flex-direction:column;gap:18px;margin-top:14px}
+    .hoplane .lane-head{display:flex;align-items:baseline;gap:10px;margin-bottom:8px;font:13px var(--mono)}
+    .hoplane .lane-head b{color:var(--text-primary)}
+    .lane-badge{font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);color:var(--text-secondary)}
+    .lane-badge.wan{color:var(--series-4);border-color:var(--series-4)}
+    .lane-badge.onnet{color:var(--series-3);border-color:var(--series-3)}
+    .lane-track{display:flex;align-items:stretch;gap:0;overflow-x:auto;padding-bottom:6px}
+    .hopcard{flex:0 0 auto;min-width:148px;background:#0d151d;border:1px solid var(--line);
+      border-left:3px solid var(--series-1);border-radius:8px;padding:10px 12px;cursor:pointer}
+    .hopcard.k-self{border-left-color:var(--series-1)}
+    .hopcard.k-wan-gateway{border-left-color:var(--series-4)}
+    .hopcard.k-target{border-left-color:var(--series-3)}
+    .hopcard.k-neighbour{border-left-color:var(--series-7)}
+    .hopcard.k-hop{border-left-color:var(--text-secondary)}
+    .hopcard.dead{opacity:.5;border-style:dashed;cursor:default}
+    .hopcard .hc-idx{font:11px var(--mono);color:var(--muted)}
+    .hopcard .hc-label{font:12px var(--mono);color:var(--text-primary);margin:2px 0 8px;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+    .hopcard .hc-metrics{display:grid;grid-template-columns:auto auto;gap:2px 10px;font:11px var(--mono);color:var(--text-secondary)}
+    .hopcard .hc-metrics b{color:var(--text-primary);font-weight:600}
+    .hopcard .hc-avg{font:16px var(--mono);color:var(--text-primary)}
+    .hop-arrow{flex:0 0 auto;align-self:center;color:var(--muted);padding:0 6px;font:14px var(--mono)}
+    .m-good{color:var(--series-3)!important}.m-warn{color:var(--series-4)!important}.m-bad{color:var(--series-8)!important}
   </style>
 </head>
 <body class="viz-root">
@@ -49,6 +73,7 @@
     <button onclick="location.href='/?view=endpoints'">Endpoints</button>
     <button onclick="location.href='/?view=captures'">Captures</button>
     <button onclick="location.href='/?view=wifi'">Wi-Fi</button>
+    <button onclick="location.href='/?view=apwatch'">Access Points</button>
     <button onclick="location.href='/?view=neighbours'">Neighbours</button>
     <button onclick="location.href='/?view=security'">Security</button>
     <button onclick="location.href='/?view=settings'">Settings</button>
@@ -94,6 +119,32 @@
       <div class="chart-wrap"><canvas id="tputChart"></canvas><div class="tooltip" id="tputTip"></div></div>
       <div class="legend" id="tputLegend"></div>
       <p class="hint">Sudden multicast/drop spikes at outage time indicate a storm or a saturated NIC.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><div><p class="eyebrow">TOPOLOGY</p><h2>Internal path map</h2></div>
+        <div class="legend" id="topoLegend">
+          <span><i style="background:var(--series-1);border-radius:50%;width:10px;height:10px"></i>this probe</span>
+          <span><i style="background:var(--series-4);border-radius:50%;width:10px;height:10px"></i>WAN gateway</span>
+          <span><i style="background:var(--series-3);border-radius:50%;width:10px;height:10px"></i>target reached</span>
+          <span><i style="background:var(--series-7);border-radius:50%;width:10px;height:10px"></i>neighbour</span>
+          <span><i style="background:var(--text-secondary);border-radius:50%;width:10px;height:10px"></i>hop</span>
+        </div>
+      </div>
+      <p class="hint">Devices each traceroute passed through, from this probe out to the last private hop
+        before traffic leaves for the WAN. Merged across all monitored targets. Click a node for its IP dossier.</p>
+      <div id="topoWrap" style="overflow:auto;margin-top:14px"><svg id="topoSvg" width="100%" role="img"></svg></div>
+      <p class="hint" id="topoEmpty" style="display:none">No internal route data yet — the monitor traces paths every few minutes.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><div><p class="eyebrow">PER-HOP QUALITY</p><h2>Hop cards to the WAN</h2></div></div>
+      <p class="hint">Every monitored path as a lane of hop cards, from this probe to the WAN gateway.
+        Each card shows that hop's <b>latency</b> (mtr avg), <b>jitter</b> (StDev), <b>loss</b> and best/worst,
+        from repeated probes. Intermediate routers often rate-limit ICMP, so mid-path loss can be cosmetic — the
+        <b>final hop's</b> figures are the ones that matter.</p>
+      <div id="hopLanes" class="hoplanes"></div>
+      <p class="hint" id="hopEmpty" style="display:none">No per-hop data yet — the monitor measures paths every few minutes.</p>
     </div>
 
     <div class="panel">
@@ -249,7 +300,136 @@
     for (const [iface, s] of Object.entries(data.wifi || {})) wifi[iface + " signal"] = {ts: s.ts, v: s.signal_dbm};
     drawChart("wifiChart", "wifiTip", "wifiLegend", wifi, {min:-95, max:-20, fmt:v => v.toFixed(0)});
     loadEventsTable();
-    loadServices(); loadThroughput(); loadRoutes();
+    loadServices(); loadThroughput(); loadRoutes(); loadTopology();
+  }
+
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function svgEl(name, attrs){
+    const el = document.createElementNS(SVGNS, name);
+    for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+    return el;
+  }
+  const TOPO_FILL = {self:"--series-1", "wan-gateway":"--series-4", target:"--series-3",
+    neighbour:"--series-7", hop:"--text-secondary"};
+
+  async function loadTopology(){
+    const svg = document.getElementById("topoSvg");
+    const empty = document.getElementById("topoEmpty");
+    const res = await fetch("/api/monitor/topology");
+    if (!res.ok){ svg.style.display="none"; empty.style.display="block"; return; }
+    const g = await res.json();
+    renderHopLanes(g.paths || []);
+    const nodes = g.nodes || [], edges = g.edges || [];
+    if (nodes.length <= 1){ svg.style.display="none"; empty.style.display="block"; return; }
+    svg.style.display="block"; empty.style.display="none";
+    svg.replaceChildren();
+
+    // Group by depth into left-to-right columns.
+    const cols = {};
+    for (const n of nodes) (cols[n.depth] = cols[n.depth] || []).push(n);
+    const depths = Object.keys(cols).map(Number).sort((a,b)=>a-b);
+    const colW = 210, rowH = 62, padX = 24, padY = 30;
+    const maxRows = Math.max(...depths.map(d => cols[d].length));
+    const width = padX*2 + (depths.length-1)*colW + 150;
+    const height = padY*2 + Math.max(1, maxRows-1)*rowH + 30;
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("height", height);
+    svg.style.minWidth = width + "px";
+
+    // Position each node.
+    const pos = {};
+    depths.forEach((d, ci) => {
+      const list = cols[d];
+      list.forEach((n, ri) => {
+        const y = padY + (ri - (list.length-1)/2 + (maxRows-1)/2) * rowH + 15;
+        pos[n.id] = {x: padX + ci*colW, y};
+      });
+    });
+
+    // Edges first (behind nodes).
+    for (const e of edges){
+      const a = pos[e.from], b = pos[e.to];
+      if (!a || !b) continue;
+      const mx = (a.x + b.x)/2;
+      const path = svgEl("path", {d:`M${a.x+70},${a.y} C${mx},${a.y} ${mx},${b.y} ${b.x-6},${b.y}`,
+        fill:"none", stroke:"var(--grid-line)", "stroke-width":"1.6"});
+      svg.appendChild(path);
+    }
+
+    // Nodes.
+    for (const n of nodes){
+      const p = pos[n.id];
+      const grp = svgEl("g", {transform:`translate(${p.x},${p.y})`, style:"cursor:pointer"});
+      const fill = `var(${TOPO_FILL[n.kind] || "--text-secondary"})`;
+      grp.appendChild(svgEl("circle", {cx:0, cy:0, r:8, fill, stroke:"var(--surface-1)", "stroke-width":"2"}));
+      const label = svgEl("text", {x:16, y:-2, fill:"var(--text-primary)",
+        style:"font:12px var(--mono)"});
+      label.textContent = (n.label || n.ip || "").slice(0,26);
+      grp.appendChild(label);
+      const sub = svgEl("text", {x:16, y:13, fill:"var(--text-secondary)", style:"font:11px var(--mono)"});
+      let subtext = n.ip && n.label !== n.ip ? n.ip : "";
+      const reached = (n.targets||[]).concat((n.exits||[]).map(t=>t+"↗"));
+      if (reached.length) subtext += (subtext?" · ":"") + "→ " + reached.join(", ");
+      sub.textContent = subtext.slice(0,40);
+      grp.appendChild(sub);
+      const title = svgEl("title", {});
+      title.textContent = `${n.label}${n.ip?" ("+n.ip+")":""} · ${n.kind}` +
+        ((n.targets||[]).length ? `\nreached on-net: ${n.targets.join(", ")}` : "") +
+        ((n.exits||[]).length ? `\npaths exit to WAN here: ${n.exits.join(", ")}` : "");
+      grp.appendChild(title);
+      if (n.ip) grp.addEventListener("click", () => { location.href = "/?ip=" + encodeURIComponent(n.ip); });
+      svg.appendChild(grp);
+    }
+  }
+
+  const fmtMs = v => v == null ? "–" : (v < 10 ? v.toFixed(2) : v.toFixed(1));
+  const latClass = v => v == null ? "" : v < 5 ? "m-good" : v < 30 ? "" : v < 80 ? "m-warn" : "m-bad";
+  const jitClass = v => v == null ? "" : v < 2 ? "m-good" : v < 10 ? "" : v < 25 ? "m-warn" : "m-bad";
+  const lossClass = v => v == null ? "" : v <= 0 ? "m-good" : v < 5 ? "" : v < 20 ? "m-warn" : "m-bad";
+  const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+  function renderHopLanes(paths){
+    const wrap = document.getElementById("hopLanes");
+    const empty = document.getElementById("hopEmpty");
+    if (!paths.length){ wrap.innerHTML=""; empty.style.display="block"; return; }
+    empty.style.display="none";
+    wrap.innerHTML = paths.map(p => {
+      const badge = p.reached === "wan"
+        ? '<span class="lane-badge wan">exits to WAN</span>'
+        : '<span class="lane-badge onnet">reached on-net</span>';
+      const when = p.updated ? new Date(p.updated*1000).toLocaleTimeString() : "";
+      const cards = [];
+      cards.push(hopCardHtml({label:"this probe", kind:"self", _root:true}));
+      p.hops.forEach(h => { cards.push('<span class="hop-arrow">→</span>'); cards.push(hopCardHtml(h)); });
+      return `<div class="hoplane">
+        <div class="lane-head"><b>${esc(p.name)}</b>${badge}
+          <span style="color:var(--muted)">${p.hops.length} hop${p.hops.length===1?"":"s"} · ${when}</span></div>
+        <div class="lane-track">${cards.join("")}</div></div>`;
+    }).join("");
+    wrap.querySelectorAll(".hopcard[data-ip]").forEach(el =>
+      el.addEventListener("click", () => { location.href = "/?ip=" + encodeURIComponent(el.dataset.ip); }));
+  }
+
+  function hopCardHtml(h){
+    if (h._root)
+      return `<div class="hopcard k-self"><div class="hc-idx">start</div>
+        <div class="hc-label">this probe</div>
+        <div class="hc-metrics" style="color:var(--muted)">origin</div></div>`;
+    const dead = h.host === "*";
+    if (dead)
+      return `<div class="hopcard k-hop dead"><div class="hc-idx">hop ${h.idx ?? "?"}</div>
+        <div class="hc-label">✷ no reply</div>
+        <div class="hc-metrics" style="color:var(--muted)">router hid from probe</div></div>`;
+    const ipLine = (h.label && h.label !== h.host) ? esc(h.host) : "";
+    return `<div class="hopcard k-${esc(h.kind)}" data-ip="${esc(h.host)}" title="best ${fmtMs(h.best)} / worst ${fmtMs(h.wrst)} ms · ${h.snt ?? "?"} probes">
+      <div class="hc-idx">hop ${h.idx ?? "?"}${ipLine?" · "+ipLine:""}</div>
+      <div class="hc-label">${esc(h.label || h.host)}</div>
+      <div class="hc-metrics">
+        <span>latency</span><span class="hc-avg ${latClass(h.avg)}">${fmtMs(h.avg)} ms</span>
+        <span>jitter</span><b class="${jitClass(h.stdev)}">${fmtMs(h.stdev)} ms</b>
+        <span>loss</span><b class="${lossClass(h.loss)}">${h.loss==null?"–":h.loss.toFixed(0)+"%"}</b>
+        <span>best/worst</span><b>${fmtMs(h.best)}/${fmtMs(h.wrst)}</b>
+      </div></div>`;
   }
 
   async function loadServices(){

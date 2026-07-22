@@ -21,10 +21,12 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import settings as settings_store
     from dashboard import history
     from dashboard import services
+    from dashboard import monitor_config
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
     import services
+    import monitor_config
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_DIR = Path(os.environ.get("PROBE_CAPTURE_DIR", ROOT / "captures")).resolve()
@@ -32,6 +34,12 @@ SNAPSHOT_DIR = Path(os.environ.get("PROBE_SNAPSHOT_DIR", ROOT / "snapshots")).re
 TARGET_FILE = Path(os.environ.get("PROBE_TARGET_FILE", ROOT / "config" / "targets.csv")).resolve()
 MONITOR_DB = Path(os.environ.get("PROBE_MONITOR_DB", "/var/lib/network-probe/monitor.db"))
 TRAFFIC_ALLOW_FILE = Path(os.environ.get("PROBE_TRAFFIC_ALLOW", "/etc/network-probe/traffic-gen-allow.csv"))
+# Legacy root-owned monitor CSVs. The monitor now prefers the shared JSON config
+# (monitor_config), but the Settings editor seeds itself from these on first load
+# so an existing CSV install shows its current targets before the operator saves.
+MONITOR_TARGETS_CSV = Path(os.environ.get("PROBE_MONITOR_TARGETS", "/etc/network-probe/monitor-targets.csv"))
+MONITOR_SERVICES_CSV = Path(os.environ.get("PROBE_MONITOR_SERVICES", "/etc/network-probe/monitor-services.csv"))
+MONITOR_PORTS_CSV = Path(os.environ.get("PROBE_MONITOR_PORTS", "/etc/network-probe/monitor-ports.csv"))
 # Effective (read-only /etc file + dashboard-added) allow-list, written to the
 # writable state dir so the generator subprocess can enforce against it.
 EFFECTIVE_ALLOW_FILE = Path(settings_store.SETTINGS_FILE).parent / "traffic-allow-effective.csv"
@@ -519,6 +527,32 @@ def wifi_survey():
     return jsonify(job_id=launch_job("wifi-survey", command, 45)), 202
 
 
+@app.get("/api/wifi/ap-monitor")
+def wifi_ap_monitor():
+    """Access-point watch: the persistent AP inventory (present + gone) and the
+    appear/disappear event log the background poller maintains."""
+    cfg = monitor_config.load().get("ap_monitor", {})
+    return jsonify(
+        config=cfg,
+        last_update=history.ap_last_update(),
+        access_points=history.get_ap_state(),
+        events=history.get_ap_events(),
+        wireless=_wireless_interfaces(),
+    )
+
+
+@app.post("/api/wifi/ap-monitor/scan")
+def wifi_ap_monitor_scan():
+    """Force one AP scan now (same unprivileged nmcli path as the poller)."""
+    result = _poll_ap_once()
+    if result is None:
+        return jsonify(error="no wireless interface, or the scan failed (the radio may be blocked)"), 400
+    result["last_update"] = history.ap_last_update()
+    result["access_points"] = history.get_ap_state()
+    result["events"] = history.get_ap_events()
+    return jsonify(result)
+
+
 @app.post("/api/discovery")
 def discovery():
     payload = request.get_json(silent=True) or {}
@@ -616,6 +650,93 @@ def put_settings():
         return jsonify(settings_store.apply_update(update))
     except OSError as exc:
         return jsonify(error=f"could not save settings: {exc}"), 500
+
+
+def _csv_dicts(path: Path, columns: list[str]) -> list[dict]:
+    """Best-effort read of a legacy monitor CSV into name-keyed dicts. Used only
+    to seed the Settings editor before the operator saves the JSON config."""
+    rows: list[dict] = []
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            for raw in csv.reader(handle):
+                if not raw or raw[0].lstrip().startswith("#"):
+                    continue
+                values = (raw + [""] * len(columns))[:len(columns)]
+                rows.append({col: values[i].strip() for i, col in enumerate(columns)})
+    except OSError:
+        pass
+    return rows
+
+
+def _monitor_config_effective() -> dict:
+    """Current monitor config for the editor. Once the JSON exists it is
+    authoritative; before that we surface whatever the monitor is still reading
+    from the /etc CSVs so the editor is pre-populated, not blank."""
+    cfg = monitor_config.load()
+    if monitor_config.CONFIG_FILE.is_file():
+        cfg["source"] = "json"
+        return cfg
+    cfg["source"] = "csv"
+    targets = _csv_dicts(MONITOR_TARGETS_CSV, ["name", "address", "interface", "group"])
+    services = _csv_dicts(MONITOR_SERVICES_CSV, ["name", "kind", "target"])
+    ports = _csv_dicts(MONITOR_PORTS_CSV, ["name", "host", "port", "proto", "send", "expect"])
+    cfg["targets"] = monitor_config.clean_targets(targets)[0]
+    cfg["services"] = monitor_config.clean_services(services)[0]
+    cfg["ports"] = monitor_config.clean_ports(ports)[0]
+    return cfg
+
+
+@app.get("/api/monitor/config")
+def get_monitor_config():
+    """What the outage monitor probes (targets/services/ports/AP-watch)."""
+    cfg = _monitor_config_effective()
+    cfg["groups"] = sorted(monitor_config.GROUPS)
+    cfg["service_kinds"] = sorted(monitor_config.SERVICE_KINDS)
+    # Real adapters on this probe, so each target can pick which one to source
+    # its probe from (empty = let the OS route it). Loopback is not useful here.
+    cfg["adapters"] = [
+        {"name": i["name"], "state": i.get("state")}
+        for i in interfaces() if i["name"] != "lo"
+    ]
+    cfg["config_file"] = str(monitor_config.CONFIG_FILE)
+    return jsonify(cfg)
+
+
+@app.put("/api/monitor/config")
+def put_monitor_config():
+    """Replace the monitor's probe list. Validated, then written to the shared
+    JSON the monitor hot-reloads - no privileged restart needed."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(error="expected a JSON object"), 400
+    current = monitor_config.load()
+    errors: list[str] = []
+    out = {"targets": current["targets"], "services": current["services"],
+           "ports": current["ports"], "ap_monitor": current["ap_monitor"]}
+    if "targets" in payload:
+        out["targets"], errs = monitor_config.clean_targets(payload["targets"])
+        errors += errs
+    if "services" in payload:
+        out["services"], errs = monitor_config.clean_services(payload["services"])
+        errors += errs
+    if "ports" in payload:
+        out["ports"], errs = monitor_config.clean_ports(payload["ports"])
+        errors += errs
+    if isinstance(payload.get("ap_monitor"), dict):
+        ap = payload["ap_monitor"]
+        out["ap_monitor"] = {
+            "enabled": bool(ap.get("enabled", out["ap_monitor"]["enabled"])),
+            "interval": monitor_config._clamp_int(ap.get("interval", out["ap_monitor"]["interval"]), 20, 3600, 60),
+        }
+    if errors:
+        return jsonify(error="validation failed", details=errors), 400
+    try:
+        monitor_config.save(out)
+    except OSError as exc:
+        return jsonify(error=f"could not save monitor config: {exc}"), 500
+    saved = monitor_config.load()  # re-clamps ap_monitor.interval
+    saved["source"] = "json"
+    return jsonify(saved)
 
 
 @app.post("/api/interfaces/<name>/capture")
@@ -884,6 +1005,94 @@ def actions_service_health():
         command += ["--name", name]
     target = valid_ip(host) or host
     return jsonify(job_id=launch_job("service-health", command, 45, target=target)), 202
+
+
+@app.post("/api/actions/path-health")
+def actions_path_health():
+    """Read-only route/MTU/latency/loss profile for one host. Safe active: a
+    tracepath (standard probe traffic), an unprivileged ICMP echo run, and - only
+    when a port is given - one bounded TCP connect. No OT payloads, no sweep."""
+    payload = request.get_json(silent=True) or {}
+    host = str(payload.get("host", "")).strip()
+    if not (host and NAME_RE.fullmatch(host)):
+        return jsonify(error="a valid host (IP or name) is required"), 400
+    port = 0
+    if payload.get("port") not in (None, "", 0, "0"):
+        try:
+            port = int(payload.get("port"))
+        except (TypeError, ValueError):
+            return jsonify(error="port must be numeric"), 400
+        if not 0 < port < 65536:
+            return jsonify(error="port out of range"), 400
+    command = [os.environ.get("PROBE_PYTHON", sys.executable),
+               str(ROOT / "monitor" / "path_check.py"), "--host", host]
+    if port:
+        command += ["--port", str(port)]
+    target = valid_ip(host) or host
+    return jsonify(job_id=launch_job("path-health", command, 60, target=target)), 202
+
+
+def _percentile(sorted_values: list[float], pct: float) -> float | None:
+    """Linear-interpolated percentile of an already-sorted list; None if empty."""
+    if not sorted_values:
+        return None
+    if len(sorted_values) == 1:
+        return round(sorted_values[0], 2)
+    rank = (pct / 100.0) * (len(sorted_values) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(sorted_values) - 1)
+    frac = rank - lo
+    return round(sorted_values[lo] * (1 - frac) + sorted_values[hi] * frac, 2)
+
+
+@app.get("/api/health/baseline")
+def health_baseline():
+    """Latency/loss baseline for one monitored target: 7-day median/p95 vs the
+    last hour, read-only from the monitor DB's ping_samples. No probing - it only
+    summarises what the outage monitor already recorded."""
+    target = str(request.args.get("target", "")).strip()
+    if not target:
+        return jsonify(error="a target is required"), 400
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    try:
+        rows = db.execute(
+            "SELECT ts, ok, rtt_ms FROM ping_samples "
+            "WHERE target = ? AND ts >= ? ORDER BY ts",
+            (target, time.time() - 7 * 86400)).fetchall()
+    except sqlite3.Error as exc:
+        return jsonify(error=f"baseline unavailable: {exc}"), 503
+    finally:
+        db.close()
+    if not rows:
+        return jsonify(target=target, samples=0,
+                       note="no ping history for this target yet"), 200
+
+    def summarise(sample):
+        oks = [r for r in sample if r["ok"]]
+        rtts = sorted(r["rtt_ms"] for r in oks if r["rtt_ms"] is not None)
+        loss = round(100.0 * (len(sample) - len(oks)) / len(sample), 1) if sample else None
+        return {
+            "samples": len(sample),
+            "loss_pct": loss,
+            "rtt_median_ms": _percentile(rtts, 50),
+            "rtt_p95_ms": _percentile(rtts, 95),
+        }
+
+    now = time.time()
+    week = summarise(rows)
+    hour = summarise([r for r in rows if r["ts"] >= now - 3600])
+    verdict, notes = "ok", []
+    b_rtt, c_rtt = week["rtt_p95_ms"], hour["rtt_median_ms"]
+    if b_rtt and c_rtt and c_rtt > max(b_rtt * 1.5, b_rtt + 20):
+        verdict = "elevated"
+        notes.append(f"latency {c_rtt:.0f} ms now vs {b_rtt:.0f} ms 7-day p95")
+    if hour["samples"] and hour["loss_pct"] and hour["loss_pct"] > max(week["loss_pct"] or 0, 2) + 1:
+        verdict = "elevated"
+        notes.append(f"loss {hour['loss_pct']}% now vs {week['loss_pct']}% 7-day baseline")
+    return jsonify(target=target, window_days=7, baseline=week, current_hour=hour,
+                   verdict=verdict, notes=notes), 200
 
 
 # --- Persistent inventory and scan history ---------------------------------
@@ -1303,6 +1512,193 @@ def monitor_routes():
     return jsonify({"current": [dict(row) for row in state], "changes": [dict(row) for row in changes]})
 
 
+# Private/link-local ranges that count as "inside" the network for topology.
+# Deliberately an explicit RFC1918 + link-local list, NOT ipaddress.is_private,
+# because is_private also matches CGNAT 100.64.0.0/10 - which is the carrier
+# side of the WAN and must read as external so the map trims there.
+_INTERNAL_NETS = [
+    ipaddress.ip_network(n)
+    for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16")
+]
+
+
+def _is_internal_ip(text: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return any(addr in net for net in _INTERNAL_NETS)
+
+
+def _trim_to_wan(hops: list[str]) -> tuple[list[str], str | None]:
+    """Keep the internal (RFC1918/link-local) prefix of a hop chain and stop at
+    the WAN edge. Returns (internal_hops, wan_gateway) where wan_gateway is the
+    last internal hop before the path leaves for the public/CGNAT internet, or
+    None if the whole known chain stayed internal (target is on-net)."""
+    internal: list[str] = []
+    wan_gateway: str | None = None
+    for hop in hops:
+        if hop == "[LOCALHOST]" or _is_internal_ip(hop):
+            internal.append(hop)
+            continue
+        # First non-internal hop: the previous hop was the gateway to the WAN.
+        wan_gateway = internal[-1] if internal and internal[-1] != "[LOCALHOST]" else None
+        break
+    return internal, wan_gateway
+
+
+@app.get("/api/monitor/topology")
+def monitor_topology():
+    """Merge the collected traceroute hop-chains into one internal topology
+    graph, trimmed at the WAN gateway (the last private hop before traffic
+    leaves for the public internet). Node labels are enriched from the monitor
+    target names, LLDP neighbours and this probe's own interfaces."""
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    state = db.execute("SELECT name, hops, updated FROM route_state ORDER BY name").fetchall()
+    try:  # route_metrics is newer; tolerate a monitor that predates it
+        metrics_rows = db.execute("SELECT name, hubs, updated FROM route_metrics").fetchall()
+    except sqlite3.Error:
+        metrics_rows = []
+    db.close()
+
+    # --- enrichment lookups -------------------------------------------------
+    target_names: dict[str, str] = {}
+    try:
+        for tgt in _monitor_config_effective().get("targets", []):
+            if tgt.get("address"):
+                target_names[tgt["address"]] = tgt.get("name") or tgt["address"]
+    except Exception:  # config is best-effort enrichment, never fatal
+        pass
+
+    lldp_by_ip: dict[str, str] = {}
+    try:
+        for n in history.get_lldp_state():
+            ip = (n.get("mgmt_ip") or "").strip()
+            sysname = (n.get("system") or "").strip()
+            if ip and sysname:
+                lldp_by_ip[ip] = sysname
+    except Exception:
+        pass
+
+    own_ips: set[str] = set()
+    try:
+        # `addresses` is the raw `ip -brief address` line (name, state, CIDRs);
+        # only the CIDR tokens are addresses - the rest is not.
+        for iface in interfaces():
+            for token in (iface.get("addresses") or "").split():
+                if "/" in token:
+                    own_ips.add(token.split("/")[0])
+    except Exception:
+        pass
+
+    def label_for(ip: str) -> tuple[str, str]:
+        """Return (label, kind) for an internal hop IP."""
+        if ip in own_ips:
+            return "this probe", "self"
+        if ip in target_names:
+            return target_names[ip], "target"
+        if ip in lldp_by_ip:
+            return lldp_by_ip[ip], "neighbour"
+        return ip, "hop"
+
+    nodes: dict[str, dict] = {}
+    edges: set[tuple[str, str]] = set()
+    wan_gateways: set[str] = set()
+
+    root_id = "probe"
+    nodes[root_id] = {"id": root_id, "label": "this probe", "ip": None,
+                      "kind": "self", "depth": 0, "targets": [], "exits": []}
+
+    for row in state:
+        name = row["name"]
+        chain = [h for h in (row["hops"] or "").split(">") if h]
+        internal, wan_gateway = _trim_to_wan(chain)
+        # Drop the leading localhost marker; the probe root stands in for it.
+        internal = [h for h in internal if h != "[LOCALHOST]"]
+        if not internal:
+            continue
+        prev = root_id
+        for depth, ip in enumerate(internal, start=1):
+            label, kind = label_for(ip)
+            node = nodes.get(ip)
+            if node is None:
+                node = nodes[ip] = {"id": ip, "label": label, "ip": ip,
+                                    "kind": kind, "depth": depth, "targets": [], "exits": []}
+            else:
+                node["depth"] = min(node["depth"], depth)
+                # A hop that is also a probe target keeps the richer kind.
+                if kind in ("self", "target", "neighbour") and node["kind"] == "hop":
+                    node["kind"], node["label"] = kind, label
+            edges.add((prev, ip))
+            prev = ip
+        # The final internal hop is where this target's traceroute ended. If the
+        # path never left the private network (wan_gateway is None) the target is
+        # genuinely reached on-net; otherwise the last hop is the WAN edge and the
+        # target lives beyond it - the path merely *exits* there.
+        last_ip = internal[-1]
+        bucket = "exits" if wan_gateway else "targets"
+        if name not in nodes[last_ip][bucket]:
+            nodes[last_ip][bucket].append(name)
+        if wan_gateway:
+            wan_gateways.add(wan_gateway)
+
+    for gw in wan_gateways:
+        if gw in nodes:
+            nodes[gw]["kind"] = "wan-gateway"
+
+    # --- per-hop quality lanes ---------------------------------------------
+    # One card-lane per traced target, from this probe out to the WAN gateway,
+    # each hop carrying its mtr latency/jitter/loss. Trimmed like the map.
+    paths = []
+    for mrow in metrics_rows:
+        try:
+            hubs = json.loads(mrow["hubs"] or "[]")
+        except ValueError:
+            continue
+        lane_hops = []
+        wan_reached = False
+        for hub in hubs:
+            host = hub.get("host") or "*"
+            if host == "*":
+                # Unknown hop: keep it only while we are still inside the LAN;
+                # a public non-responder past the edge is dropped by the trim below.
+                lane_hops.append({**hub, "label": "* (no reply)", "kind": "hop", "internal": None})
+                continue
+            if not _is_internal_ip(host):
+                wan_reached = True
+                break  # left the private network - stop at the WAN edge
+            label, kind = label_for(host)
+            lane_hops.append({**hub, "label": label, "kind": kind, "internal": True})
+        # Strip trailing unknown hops (they sit beyond the last known LAN device).
+        while lane_hops and lane_hops[-1]["internal"] is None:
+            lane_hops.pop()
+        if not lane_hops:
+            continue
+        # Mark the WAN-edge card and whether the destination is truly on-net.
+        if wan_reached:
+            for hop in reversed(lane_hops):
+                if hop["internal"]:
+                    hop["kind"] = "wan-gateway"
+                    break
+        paths.append({
+            "name": mrow["name"],
+            "reached": "wan" if wan_reached else "on-net",
+            "updated": mrow["updated"],
+            "hops": lane_hops,
+        })
+    paths.sort(key=lambda p: p["name"])
+
+    return jsonify({
+        "nodes": list(nodes.values()),
+        "edges": [{"from": a, "to": b} for a, b in sorted(edges)],
+        "wan_gateways": sorted(wan_gateways),
+        "paths": paths,
+        "updated": max((row["updated"] for row in state), default=None),
+    })
+
+
 @app.get("/api/monitor/throughput")
 def monitor_throughput():
     """Packets/s and multicast/s per interface, derived from counter deltas."""
@@ -1398,14 +1794,50 @@ def _poll_lldp_once() -> None:
                 history.record_host(n["mgmt_ip"], name=n.get("system", ""), source="lldp", kind="lldp")
 
 
+def _poll_ap_once() -> dict | None:
+    """Scan the RF neighbourhood and diff it against the stored AP inventory so a
+    BSSID that stops beaconing is logged as 'disappeared'. Unprivileged nmcli;
+    returns None when there is no radio to scan (kept honest - a blocked radio
+    yields an empty scan, which record_ap_scan ignores rather than treating as a
+    mass disappearance)."""
+    wireless = _wireless_interfaces()
+    if not wireless:
+        return None
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "wifi_survey.py"),
+               "--iface", wireless[0], "--rescan"]
+    code, output = run(command, 40)
+    if code != 0 or not output.strip():
+        return None
+    try:
+        data = json.loads(output)
+    except ValueError:
+        return None
+    return history.record_ap_scan(data.get("aps") or [])
+
+
 def _background_poller() -> None:
-    interval = max(30, int(os.environ.get("PROBE_LLDP_POLL_SECONDS", "120")))
+    lldp_interval = max(30, int(os.environ.get("PROBE_LLDP_POLL_SECONDS", "120")))
+    next_lldp = 0.0
+    next_ap = 0.0
     while True:
-        try:
-            _poll_lldp_once()
-        except Exception:  # a poll failure must never kill the loop
-            pass
-        time.sleep(interval)
+        now = time.monotonic()
+        if now >= next_lldp:
+            try:
+                _poll_lldp_once()
+            except Exception:  # a poll failure must never kill the loop
+                pass
+            next_lldp = time.monotonic() + lldp_interval
+        ap_cfg = monitor_config.load().get("ap_monitor", {})
+        ap_interval = max(20, int(ap_cfg.get("interval", 60)))
+        if ap_cfg.get("enabled", True) and now >= next_ap:
+            try:
+                _poll_ap_once()
+            except Exception:
+                pass
+            next_ap = time.monotonic() + ap_interval
+        elif not ap_cfg.get("enabled", True):
+            next_ap = now + ap_interval  # skip a cycle; re-check config later
+        time.sleep(5)
 
 
 def _start_background_poller() -> None:

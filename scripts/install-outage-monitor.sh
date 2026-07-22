@@ -61,6 +61,12 @@ Environment=PROBE_MONITOR_TARGETS=$config_dir/monitor-targets.csv
 Environment=PROBE_MONITOR_SERVICES=$config_dir/monitor-services.csv
 Environment=PROBE_MONITOR_PORTS=$config_dir/monitor-ports.csv
 Environment=PROBE_MONITOR_SNAPSHOT_IFACE=${snapshot_iface:-}
+# Dashboard-editable config the monitor hot-reloads (shared writable state dir).
+# When present it overrides the CSVs above; the dashboard writes it on Save.
+Environment=PROBE_MONITOR_CONFIG=$state_dir/monitor-config.json
+# Unbuffered stdout so outage/route/target-reconcile lines reach journald
+# promptly instead of sitting in a block buffer.
+Environment=PYTHONUNBUFFERED=1
 ExecStart=$venv_dir/bin/python $repo_dir/monitor/outage_monitor.py
 Restart=on-failure
 RestartSec=5

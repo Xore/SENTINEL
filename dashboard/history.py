@@ -79,6 +79,27 @@ CREATE TABLE IF NOT EXISTS lldp_changes (
     old_value  TEXT,
     new_value  TEXT
 );
+CREATE TABLE IF NOT EXISTS ap_state (
+    bssid       TEXT PRIMARY KEY,
+    ssid        TEXT,
+    band        TEXT,
+    channel     INTEGER,
+    security    TEXT,
+    signal      TEXT,          -- last seen signal, as text (dBm or %)
+    first_seen  REAL,
+    last_seen   REAL,
+    present     INTEGER        -- 1 = seen in the latest scan, 0 = gone
+);
+CREATE INDEX IF NOT EXISTS idx_ap_present ON ap_state(present);
+CREATE TABLE IF NOT EXISTS ap_events (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts     REAL,
+    bssid  TEXT,
+    ssid   TEXT,
+    event  TEXT,               -- appeared | disappeared
+    detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ap_events_ts ON ap_events(ts);
 """
 
 
@@ -324,3 +345,100 @@ def get_lldp_changes(limit: int = 50) -> list[dict]:
         return [dict(r) for r in rows]
     except sqlite3.Error:
         return []
+
+
+# --- Access-point sighting monitor -----------------------------------------
+
+def _ap_signal(ap: dict) -> str:
+    if ap.get("signal_dbm") is not None:
+        return f"{ap['signal_dbm']} dBm"
+    if ap.get("signal_pct") is not None:
+        return f"{ap['signal_pct']}%"
+    return ""
+
+
+def record_ap_scan(aps: list[dict]) -> dict:
+    """Diff a fresh Wi-Fi scan against the stored AP inventory, log appear/
+    disappear events and return them. A BSSID present before but missing from
+    this scan flips to 'disappeared'; a new or returning BSSID is 'appeared'.
+
+    The caller MUST only pass a *valid* scan (at least one AP). An empty list -
+    e.g. the radio being rfkill-blocked - is ignored here so a blocked radio
+    never fabricates a mass-disappearance event.
+    """
+    result = {"appeared": [], "disappeared": [], "scanned": len(aps)}
+    if not aps:
+        return result
+    now = time.time()
+    seen = {}
+    for ap in aps:
+        bssid = (ap.get("bssid") or "").lower()
+        if bssid:
+            seen[bssid] = ap
+    try:
+        with _lock, _connect() as db:
+            prev = {r["bssid"]: r for r in db.execute("SELECT * FROM ap_state").fetchall()}
+            for bssid, ap in seen.items():
+                sig = _ap_signal(ap)
+                ssid = ap.get("ssid", "") or "(hidden)"
+                row = prev.get(bssid)
+                if row is None or not row["present"]:
+                    detail = f"{ssid} · {ap.get('band','')} ch{ap.get('channel','?')} · {sig}"
+                    db.execute("INSERT INTO ap_events(ts, bssid, ssid, event, detail) VALUES(?,?,?,?,?)",
+                               (now, bssid, ssid, "appeared", detail))
+                    result["appeared"].append({"bssid": bssid, "ssid": ssid, "detail": detail})
+                first = row["first_seen"] if row else now
+                db.execute(
+                    "INSERT INTO ap_state(bssid, ssid, band, channel, security, signal, first_seen, last_seen, present) "
+                    "VALUES(?,?,?,?,?,?,?,?,1) ON CONFLICT(bssid) DO UPDATE SET "
+                    "ssid=excluded.ssid, band=excluded.band, channel=excluded.channel, security=excluded.security, "
+                    "signal=excluded.signal, last_seen=excluded.last_seen, present=1",
+                    (bssid, ssid, ap.get("band", ""), ap.get("channel"), ap.get("security", ""),
+                     sig, first, now))
+            for bssid, row in prev.items():
+                if row["present"] and bssid not in seen:
+                    ssid = row["ssid"] or "(hidden)"
+                    gone_for = now - (row["last_seen"] or now)
+                    detail = f"{ssid} · last seen {int(gone_for)}s ago · {row['band'] or ''} ch{row['channel'] or '?'}"
+                    db.execute("INSERT INTO ap_events(ts, bssid, ssid, event, detail) VALUES(?,?,?,?,?)",
+                               (now, bssid, ssid, "disappeared", detail))
+                    db.execute("UPDATE ap_state SET present=0 WHERE bssid=?", (bssid,))
+                    result["disappeared"].append({"bssid": bssid, "ssid": ssid, "detail": detail})
+            # keep the event log bounded
+            db.execute("DELETE FROM ap_events WHERE id NOT IN "
+                       "(SELECT id FROM ap_events ORDER BY ts DESC LIMIT 2000)")
+            db.commit()
+    except sqlite3.Error:
+        pass
+    return result
+
+
+def get_ap_state(limit: int = 400) -> list[dict]:
+    try:
+        with _lock, _connect() as db:
+            rows = db.execute(
+                "SELECT * FROM ap_state ORDER BY present DESC, last_seen DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+def get_ap_events(limit: int = 100) -> list[dict]:
+    try:
+        with _lock, _connect() as db:
+            rows = db.execute(
+                "SELECT ts, bssid, ssid, event, detail FROM ap_events ORDER BY ts DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+def ap_last_update() -> float | None:
+    try:
+        with _lock, _connect() as db:
+            row = db.execute("SELECT MAX(last_seen) AS t FROM ap_state").fetchone()
+        return row["t"] if row and row["t"] else None
+    except sqlite3.Error:
+        return None
