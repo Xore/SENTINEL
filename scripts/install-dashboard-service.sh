@@ -53,7 +53,9 @@ Environment=PROBE_TARGET_FILE=$config_dir/targets.csv
 ExecStart=$venv_dir/bin/waitress-serve --listen=127.0.0.1:8088 dashboard.app:app
 Restart=on-failure
 RestartSec=3
-NoNewPrivileges=true
+# NoNewPrivileges must stay off: capture jobs spawn dumpcap, which gains
+# CAP_NET_RAW/CAP_NET_ADMIN through file capabilities (wireshark group).
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only

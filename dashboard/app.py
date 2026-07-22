@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
@@ -16,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_DIR = Path(os.environ.get("PROBE_CAPTURE_DIR", ROOT / "captures")).resolve()
 SNAPSHOT_DIR = Path(os.environ.get("PROBE_SNAPSHOT_DIR", ROOT / "snapshots")).resolve()
 TARGET_FILE = Path(os.environ.get("PROBE_TARGET_FILE", ROOT / "config" / "targets.csv")).resolve()
+MONITOR_DB = Path(os.environ.get("PROBE_MONITOR_DB", "/var/lib/network-probe/monitor.db"))
 MAX_OUTPUT = 120_000
 NAME_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
@@ -209,6 +212,135 @@ def wifi():
             _, station = run(["iw", "dev", iface["name"], "link"], 3)
             devices.append({"interface": iface["name"], "info": info, "link": station})
     return jsonify(devices)
+
+
+def monitor_db() -> sqlite3.Connection | None:
+    if not MONITOR_DB.is_file():
+        return None
+    db = sqlite3.connect(f"file:{MONITOR_DB}?mode=ro", uri=True)
+    db.row_factory = sqlite3.Row
+    return db
+
+
+@app.get("/monitor")
+def monitor_page():
+    return render_template("monitor.html")
+
+
+@app.get("/api/monitor/series")
+def monitor_series():
+    """Downsampled ping series: per target, per bucket -> loss %% and median-ish RTT."""
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    try:
+        minutes = max(5, min(int(request.args.get("minutes", 60)), 14 * 1440))
+    except ValueError:
+        return jsonify(error="minutes must be a number"), 400
+    since = time.time() - minutes * 60
+    bucket = max(1, minutes * 60 // 600)  # aim for <=600 points per target
+    rows = db.execute(
+        """
+        SELECT target,
+               CAST(ts / ? AS INTEGER) * ? AS bucket_ts,
+               COUNT(*) AS total,
+               SUM(ok) AS ok,
+               AVG(CASE WHEN ok = 1 THEN rtt_ms END) AS rtt_avg,
+               MAX(CASE WHEN ok = 1 THEN rtt_ms END) AS rtt_max
+        FROM ping_samples WHERE ts >= ?
+        GROUP BY target, bucket_ts ORDER BY bucket_ts
+        """,
+        (bucket, bucket, since),
+    ).fetchall()
+    series: dict[str, dict] = {}
+    for row in rows:
+        entry = series.setdefault(row["target"], {"ts": [], "loss_pct": [], "rtt_avg": [], "rtt_max": []})
+        entry["ts"].append(row["bucket_ts"])
+        entry["loss_pct"].append(round(100.0 * (row["total"] - row["ok"]) / row["total"], 1) if row["total"] else None)
+        entry["rtt_avg"].append(round(row["rtt_avg"], 2) if row["rtt_avg"] is not None else None)
+        entry["rtt_max"].append(round(row["rtt_max"], 2) if row["rtt_max"] is not None else None)
+    wifi = db.execute(
+        """
+        SELECT CAST(ts / ? AS INTEGER) * ? AS bucket_ts,
+               interface, MIN(connected) AS connected, AVG(signal_dbm) AS signal_dbm,
+               AVG(tx_bitrate_mbps) AS tx_bitrate, MAX(tx_retries) AS tx_retries, MAX(tx_failed) AS tx_failed
+        FROM wifi_samples WHERE ts >= ? GROUP BY interface, bucket_ts ORDER BY bucket_ts
+        """,
+        (bucket, bucket, since),
+    ).fetchall()
+    wifi_series: dict[str, dict] = {}
+    for row in wifi:
+        entry = wifi_series.setdefault(row["interface"], {"ts": [], "connected": [], "signal_dbm": [], "tx_bitrate": [], "tx_retries": [], "tx_failed": []})
+        entry["ts"].append(row["bucket_ts"])
+        entry["connected"].append(row["connected"])
+        entry["signal_dbm"].append(round(row["signal_dbm"], 1) if row["signal_dbm"] is not None else None)
+        entry["tx_bitrate"].append(round(row["tx_bitrate"], 1) if row["tx_bitrate"] is not None else None)
+        entry["tx_retries"].append(row["tx_retries"])
+        entry["tx_failed"].append(row["tx_failed"])
+    db.close()
+    return jsonify({"bucket_seconds": bucket, "since": since, "ping": series, "wifi": wifi_series})
+
+
+@app.get("/api/monitor/events")
+def monitor_events():
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    try:
+        limit = max(1, min(int(request.args.get("limit", 50)), 500))
+    except ValueError:
+        return jsonify(error="limit must be a number"), 400
+    rows = db.execute(
+        "SELECT id, started, ended, kind, failed_targets, snapshot FROM events ORDER BY started DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    db.close()
+    return jsonify([
+        {
+            "id": row["id"],
+            "started": row["started"],
+            "ended": row["ended"],
+            "duration_s": round(row["ended"] - row["started"], 1) if row["ended"] else None,
+            "kind": row["kind"],
+            "failed_targets": json.loads(row["failed_targets"] or "[]"),
+            "snapshot": row["snapshot"],
+        }
+        for row in rows
+    ])
+
+
+@app.get("/api/monitor/summary")
+def monitor_summary():
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    day_ago = time.time() - 86400
+    per_target = db.execute(
+        """
+        SELECT target, COUNT(*) AS total, SUM(ok) AS ok,
+               AVG(CASE WHEN ok = 1 THEN rtt_ms END) AS rtt_avg, MAX(ts) AS last_ts,
+               (SELECT ok FROM ping_samples p2 WHERE p2.target = p1.target ORDER BY ts DESC LIMIT 1) AS last_ok
+        FROM ping_samples p1 WHERE ts >= ? GROUP BY target
+        """,
+        (day_ago,),
+    ).fetchall()
+    events_24h = db.execute("SELECT COUNT(*) AS n FROM events WHERE started >= ?", (day_ago,)).fetchone()["n"]
+    open_event = db.execute("SELECT id, started, failed_targets FROM events WHERE ended IS NULL ORDER BY started DESC LIMIT 1").fetchone()
+    db.close()
+    return jsonify({
+        "targets": [
+            {
+                "target": row["target"],
+                "loss_pct_24h": round(100.0 * (row["total"] - row["ok"]) / row["total"], 2) if row["total"] else None,
+                "rtt_avg_ms": round(row["rtt_avg"], 2) if row["rtt_avg"] is not None else None,
+                "last_seen": row["last_ts"],
+                "up": bool(row["last_ok"]),
+            }
+            for row in per_target
+        ],
+        "events_24h": events_24h,
+        "open_event": dict(open_event) if open_event else None,
+    })
 
 
 if __name__ == "__main__":

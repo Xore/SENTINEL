@@ -17,7 +17,7 @@ check command -v tracepath
 check command -v iw
 check command -v ethtool
 check command -v python3
-check python3 -c 'import flask, waitress'
+venv_python=/opt/network-probe-venv/bin/python; [[ -x $venv_python ]] || venv_python=python3; check "$venv_python" -c 'import flask, waitress'
 check test -r /proc/net/dev
 check test -d /sys/class/net
 if command -v dumpcap >/dev/null 2>&1; then check dumpcap -D; fi

@@ -45,11 +45,44 @@ Packet retention, not the tools, usually determines storage: average traffic in 
 3. Patch Ubuntu, create a non-root administrator, enable Secure Boot if supported, and give the management NIC a static address. Do not configure an address, route, DNS, or gateway on the capture NIC.
 4. Copy this repository to the probe, run `sudo ./scripts/preflight.sh`, then `sudo ./scripts/install-lightweight.sh`. The first is read-only; the second shows the package plan and asks before installing.
 5. Follow [docs/02-install-lightweight.md](docs/02-install-lightweight.md) to select optional ntopng, Zeek, and Suricata layers.
-6. To install the local dashboard as a restricted service, review and run `sudo ./scripts/install-dashboard-service.sh --apply`, then validate with `./scripts/verify-probe.sh`.
+6. To install the local dashboard as a restricted service, copy the repository to a system path first (Ubuntu home directories are mode 750, so the service user cannot read `/home/<user>`): `sudo cp -r ~/analyseLaptop /opt/analyseLaptop && sudo chmod -R a+rX /opt/analyseLaptop`. Then review and run `sudo /opt/analyseLaptop/scripts/install-dashboard-service.sh --apply`, validate with `./scripts/verify-probe.sh`, and add the outage monitor with `sudo /opt/analyseLaptop/scripts/install-outage-monitor.sh --apply`.
 7. Configure the SPAN/TAP and validate packet visibility using [docs/03-capture-and-wifi.md](docs/03-capture-and-wifi.md).
 8. Enter known assets in `config/assets.csv`; it becomes the human-owned reference for results.
 9. Only after authorization, copy `config/targets.example.csv` to `config/targets.csv` and use `sudo ./scripts/ot-reachability.sh config/targets.csv` for narrowly scoped TCP checks.
 10. Use [docs/04-operations.md](docs/04-operations.md) for acceptance tests and routine operation.
+
+## Continuous outage monitor
+
+The probe's primary live instrument is the **outage monitor**
+(`monitor/outage_monitor.py`), built for intermittent failures such as
+"Wi-Fi stays associated but traffic drops for seconds" or "internal network
+dead for 1–2 minutes while 1.1.1.1 still answers":
+
+- One `ping -O` stream per (target, interface) pair, one sample per second.
+  Probing the same destinations via the Wi-Fi *and* wired NICs separates
+  radio problems from network problems.
+- Wi-Fi link telemetry every 5 s (signal, bitrate, tx retries/failures,
+  beacon loss) plus per-NIC drop/error counters.
+- Everything lands in SQLite (`/var/lib/network-probe/monitor.db`, 14-day
+  retention). Outage events open after 3 consecutive misses, close after
+  5 consecutive replies, and are classified on close (`wifi-only`,
+  `internal-only (internet still reachable)`, `total-outage`, …).
+- On event start, a 15 s broadcast/multicast capture on the wired interface
+  records the top-talking MAC addresses — a broadcast storm from one client
+  keeps flowing while unicast is dead, so the snapshot frequently names the
+  culprit.
+- Plots (loss, RTT, Wi-Fi signal, outage bands) and the event timeline live
+  at `http://127.0.0.1:8088/monitor`.
+
+Install after the dashboard service:
+
+```bash
+sudo ./scripts/install-outage-monitor.sh --apply
+```
+
+Then edit `/etc/network-probe/monitor-targets.csv` (gateway, internal
+servers, external references, per interface) and
+`sudo systemctl restart network-probe-monitor`.
 
 ## What this detects
 
@@ -75,6 +108,8 @@ It cannot see traffic that does not cross the monitored link, encrypted applicat
 - `scripts/pcap-summary.sh` — passive endpoint/protocol/broadcast summary
 - `config/` — example scope and asset inventory files (never store passwords here)
 - `dashboard/` — local web UI/API for guarded jobs and results; see [dashboard/README.md](dashboard/README.md)
+- `monitor/outage_monitor.py` — continuous per-path ping/Wi-Fi recorder with outage events
+- `scripts/install-outage-monitor.sh` — systemd service for the outage monitor
 
 For a standalone evidence capture, run:
 
