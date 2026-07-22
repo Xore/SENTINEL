@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Fieldline Network Probe</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header><div><p class="eyebrow">FIELDLINE / PASSIVE-FIRST</p><h1>Network Probe</h1></div><div id="clock" class="clock">—</div></header>
+  <nav><button data-view="overview" class="active">Overview</button><button data-view="health">Health</button><button data-view="endpoints">Endpoints</button><button data-view="captures">Captures</button><button data-view="wifi">Wi-Fi</button><button data-view="jobs">Activity</button></nav>
+  <main>
+    <section id="overview" class="view active">
+      <div class="metrics"><article><span>Probe</span><strong id="hostname">—</strong><small id="uptime">—</small></article><article><span>Load</span><strong id="load">—</strong><small>1 / 5 / 15 min</small></article><article><span>Capture disk</span><strong id="disk">—</strong><small id="diskDetail">—</small></article><article><span>Toolset</span><strong id="toolCount">—</strong><small>available locally</small></article></div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">LINK TELEMETRY</p><h2>Interfaces</h2></div><button onclick="refresh()">Refresh</button></div><div id="interfaces" class="table-wrap"></div></div>
+      <div class="panel"><p class="eyebrow">CAPABILITIES</p><h2>Local tools</h2><div id="tools" class="chips"></div></div>
+    </section>
+    <section id="health" class="view">
+      <div class="panel"><p class="eyebrow">PASSIVE DIAGNOSTICS</p><h2>Short Layer-2 health sample</h2><div class="form-row"><select id="healthIface"></select><input id="healthDuration" type="number" value="30" min="5" max="120" aria-label="Sample duration seconds"><button class="primary" onclick="startL2Health()">Analyze link</button></div><p class="hint">Reports traffic rate, broadcasts, multicast, ARP, STP, discovery, OT protocols, retransmissions, resets and NIC drops.</p></div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">SUPPORT BUNDLE</p><h2>System/network snapshot</h2></div><button onclick="job('/api/snapshot')">Collect snapshot</button></div><p class="hint">Records interfaces, routes, neighbors, DNS, time, driver counters, sockets and Wi-Fi state. The local result is hashed.</p></div>
+      <div class="panel"><p class="eyebrow">ROADMAP</p><h2>Prepared health profiles</h2><div class="check-grid"><div><strong>Path</strong><span>TCP, route, MTU, latency and loss</span></div><div><strong>Services</strong><span>DNS, NTP, TLS and HTTP</span></div><div><strong>Infrastructure</strong><span>SNMPv3 switch/AP counters</span></div><div><strong>OT</strong><span>OPC UA and validated S7 read-only profiles</span></div><div><strong>Baselines</strong><span>Time-aware anomaly thresholds</span></div><div><strong>Evidence</strong><span>Freeze, annotate, hash and report</span></div></div></div>
+    </section>
+    <section id="endpoints" class="view"><div class="panel"><div class="panel-head"><div><p class="eyebrow">APPROVED SCOPE</p><h2>Endpoint matrix</h2></div><small>TCP connect and route checks only</small></div><div id="targets" class="table-wrap"></div></div></section>
+    <section id="captures" class="view"><div class="panel"><p class="eyebrow">BOUNDED EVIDENCE</p><h2>Start PCAPNG ring capture</h2><div class="form-row"><select id="captureIface"></select><input id="captureSeconds" type="number" value="300" min="30" max="3600" aria-label="Seconds per file"><input id="captureFiles" type="number" value="12" min="1" max="96" aria-label="File count"><input id="captureSize" type="number" value="512" min="16" max="4096" aria-label="MiB per file"><button class="primary" onclick="startCapture()">Start capture</button></div><p class="hint">Seconds/file · number of files · MiB/file. Capture ends after the ring has written the configured count in this dashboard job.</p></div><div class="panel"><h2>Capture files</h2><div id="capturesList" class="table-wrap"></div></div></section>
+    <section id="wifi" class="view"><div class="panel"><p class="eyebrow">RADIO HEALTH</p><h2>Local Wi-Fi links</h2><p class="hint">Signal, bitrate, channel and association data from local adapters. Full RF health requires a dedicated monitor-mode adapter per observed channel.</p><pre id="wifiData">Loading…</pre></div><div class="panel"><h2>What to assess</h2><div class="check-grid"><div><strong>Coverage</strong><span>RSSI/SNR, channel width, PHY rate</span></div><div><strong>Airtime</strong><span>Channel utilization and retries</span></div><div><strong>RF design</strong><span>Co-channel overlap and band use</span></div><div><strong>Reliability</strong><span>Roaming, deauth/disassoc, loss</span></div><div><strong>Services</strong><span>DHCP, DNS and gateway latency</span></div><div><strong>Security</strong><span>Encryption, rogue/evil-twin clues</span></div></div></div></section>
+    <section id="jobs" class="view"><div class="panel"><div class="panel-head"><h2>Recent activity</h2><button onclick="loadJobs()">Refresh</button></div><div id="jobsList"></div></div></section>
+  </main>
+  <div id="toast" role="status"></div><script src="/static/app.js"></script>
+</body></html>

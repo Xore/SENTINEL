@@ -1,0 +1,7 @@
+# Authorized targets only. protocol must be s7-tcp or opcua-tcp.
+# name,address,protocol,port
+plc-test,192.0.2.10,s7-tcp,102
+opcua-test,192.0.2.20,opcua-tcp,4840
+switch-test,192.0.2.30,tcp,443
+access-point-test,192.0.2.40,tcp,443
+server-ssh-test,192.0.2.50,tcp,22

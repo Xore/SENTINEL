@@ -1,0 +1,2 @@
+# name,address,mac,vendor,role,site,segment,owner,criticality,notes
+# plc-line-1,192.0.2.10,00:00:00:00:00:00,Siemens,PLC,lab,cell-1,controls,high,Example only

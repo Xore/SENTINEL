@@ -1,0 +1,12 @@
+config/targets.csv
+*.pcap
+*.pcapng
+*.cap
+*.log
+.env
+secrets/
+captures/
+snapshots/
+__pycache__/
+*.pyc
+.venv/
