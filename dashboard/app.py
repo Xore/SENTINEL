@@ -334,6 +334,38 @@ def discovery():
     return jsonify(job_id=launch_job("lan-discovery", command, 180)), 202
 
 
+IDS_LOG = Path(os.environ.get("PROBE_IDS_LOG", "/var/log/suricata/eve.json"))
+
+
+def _ids_summary(limit: int) -> tuple[int, dict]:
+    """Run the read-only EVE reader and return (http_status, payload)."""
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "ids_reader.py"),
+               "--log", str(IDS_LOG), "--limit", str(limit)]
+    code, output = run(command, 20)
+    try:
+        return 200, json.loads(output)
+    except ValueError:
+        return 500, {"status": "error", "note": (output or "ids_reader produced no output")[:2000]}
+
+
+@app.get("/api/ids/status")
+def ids_status():
+    """Engine health only (installed / active / log freshness) - cheap poll."""
+    _, payload = _ids_summary(1)
+    payload.pop("alerts", None)
+    return jsonify(payload)
+
+
+@app.get("/api/ids/alerts")
+def ids_alerts():
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100)), 500))
+    except ValueError:
+        return jsonify(error="limit must be a number"), 400
+    _, payload = _ids_summary(limit)
+    return jsonify(payload)
+
+
 def monitor_db() -> sqlite3.Connection | None:
     if not MONITOR_DB.is_file():
         return None

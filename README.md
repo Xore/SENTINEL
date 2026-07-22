@@ -46,10 +46,11 @@ Packet retention, not the tools, usually determines storage: average traffic in 
 4. Copy this repository to the probe, run `sudo ./scripts/preflight.sh`, then `sudo ./scripts/install-lightweight.sh`. The first is read-only; the second shows the package plan and asks before installing.
 5. Follow [docs/02-install-lightweight.md](docs/02-install-lightweight.md) to select optional ntopng, Zeek, and Suricata layers.
 6. To install the local dashboard as a restricted service, copy the repository to a system path first (Ubuntu home directories are mode 750, so the service user cannot read `/home/<user>`): `sudo cp -r ~/analyseLaptop /opt/analyseLaptop && sudo chmod -R a+rX /opt/analyseLaptop`. Then review and run `sudo /opt/analyseLaptop/scripts/install-dashboard-service.sh --apply`, validate with `./scripts/verify-probe.sh`, and add the outage monitor with `sudo /opt/analyseLaptop/scripts/install-outage-monitor.sh --apply`.
-7. Configure the SPAN/TAP and validate packet visibility using [docs/03-capture-and-wifi.md](docs/03-capture-and-wifi.md).
-8. Enter known assets in `config/assets.csv`; it becomes the human-owned reference for results.
-9. Only after authorization, copy `config/targets.example.csv` to `config/targets.csv` and use `sudo ./scripts/ot-reachability.sh config/targets.csv` for narrowly scoped TCP checks.
-10. Use [docs/04-operations.md](docs/04-operations.md) for acceptance tests and routine operation.
+7. (Optional) Add passive attack detection: review and run `sudo /opt/analyseLaptop/scripts/install-ids.sh --apply [capture-interface]` to install Suricata (ET Open rules, AF_PACKET IDS mode). Alerts appear in the dashboard's Security tab. See "Attack detection (signature IDS)" below.
+8. Configure the SPAN/TAP and validate packet visibility using [docs/03-capture-and-wifi.md](docs/03-capture-and-wifi.md).
+9. Enter known assets in `config/assets.csv`; it becomes the human-owned reference for results.
+10. Only after authorization, copy `config/targets.example.csv` to `config/targets.csv` and use `sudo ./scripts/ot-reachability.sh config/targets.csv` for narrowly scoped TCP checks.
+11. Use [docs/04-operations.md](docs/04-operations.md) for acceptance tests and routine operation.
 
 ## Continuous outage monitor
 
@@ -153,9 +154,33 @@ the probe was built for:
 > radio is off, enable the wireless switch or the WLAN radio in BIOS/UEFI, then
 > join the network through the desktop GUI.
 
+### Attack detection (signature IDS)
+
+For the "detect attacks, not just issues" half of the brief, the probe runs a
+passive signature IDS:
+
+- **Security** tab — recent Suricata alerts (time, severity, signature,
+  category, source/destination) plus a per-severity and top-signature summary
+  and engine health. It is read-only: the dashboard tails Suricata's `eve.json`
+  through `monitor/ids_reader.py` and never starts, stops, or reconfigures the
+  engine.
+- Install it once on the probe with `sudo ./scripts/install-ids.sh --apply
+  [interface]`. This installs Suricata (Ubuntu repo, single binary — the
+  lightweight choice over Zeek), pulls the Emerging Threats **Open** ruleset,
+  and enables it as a systemd service in **AF_PACKET IDS mode — passive only,
+  never inline/IPS**, so it can flag but never block or alter traffic.
+- Point it at a no-IP **capture NIC on a SPAN/TAP** when you have one; with only
+  the management interface it still sees traffic to/from the probe plus
+  broadcast/multicast (enough to catch scans against the probe, ARP anomalies
+  and broadcast-storm signatures). Re-run the installer with the capture
+  interface name to switch.
+- Alerts are exposed to the unprivileged web account by dropping Suricata's
+  post-capture group to `probe-dashboard` (group-readable `eve.json`); the web
+  process is never granted sudo.
+
 ## What this detects
 
-- Optional Suricata signature alerts and Zeek notices/weird events
+- Suricata signature alerts (installed via `scripts/install-ids.sh`, surfaced in the Security tab)
 - New or unexpected devices, services, DHCP/DNS behavior, TLS certificates, software, and communication pairs
 - Traffic volume, top talkers, failed connections, retransmission clues, broadcast/multicast behavior, and time-protocol activity
 - Passive S7comm, S7comm Plus, PROFINET, and OPC UA operations visible at the monitored point
@@ -182,6 +207,8 @@ It cannot see traffic that does not cross the monitored link, encrypted applicat
 - `monitor/traffic_gen.py` — bounded, allow-listed TCP/UDP traffic generator
 - `monitor/discovery.py` — broad-view LAN host inventory (IP/MAC/vendor/name), discovery-only
 - `monitor/wifi_survey.py` — Wi-Fi AP/channel survey (nmcli/iw), with per-channel occupancy
+- `monitor/ids_reader.py` — read-only Suricata `eve.json` alert summariser for the Security tab
+- `scripts/install-ids.sh` — installs Suricata as a passive signature IDS (ET Open rules, AF_PACKET, systemd)
 - `scripts/wifi-monitor-capture.sh` — operator sudo tool: monitor-mode 802.11 mgmt-frame capture and summary
 - `scripts/install-outage-monitor.sh` — systemd service for the outage monitor
 - `config/monitor-{targets,services,ports}.example.csv`, `config/traffic-gen-allow.example.csv` — seed configs for the monitor and generator

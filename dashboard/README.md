@@ -64,6 +64,7 @@ Grant the account write permission only to the chosen capture directory. Do not 
 - Traffic generator: bounded, allow-listed TCP/UDP send with optional expected-response check
 - Discovery: broad-view LAN host inventory (IP/MAC/vendor/name) of a connected subnet, discovery-only
 - Wi-Fi survey: AP/channel/band/security list plus per-channel occupancy (needs the radio enabled)
+- Security (IDS): recent Suricata signature alerts and engine status, read-only from `eve.json` (needs `scripts/install-ids.sh`)
 
 Deeper 802.11 management-frame capture is an operator sudo tool
 (`scripts/wifi-monitor-capture.sh`), not a web job — monitor mode needs

@@ -7,7 +7,7 @@
 </head>
 <body>
   <header><div><p class="eyebrow">FIELDLINE / PASSIVE-FIRST</p><h1>Network Probe</h1></div><div id="clock" class="clock">—</div></header>
-  <nav><button data-view="overview" class="active">Overview</button><button data-view="discovery">Discovery</button><button data-view="health">Health</button><button data-view="endpoints">Endpoints</button><button data-view="captures">Captures</button><button data-view="wifi">Wi-Fi</button><button data-view="jobs">Activity</button><button onclick="location.href='/monitor'">Monitor</button></nav>
+  <nav><button data-view="overview" class="active">Overview</button><button data-view="discovery">Discovery</button><button data-view="health">Health</button><button data-view="endpoints">Endpoints</button><button data-view="captures">Captures</button><button data-view="wifi">Wi-Fi</button><button data-view="security">Security</button><button data-view="jobs">Activity</button><button onclick="location.href='/monitor'">Monitor</button></nav>
   <main>
     <section id="overview" class="view active">
       <div class="metrics"><article><span>Probe</span><strong id="hostname">—</strong><small id="uptime">—</small></article><article><span>Load</span><strong id="load">—</strong><small>1 / 5 / 15 min</small></article><article><span>Capture disk</span><strong id="disk">—</strong><small id="diskDetail">—</small></article><article><span>Toolset</span><strong id="toolCount">—</strong><small>available locally</small></article></div>
@@ -36,6 +36,14 @@
         <div id="surveyResult" class="table-wrap"></div>
       </div>
       <div class="panel"><p class="eyebrow">RADIO HEALTH</p><h2>Local Wi-Fi links</h2><p class="hint">Signal, bitrate, channel and association data from local adapters. Deeper 802.11 management-frame analysis: run <code>sudo scripts/wifi-monitor-capture.sh &lt;iface&gt; &lt;channels&gt;</code> on the probe.</p><pre id="wifiData">Loading…</pre></div><div class="panel"><h2>What to assess</h2><div class="check-grid"><div><strong>Coverage</strong><span>RSSI/SNR, channel width, PHY rate</span></div><div><strong>Airtime</strong><span>Channel utilization and retries</span></div><div><strong>RF design</strong><span>Co-channel overlap and band use</span></div><div><strong>Reliability</strong><span>Roaming, deauth/disassoc, loss</span></div><div><strong>Services</strong><span>DHCP, DNS and gateway latency</span></div><div><strong>Security</strong><span>Encryption, rogue/evil-twin clues</span></div></div></div></section>
+    <section id="security" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">INTRUSION DETECTION</p><h2>Signature alerts (Suricata)</h2></div><button class="primary" onclick="loadIds()">Refresh</button></div>
+        <p class="hint">Passive signature-based IDS on the monitored interface (ET Open ruleset). Detection only — Suricata never blocks or alters traffic. If it is not installed, run <code>sudo scripts/install-ids.sh --apply</code> on the probe.</p>
+        <div id="idsStatus" class="hint"></div>
+        <div id="idsSummary" class="chips"></div>
+        <div id="idsResult" class="table-wrap"></div>
+      </div>
+    </section>
     <section id="jobs" class="view"><div class="panel"><div class="panel-head"><h2>Recent activity</h2><button onclick="loadJobs()">Refresh</button></div><div id="jobsList"></div></div></section>
   </main>
   <div id="toast" role="status"></div><script src="/static/app.js"></script>
