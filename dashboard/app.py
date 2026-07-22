@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -775,10 +776,68 @@ def _lldp_first(node):
 
 # --- Custom-target actions (operator-entered, not from the allow-list) -----
 
+def _custom_services() -> list[dict]:
+    """Operator-defined named services from the settings store, validated."""
+    out: list[dict] = []
+    for entry in settings_store.load().get("custom_services", []):
+        name = str(entry.get("name", "")).strip()
+        proto = str(entry.get("proto", "tcp")).strip()
+        try:
+            port = int(entry.get("port"))
+        except (TypeError, ValueError):
+            continue
+        if NAME_RE.fullmatch(name) and proto in {"tcp", "udp"} and 0 < port < 65536:
+            out.append({"name": name, "port": port, "proto": proto, "category": "custom"})
+    return out
+
+
 @app.get("/api/services/catalog")
 def services_catalog():
-    """Known IT/OT services so the UI can offer 'pick a service' dropdowns."""
-    return jsonify({"services": services.KNOWN_SERVICES, "protocols": sorted(services.VALID_PROTOCOLS)})
+    """Known IT/OT services plus operator-defined custom ones so the UI can
+    offer 'pick a service' dropdowns."""
+    custom = _custom_services()
+    protocols = sorted(services.VALID_PROTOCOLS | {s["name"] for s in custom})
+    return jsonify({"services": services.KNOWN_SERVICES + custom,
+                    "custom": custom, "protocols": protocols})
+
+
+@app.post("/api/services/custom/add")
+def services_custom_add():
+    """Save a named custom service (name + port + proto) for the catalogue."""
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name", "")).strip()
+    proto = str(payload.get("proto", "tcp")).strip()
+    try:
+        port = int(payload.get("port"))
+    except (TypeError, ValueError):
+        return jsonify(error="a numeric port is required"), 400
+    if not NAME_RE.fullmatch(name):
+        return jsonify(error="name must be letters/digits/._:- (no spaces)"), 400
+    if proto not in {"tcp", "udp"} or not (0 < port < 65536):
+        return jsonify(error="proto must be tcp/udp and port 1-65535"), 400
+    if name in services.BY_NAME:
+        return jsonify(error=f"'{name}' is already a built-in service name"), 400
+    current = settings_store.load()
+    custom = current.setdefault("custom_services", [])
+    if any(str(c.get("name", "")).lower() == name.lower() for c in custom):
+        return jsonify(status="exists", name=name), 200
+    custom.append({"name": name, "port": port, "proto": proto})
+    settings_store.save(current)
+    return jsonify(status="added", name=name, count=len(custom)), 201
+
+
+@app.post("/api/services/custom/remove")
+def services_custom_remove():
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name", "")).strip()
+    current = settings_store.load()
+    custom = current.get("custom_services", [])
+    kept = [c for c in custom if str(c.get("name", "")).lower() != name.lower()]
+    if len(kept) == len(custom):
+        return jsonify(error="not a custom service"), 404
+    current["custom_services"] = kept
+    settings_store.save(current)
+    return jsonify(status="removed", count=len(kept))
 
 
 @app.post("/api/actions/reachability")
@@ -798,6 +857,33 @@ def actions_reachability():
     command = ["nmap", "-n", "-Pn", "-sT", "-T2", "--max-retries", "1",
                "--host-timeout", "10s", "-p", str(port), "--", ip]
     return jsonify(job_id=launch_job("reachability", command, 20, target=ip)), 202
+
+
+@app.post("/api/actions/service-health")
+def actions_service_health():
+    """Read-only DNS/clock/TCP/TLS/HTTP profile for one host+port. Safe active:
+    one resolver query, a local clock read, one TCP connect, and a TLS handshake
+    plus a single HTTP GET only when the port is a standard web/TLS port."""
+    payload = request.get_json(silent=True) or {}
+    host = str(payload.get("host", "")).strip()
+    if not (host and NAME_RE.fullmatch(host)):
+        return jsonify(error="a valid host (IP or name) is required"), 400
+    try:
+        port = int(payload.get("port", 443))
+    except (TypeError, ValueError):
+        return jsonify(error="a numeric port is required"), 400
+    if not 0 < port < 65536:
+        return jsonify(error="port out of range"), 400
+    name = str(payload.get("name", "")).strip()
+    if name and not NAME_RE.fullmatch(name):
+        return jsonify(error="invalid name"), 400
+    command = [os.environ.get("PROBE_PYTHON", sys.executable),
+               str(ROOT / "monitor" / "service_check.py"),
+               "--host", host, "--port", str(port)]
+    if name:
+        command += ["--name", name]
+    target = valid_ip(host) or host
+    return jsonify(job_id=launch_job("service-health", command, 45, target=target)), 202
 
 
 # --- Persistent inventory and scan history ---------------------------------
@@ -824,6 +910,79 @@ def scans_list():
     except ValueError:
         return jsonify(error="limit must be a number"), 400
     return jsonify(history.get_scans(limit, target))
+
+
+def _reverse_dns(ip: str) -> str:
+    """Best-effort PTR lookup, bounded so a slow resolver can't hang a request."""
+    old = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(2.0)
+        return socket.gethostbyaddr(ip)[0]
+    except (OSError, socket.herror, socket.gaierror):
+        return ""
+    finally:
+        socket.setdefaulttimeout(old)
+
+
+def _ip_monitor(ip: str) -> dict | None:
+    """Outage-monitor ping stats for this IP over 24h, if it's a monitored target."""
+    db = monitor_db()
+    if db is None:
+        return None
+    try:
+        day_ago = time.time() - 86400
+        row = db.execute(
+            "SELECT COUNT(*) total, SUM(ok) ok, AVG(CASE WHEN ok=1 THEN rtt_ms END) rtt, "
+            "MAX(ts) last_ts, (SELECT ok FROM ping_samples p2 WHERE p2.target=? ORDER BY ts DESC LIMIT 1) last_ok "
+            "FROM ping_samples WHERE target=? AND ts>=?", (ip, ip, day_ago)).fetchone()
+    except sqlite3.Error:
+        row = None
+    finally:
+        db.close()
+    if not row or not row["total"]:
+        return None
+    return {"total": row["total"], "loss_pct_24h": round(100.0 * (row["total"] - row["ok"]) / row["total"], 2),
+            "rtt_avg_ms": round(row["rtt"], 2) if row["rtt"] is not None else None,
+            "last_seen": row["last_ts"], "up": bool(row["last_ok"])}
+
+
+@app.get("/api/ip/<ip>")
+def ip_dossier(ip: str):
+    """Everything the probe knows about one IP, aggregated: inventory record and
+    scan history, reverse-DNS, whether it's one of our own interfaces, approved
+    scope / traffic-allow membership, LLDP neighbour match, outage-monitor ping
+    stats, and every Suricata alert with this IP as source or destination.
+    Read-only - it aggregates, it does not probe (trace/SNMP stay explicit)."""
+    ip = valid_ip(ip)
+    if not ip:
+        return jsonify(error="a valid IP address is required"), 400
+
+    host = history.get_host(ip)  # includes recent scans
+    local_ifaces = [i["name"] for i in interfaces()
+                    if re.search(rf"(^|[\s/]){re.escape(ip)}(/|$|\s)", i.get("addresses", ""))]
+    scope = [t for t in targets() if t["address"] == ip]
+    allow = [e for e in _traffic_allow_entries() if e["host"] == ip]
+    lldp = [n for n in history.get_lldp_state(200) if n.get("mgmt_ip") == ip]
+
+    # IDS alerts involving this IP (either direction), most recent first.
+    _, ids = _ids_summary(500)
+    alerts = ids.get("alerts", []) if isinstance(ids, dict) else []
+    as_src = [a for a in alerts if a.get("src") == ip]
+    as_dst = [a for a in alerts if a.get("dst") == ip]
+    involved = [a for a in alerts if a.get("src") == ip or a.get("dst") == ip][:40]
+
+    return jsonify({
+        "ip": ip,
+        "reverse_dns": _reverse_dns(ip),
+        "is_local": bool(local_ifaces),
+        "local_interfaces": local_ifaces,
+        "host": host,
+        "scope": scope,
+        "traffic_allow": allow,
+        "lldp": lldp,
+        "monitor": _ip_monitor(ip),
+        "ids": {"as_src": len(as_src), "as_dst": len(as_dst), "alerts": involved},
+    })
 
 
 # --- Staleness / freshness and anomaly aggregation -------------------------
@@ -966,6 +1125,21 @@ def jobs_history():
     except ValueError:
         return jsonify(error="limit must be a number"), 400
     return jsonify(history.get_jobs(limit))
+
+
+@app.get("/api/jobs/<job_id>")
+def job_detail(job_id: str):
+    """One job's full record (live in-memory copy first, else the persisted
+    one). Lets the Activity view re-open any past action's result - the
+    'look up results after leaving the page' store."""
+    with jobs_lock:
+        live = dict(jobs[job_id]) if job_id in jobs else None
+    if live is not None:
+        return jsonify(live)
+    for row in history.get_jobs(500):
+        if row.get("id") == job_id:
+            return jsonify(row)
+    return jsonify(error="job not found"), 404
 
 
 # --- IDS alert drill-down --------------------------------------------------

@@ -61,6 +61,57 @@ PY
   install -d -o root -g "$read_group" -m 0750 /var/log/suricata
 fi
 
+# Enable extended HTTP logging in the EVE http record so the dashboard alert
+# drill-down can show the domain/subdomain, path, method, status, every
+# request/response header AND the request/response body text (e.g. POSTed form
+# fields, JSON payloads). This edits only the eve-log `- http:` output block; it
+# does not change detection.
+#
+# Scope of the body text: Suricata only reassembles/buffers an HTTP body when a
+# rule inspects it, so `http-body`/`http-body-printable` surface the body on
+# ALERTED transactions - which is exactly the alert-drill-down case the operator
+# cares about - not on every passive plain-HTTP event (that would be a firehose
+# and defeats the point of a light passive probe). Bodies come from Suricata's
+# own reassembly (bounded by request-body-limit/response-body-limit, default
+# 100kb) as printable text - no on-disk file extraction/filestore, so the probe
+# stays passive and light. Body text is only ever available for cleartext HTTP;
+# HTTPS stays opaque (only the TLS handshake/SNI is visible).
+python3 - <<'PY'
+import re
+path = "/etc/suricata/suricata.yaml"
+try:
+    text = open(path).read()
+except OSError:
+    raise SystemExit(0)
+# Replace the eve `- http:` list entry (and its current indented children) with
+# an extended block that also dumps all request+response headers and bodies.
+pattern = re.compile(r"(\n([ \t]*)- http:\n)(?:\2[ \t]+.*\n)*")
+def repl(m):
+    ind = m.group(2)
+    child = ind + "    "
+    return (f"\n{ind}- http:\n"
+            f"{child}extended: yes\n"
+            f"{child}dump-all-headers: both\n"
+            f"{child}http-body: yes\n"
+            f"{child}http-body-printable: yes\n")
+new, n = pattern.subn(repl, text, count=1)
+if n:
+    text = new
+    print("Extended HTTP EVE logging enabled (all headers + printable bodies).")
+else:
+    print("Could not find an eve `- http:` block to extend; leaving config as-is.")
+
+# Make sure the app-layer actually reassembles bodies so they can be logged. The
+# stock config ships these enabled with 100kb limits, but normalise them in case
+# a prior edit disabled request/response-body inspection.
+for key in ("request-body-limit", "response-body-limit"):
+    if re.search(rf"^\s*#?\s*{key}:", text, flags=re.MULTILINE) is None:
+        continue
+    text = re.sub(rf"^(\s*)#?\s*{key}:.*$", rf"\g<1>{key}: 100kb",
+                  text, count=1, flags=re.MULTILINE)
+open(path, "w").write(text)
+PY
+
 # Pull the Emerging Threats Open ruleset.
 echo "Updating rules (ET Open)..."
 suricata-update --no-test 2>&1 | tail -5 || echo "suricata-update reported issues; continuing with any existing rules."

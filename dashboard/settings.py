@@ -39,6 +39,10 @@ DEFAULTS: dict = {
     "interface_overrides": {},
     # Dashboard-added approved endpoints, merged with the read-only targets.csv.
     "approved_scope": [],
+    # Operator-defined custom services (named ports), merged into the known
+    # IT/OT service catalogue for the Actions pickers. Each entry:
+    # {"name","port","proto","category":"custom"}.
+    "custom_services": [],
     # Dashboard-added traffic-generator destinations, merged with the read-only
     # /etc allow-list. Each entry: {"host","port","proto"}. Sending payloads is
     # an active action, so it stays allow-list-gated - but the list is now

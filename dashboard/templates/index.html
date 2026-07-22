@@ -18,7 +18,7 @@
     <section id="actions" class="view">
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">CUSTOM TARGET</p><h2>Run an action against any host</h2></div></div>
         <div class="form-row"><input id="actIp" placeholder="target IP (e.g. 10.0.255.1)" aria-label="Target IP"><select id="actService" onchange="actServicePick()" aria-label="Known service"><option value="">— known service (optional) —</option></select><input id="actPort" type="number" placeholder="port" style="max-width:7rem" aria-label="Port"></div>
-        <div class="form-row"><button class="primary" onclick="actReachability()">TCP reachability</button><button onclick="actTrace()">Trace route</button><button onclick="actSnmp()">SNMP query</button><button onclick="actAddScope()">Add to approved scope</button><button onclick="actAddMonitor()">Add to traffic allow-list</button></div>
+        <div class="form-row"><button class="primary" onclick="actReachability()">TCP reachability</button><button onclick="actServiceHealth()">Service health</button><button onclick="actTrace()">Trace route</button><button onclick="actSnmp()">SNMP query</button><button onclick="actAddScope()">Add to approved scope</button><button onclick="actAddMonitor()">Add to traffic allow-list</button></div>
         <p class="hint">TCP connect only (no UDP scan, no version detection, no scripts) — read-only. OT/ICS ports are marked in the picker; only touch them inside a change window. Every action is logged to Assets → history.</p>
         <div id="actStatus" class="hint"></div>
         <div id="actResult" class="table-wrap"></div>
@@ -65,7 +65,7 @@
       <div class="panel"><p class="eyebrow">RADIO HEALTH</p><h2>Local Wi-Fi links</h2><p class="hint">Signal, bitrate, channel and association data from local adapters. Deeper 802.11 management-frame analysis: run <code>sudo scripts/wifi-monitor-capture.sh &lt;iface&gt; &lt;channels&gt;</code> on the probe.</p><pre id="wifiData">Loading…</pre></div><div class="panel"><h2>What to assess</h2><div class="check-grid"><div><strong>Coverage</strong><span>RSSI/SNR, channel width, PHY rate</span></div><div><strong>Airtime</strong><span>Channel utilization and retries</span></div><div><strong>RF design</strong><span>Co-channel overlap and band use</span></div><div><strong>Reliability</strong><span>Roaming, deauth/disassoc, loss</span></div><div><strong>Services</strong><span>DHCP, DNS and gateway latency</span></div><div><strong>Security</strong><span>Encryption, rogue/evil-twin clues</span></div></div></div></section>
     <section id="security" class="view">
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">INTRUSION DETECTION</p><h2>Signature alerts (Suricata)</h2></div><button class="primary" onclick="loadIds()">Refresh</button></div>
-        <p class="hint">Passive signature-based IDS on the monitored interface (ET Open ruleset). Detection only — Suricata never blocks or alters traffic. If it is not installed, run <code>sudo scripts/install-ids.sh --apply</code> on the probe. Click any IP to trace it.</p>
+        <p class="hint">Passive signature-based IDS on the monitored interface (ET Open ruleset). Detection only — Suricata never blocks or alters traffic. If it is not installed, run <code>sudo scripts/install-ids.sh --apply</code> on the probe. Click any IP for its full dossier; click <strong>Details</strong> on an alert for every correlated event (domain, path, headers, DNS, TLS).</p>
         <div class="form-row"><select id="idsSev" onchange="renderIds()"><option value="">any severity</option><option value="critical">critical</option><option value="major">major</option><option value="minor">minor</option><option value="info">info</option></select><input id="idsQ" placeholder="filter signature/category" oninput="renderIds()" aria-label="Filter text"><input id="idsSrc" placeholder="source IP" oninput="renderIds()" aria-label="Source IP" style="max-width:11rem"><input id="idsDst" placeholder="dest IP" oninput="renderIds()" aria-label="Destination IP" style="max-width:11rem"><span id="idsCount" class="hint"></span></div>
         <div id="idsStatus" class="hint"></div>
         <div id="idsSummary" class="chips"></div>
@@ -100,6 +100,11 @@
           <div class="form-row"><select id="v3PrivProto"><option>AES</option><option>DES</option><option>AES-256</option></select><input id="v3PrivKey" type="password" placeholder="privacy key" aria-label="v3 privacy key"><span id="v3PrivKeySet" class="hint"></span></div>
         </div>
         <div class="form-row"><button class="primary" onclick="saveSnmp()">Save SNMP settings</button><span id="snmpSaveStatus" class="hint"></span></div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">SERVICE CATALOG</p><h2>Custom services</h2></div><button onclick="loadCustomServices()">Refresh</button></div>
+        <p class="hint">Save your own named ports (e.g. <code>plc-line3</code> · 2404/tcp). Saved services appear in the Actions “known service” picker under <strong>Custom</strong> and persist across restarts. Reference labels only — they never change how a probe runs.</p>
+        <div class="form-row"><input id="csName" placeholder="name (e.g. plc-line3)" aria-label="Custom service name"><input id="csPort" type="number" placeholder="port" style="max-width:7rem" aria-label="Custom service port"><select id="csProto" aria-label="Custom service protocol"><option>tcp</option><option>udp</option></select><button class="primary" onclick="addCustomService()">Save service</button></div>
+        <div id="customSvcList" class="table-wrap"></div>
       </div>
       <div class="panel"><p class="eyebrow">ACCESS</p><h2>Dashboard token</h2><p class="hint">The access token rotates on every dashboard restart, so a restart signs everyone out. Read the current token on the probe with <code>sudo cat /etc/network-probe/dashboard-token</code>.</p></div>
     </section>

@@ -151,16 +151,30 @@ def main(argv: list[str] | None = None) -> int:
 
     backend = "nmcli"
     aps = survey_nmcli(args.iface, args.rescan)
-    if aps is None:
-        backend = "iw"
-        aps, error = survey_iw(args.iface)
-        if aps is None:
-            print(json.dumps({"error": error}))
+    iw_error = ""
+    if not aps:
+        # nmcli gave us nothing usable. Two cases land here: the command failed
+        # (aps is None), or it succeeded but its scan cache is empty (aps == [])
+        # because NetworkManager has the radio disabled. In BOTH cases a direct
+        # `iw` scan can still see APs - it talks to the phy and bypasses NM's
+        # managed/rfkill-aggregated path - so always try it before giving up.
+        iw_aps, iw_error = survey_iw(args.iface)
+        if iw_aps:
+            aps, backend = iw_aps, "iw"
+        elif aps is None:
+            # Neither backend produced anything and nmcli itself could not run.
+            print(json.dumps({"error": iw_error}))
             return 2
+        else:
+            aps = []  # keep the empty list; the note below explains why
 
     note = ""
     if not aps and not radio_enabled():
-        note = "Wi-Fi radio is off/blocked - enable the wireless switch or BIOS radio, then rescan."
+        note = ("Wi-Fi radio is off/blocked - NetworkManager reports the radio "
+                "disabled. If this is a Dell platform rfkill HARD block, software "
+                "cannot clear it: use the physical wireless switch / Fn key or "
+                "enable the WLAN radio in BIOS, then rescan. "
+                + (f"(iw fallback: {iw_error})" if iw_error else "")).strip()
 
     print(json.dumps({
         "interface": args.iface, "backend": backend, "ap_count": len(aps),
