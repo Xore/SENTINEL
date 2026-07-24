@@ -46,6 +46,7 @@
           <li class="nav-item"><button data-view="health" class="nav-link" title="Link-health samples and diagnostic profiles (path / services / infra / baseline)"><i class="nav-icon fas fa-heart-pulse"></i><p>Health</p></button></li>
           <li class="nav-item"><button data-view="captures" class="nav-link" title="Start a bounded PCAP ring capture for evidence"><i class="nav-icon fas fa-file-arrow-down"></i><p>Captures</p></button></li>
           <li class="nav-header">SYSTEM</li>
+          <li class="nav-item"><button data-view="collectors" class="nav-link" title="Remote collector nodes pushing data to this aggregator — status, versions and updates"><i class="nav-icon fas fa-diagram-project"></i><p>Collectors</p></button></li>
           <li class="nav-item"><button data-view="jobs" class="nav-link" title="Log of recent jobs and their results"><i class="nav-icon fas fa-clock-rotate-left"></i><p>Activity</p></button></li>
           <li class="nav-item"><button data-view="settings" class="nav-link" title="Interfaces, SNMP credentials, custom services and the outage monitor"><i class="nav-icon fas fa-gear"></i><p>Settings</p></button></li>
         </ul>
@@ -245,6 +246,24 @@
         <div id="mcErrors" class="hint"></div>
       </div>
       <div class="panel"><p class="eyebrow">ACCESS</p><h2>Dashboard token</h2><p class="hint">The access token rotates on every dashboard restart, so a restart signs everyone out. Read the current token on the probe with <code>sudo cat /etc/network-probe/dashboard-token</code>.</p></div>
+    </section>
+    <section id="collectors" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">MULTI-NODE</p><h2>This node</h2></div><button onclick="loadCollectors()">Refresh</button></div>
+        <p class="hint">A <strong>standalone</strong> node runs the full dashboard and can also aggregate data pushed by remote <strong>collector</strong> nodes. Ingest from external collectors is off until you enable it below — and even then only enrolled, non-revoked keys are accepted.</p>
+        <div class="form-row">
+          <label class="inline">Role
+            <select id="mnRole" onchange="saveMultinode()"><option value="standalone">standalone (aggregator)</option><option value="collector">collector (push-only)</option></select>
+          </label>
+          <label class="inline"><input type="checkbox" id="mnAccept" onchange="saveMultinode()"> accept data from external collectors</label>
+          <span id="mnStatus" class="hint"></span>
+        </div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">FLEET</p><h2>Enrolled collectors</h2></div><button class="primary" onclick="enrollCollector()">+ Enroll collector</button></div>
+        <p class="hint">Each collector gets its own ingest key, shown once at enrollment and stored only as a hash. A collector is <strong>UP</strong> while it keeps pinging (every few seconds); it flips to <strong>DOWN</strong> when pings stop. When a collector runs an older agent than the release this node holds, an <strong>Update</strong> button appears — click it and the collector self-updates on its next ping.</p>
+        <div id="collectorsRelease" class="chips"></div>
+        <div id="collectorsStatus" class="hint"></div>
+        <div id="collectorsList" class="table-wrap"></div>
+      </div>
     </section>
     <section id="jobs" class="view"><div class="panel"><div class="panel-head"><h2>Recent activity</h2><button onclick="loadJobs()">Refresh</button></div><div id="jobsList"></div></div></section>
     <div id="ipTrace" class="ip-trace" style="display:none"><div class="panel-head"><h2 id="ipTraceTitle">Trace</h2><button onclick="document.querySelector('#ipTrace').style.display='none'">Close</button></div><pre id="ipTraceOut">…</pre></div>

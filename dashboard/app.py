@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -113,7 +115,9 @@ def auth_token() -> str:
 @app.before_request
 def require_token():
     token = auth_token()
-    if not token or request.path == "/healthz":
+    # Collector ingest authenticates with a per-collector key (see _require_ingest),
+    # not the rotating dashboard token, so it is exempt from this gate.
+    if not token or request.path == "/healthz" or request.path.startswith("/api/ingest/"):
         return None
     supplied = request.authorization
     if supplied and supplied.password == token:
@@ -2086,6 +2090,550 @@ def monitor_topology():
         "wan_gateways": sorted(wan_gateways),
         "paths": paths,
         "updated": max((row["updated"] for row in state), default=None),
+    })
+
+
+# --- Multi-collector: enrollment, ingest, scoped registry -------------------
+COLLECTOR_DIST = Path(os.environ.get("PROBE_COLLECTOR_DIST", ROOT / "collector" / "dist")).resolve()
+
+
+def _multinode_cfg() -> dict:
+    return settings_store.load().get("multinode", {}) or {}
+
+
+def _collector_release() -> dict:
+    """The collector binaries this aggregator can hand out, from the build
+    manifest in collector/dist/. Returns {version, files:{'os/arch': filename}}.
+    Empty version means no release is available to push."""
+    manifest = COLLECTOR_DIST / "manifest.json"
+    try:
+        data = json.loads(manifest.read_text())
+        files = data.get("files") if isinstance(data.get("files"), dict) else {}
+        return {"version": str(data.get("version") or ""), "files": files}
+    except (OSError, ValueError):
+        return {"version": "", "files": {}}
+
+
+def _release_sha256(path: Path) -> str:
+    """SHA-256 of a release binary, so the update instruction can pin exactly
+    which bytes the collector must install."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _sign_update(secret: str, version: str, os_arch: str, sha256hex: str) -> str:
+    """HMAC-SHA256 over the canonical update message, keyed by the collector's own
+    signing secret. The exact same message is reconstructed and verified agent-side
+    (see collector selfUpdate), so an on-path attacker who cannot produce this MAC
+    cannot make the agent swap its binary - even over plain HTTP or with TLS
+    verification off. Message layout MUST stay byte-identical on both ends."""
+    msg = f"{version}\n{os_arch}\n{sha256hex}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def _release_file_for(os_name: str, arch: str) -> Path | None:
+    """Resolve (and sandbox) the binary path for one os/arch inside the dist dir."""
+    rel = _collector_release().get("files", {}).get(f"{os_name}/{arch}")
+    if not rel:
+        return None
+    path = (COLLECTOR_DIST / rel).resolve()
+    # Never serve anything outside the dist dir, whatever the manifest claims.
+    if COLLECTOR_DIST not in path.parents or not path.is_file():
+        return None
+    return path
+
+
+def _require_ingest() -> tuple[str | None, object]:
+    """Authenticate a pushing collector. Ingest is allowed only when this node's
+    accept-external-collectors toggle is on AND the presented key matches an
+    enrolled, non-revoked collector. The key travels in the X-Ingest-Key header
+    (or HTTP Basic password). Returns (collector_id, None) on success, else
+    (None, error_response)."""
+    if not _multinode_cfg().get("accept_external_collectors"):
+        return None, (jsonify(error="this node is not accepting external collectors"), 403)
+    key = request.headers.get("X-Ingest-Key", "")
+    if not key and request.authorization:
+        key = request.authorization.password or ""
+    collector_id = history.authenticate_collector(key)
+    if not collector_id:
+        return None, (jsonify(error="invalid or revoked collector key"), 401)
+    return collector_id, None
+
+
+@app.post("/api/ingest/heartbeat")
+def ingest_heartbeat():
+    collector_id, err = _require_ingest()
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    reported_version = str(body.get("version", ""))[:80]
+    meta = body.get("meta") if isinstance(body.get("meta"), dict) else {}
+    history.touch_collector(
+        collector_id,
+        hostname=str(body.get("hostname", ""))[:200],
+        node_ip=str(body.get("node_ip", ""))[:200],
+        version=reported_version,
+        meta=meta,
+        status=body.get("status") if isinstance(body.get("status"), dict) else {})
+
+    resp = {"ok": True, "collector_id": collector_id}
+    release = _collector_release()
+    resp["latest_version"] = release["version"]
+    # If an operator asked this collector to update and it is genuinely behind,
+    # tell it where to fetch the new binary. Once it reports the new version the
+    # request is auto-cleared so it does not loop.
+    if release["version"] and reported_version == release["version"]:
+        history.request_collector_update(collector_id, False)
+    elif release["version"] and history.collector_update_pending(collector_id):
+        # Sign the instruction so the agent can prove it came from us and pins the
+        # exact bytes to install. We sign for the agent's OWN os/arch (from its
+        # heartbeat) - if we hold no matching binary, or no signing secret, we
+        # simply do not offer an update rather than send an unverifiable one.
+        os_name = re.sub(r"[^a-z0-9]", "", str(meta.get("os", "")).lower())[:16]
+        arch = re.sub(r"[^a-z0-9]", "", str(meta.get("arch", "")).lower())[:16]
+        bin_path = _release_file_for(os_name, arch)
+        secret = history.get_collector_update_secret(collector_id)
+        if bin_path and secret:
+            sha256hex = _release_sha256(bin_path)
+            os_arch = f"{os_name}/{arch}"
+            resp["update"] = {
+                "version": release["version"],
+                "download": "/api/ingest/binary",  # collector appends ?os=&arch=
+                "os": os_name, "arch": arch,
+                "sha256": sha256hex,
+                "sig": _sign_update(secret, release["version"], os_arch, sha256hex),
+            }
+    return jsonify(resp)
+
+
+@app.get("/api/ingest/binary")
+def ingest_binary():
+    """Serve a collector binary to an authenticated collector for self-update.
+    Gated by the same ingest auth as heartbeats/samples."""
+    collector_id, err = _require_ingest()
+    if err:
+        return err
+    os_name = re.sub(r"[^a-z0-9]", "", request.args.get("os", "").lower())[:16]
+    arch = re.sub(r"[^a-z0-9]", "", request.args.get("arch", "").lower())[:16]
+    path = _release_file_for(os_name, arch)
+    if not path:
+        return jsonify(error=f"no release binary for {os_name}/{arch}"), 404
+    return send_from_directory(str(path.parent), path.name, as_attachment=True)
+
+
+@app.get("/api/ingest/checks")
+def ingest_checks():
+    """Hand a collector the enabled+started probe plan so it runs the SAME active
+    checks a standalone node runs, from the same central monitor config. The
+    collector pushes results back via /api/ingest/samples as host_checks /
+    service_checks / port_checks. Gated by the same ingest auth."""
+    _, err = _require_ingest()
+    if err:
+        return err
+    cfg = _monitor_config_effective()
+
+    def live(items):
+        return [i for i in items if i.get("enabled", True) and i.get("started", True)]
+
+    targets = [{"name": t["name"], "address": t["address"], "group": t.get("group", "custom")}
+               for t in live(cfg.get("targets", []))]
+    services = [{"name": s["name"], "kind": s["kind"], "target": s["target"]}
+                for s in live(cfg.get("services", []))]
+    ports = [{"name": p["name"], "host": p["host"], "port": p["port"],
+              "proto": p.get("proto", "tcp"), "send": p.get("send", ""),
+              "expect": p.get("expect", "")}
+             for p in live(cfg.get("ports", []))]
+    return jsonify(targets=targets, services=services, ports=ports)
+
+
+@app.post("/api/ingest/samples")
+def ingest_samples():
+    collector_id, err = _require_ingest()
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    stream = str(body.get("stream", "")).strip()[:40]
+    rows = body.get("rows")
+    if not stream or not isinstance(rows, list):
+        return jsonify(error="body must be {stream: str, rows: [ ... ]}"), 400
+    rows = [r for r in rows if isinstance(r, dict)][:1000]
+    stored = history.ingest_samples(collector_id, stream, rows)
+    return jsonify(ok=True, collector_id=collector_id, stream=stream, stored=stored)
+
+
+@app.get("/api/collectors")
+def list_collectors_api():
+    """Enrolled collectors + this local node, for the scoped selector. Marks a
+    collector stale if it has not sent a heartbeat within ~3 intervals."""
+    now = time.time()
+    release = _collector_release()
+    latest = release["version"]
+    collectors = history.list_collectors()
+    for c in collectors:
+        last = c.get("last_seen")
+        c["online"] = bool(last and (now - last) < 180)
+        cur = c.get("version") or ""
+        # An update is offered only when we actually hold a newer build for it.
+        c["latest_version"] = latest
+        c["update_available"] = bool(latest and cur and cur != latest)
+    local = {"collector_id": "local", "name": "this node", "enabled": True,
+             "online": True, "local": True, "version": _collector_release()["version"],
+             "role": _multinode_cfg().get("role", "standalone")}
+    return jsonify(local=local, collectors=collectors, latest_version=latest,
+                   accept_external_collectors=bool(_multinode_cfg().get("accept_external_collectors")))
+
+
+@app.post("/api/collectors")
+def enroll_collector_api():
+    """Enroll a new collector and return its key ONCE (never retrievable again)."""
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name", "")).strip()[:80]
+    result = history.enroll_collector(name)
+    if result is None:
+        return jsonify(error="could not enroll collector"), 500
+    return jsonify(result), 201
+
+
+@app.post("/api/collectors/<collector_id>/rotate")
+def rotate_collector_api(collector_id: str):
+    """Issue a fresh key (invalidating the previous one)."""
+    result = history.rotate_collector_key(collector_id)
+    if result is None:
+        return jsonify(error="collector not found"), 404
+    return jsonify(result)
+
+
+@app.post("/api/collectors/<collector_id>/revoke")
+def revoke_collector_api(collector_id: str):
+    """Invalidate a collector's key without deleting its history."""
+    if not history.revoke_collector(collector_id):
+        return jsonify(error="collector not found"), 404
+    return jsonify(ok=True, collector_id=collector_id, enabled=False)
+
+
+@app.post("/api/collectors/<collector_id>/update")
+def update_collector_api(collector_id: str):
+    """Request that a collector self-update to the latest binary we hold. The
+    collector picks this up on its next heartbeat and pulls the new binary."""
+    release = _collector_release()
+    if not release["version"]:
+        return jsonify(error="no collector release is available to push"), 409
+    if not history.request_collector_update(collector_id, True):
+        return jsonify(error="collector not found"), 404
+    return jsonify(ok=True, collector_id=collector_id, target_version=release["version"])
+
+
+@app.delete("/api/collectors/<collector_id>")
+def delete_collector_api(collector_id: str):
+    if not history.delete_collector(collector_id):
+        return jsonify(error="collector not found"), 404
+    return jsonify(ok=True, deleted=collector_id)
+
+
+@app.get("/api/multinode")
+def get_multinode():
+    cfg = _multinode_cfg()
+    return jsonify(role=cfg.get("role", "standalone"),
+                   accept_external_collectors=bool(cfg.get("accept_external_collectors")))
+
+
+@app.post("/api/multinode")
+def set_multinode():
+    """Update this node's role and the accept-external-collectors master switch."""
+    body = request.get_json(silent=True) or {}
+    update: dict = {}
+    if "role" in body:
+        role = str(body["role"]).strip()
+        if role not in ("standalone", "collector"):
+            return jsonify(error="role must be 'standalone' or 'collector'"), 400
+        update["role"] = role
+    if "accept_external_collectors" in body:
+        update["accept_external_collectors"] = bool(body["accept_external_collectors"])
+    if not update:
+        return jsonify(error="nothing to update"), 400
+    settings_store.apply_update({"multinode": update})
+    return jsonify(_multinode_cfg())
+
+
+# --- Auvik-style network map ------------------------------------------------
+# Relative "specificity" of a node kind: a later observation may only *promote*
+# a node to a richer role (a plain host that turns out to be the gateway), never
+# demote it. See docs/07-network-map-and-monitoring-roadmap.md.
+_KIND_RANK = {
+    "unknown": 0, "host": 1, "hop": 1, "target": 2, "neighbour": 2,
+    "ap": 3, "printer": 3, "phone": 3, "server": 3, "workstation": 3, "iot": 3,
+    "router": 4, "switch": 4, "wan-gateway": 5, "firewall": 5,
+    "self": 6, "internet": 6, "subnet": 6,
+}
+
+
+def _map_subnet_of(ip_text: str, own_subnets: list) -> str | None:
+    """Which subnet an IP belongs to: an own-interface network if one contains
+    it, else a synthetic /24 grouping for any other internal address."""
+    try:
+        addr = ipaddress.ip_address(ip_text)
+    except ValueError:
+        return None
+    for net in own_subnets:
+        if addr in net:
+            return str(net)
+    if _is_internal_ip(ip_text) and addr.version == 4:
+        try:
+            return str(ipaddress.ip_network(f"{ip_text}/24", strict=False))
+        except ValueError:
+            return None
+    return None
+
+
+@app.get("/api/map")
+def network_map():
+    """Assemble one Auvik-style topology graph from the probe's existing
+    passive/safe data: own interfaces, traceroute hop-chains, LLDP neighbours,
+    ARP/discovery hosts, Wi-Fi APs and outage-monitor reachability. Read-only and
+    cached - it never launches a scan. Every node is tagged with the observing
+    collector (`local` on a standalone box) so the multi-collector view can later
+    narrow to one. See docs/07-network-map-and-monitoring-roadmap.md."""
+    now = time.time()
+
+    nodes: dict[str, dict] = {}
+    edges: dict[tuple, dict] = {}
+    subnets: dict[str, dict] = {}
+
+    def node(nid: str, **kw) -> dict:
+        n = nodes.get(nid)
+        if n is None:
+            n = nodes[nid] = {
+                "id": nid, "label": nid, "kind": "unknown", "status": "unknown",
+                "ips": [], "macs": [], "vendor": "", "subnet": None,
+                "confidence": "observed", "collector": "local", "detail": {},
+            }
+        for key, val in kw.items():
+            if key in ("ips", "macs"):
+                for item in (val or []):
+                    item = (item or "").strip()
+                    if item and item not in n[key]:
+                        n[key].append(item)
+            elif key == "kind":
+                if val and _KIND_RANK.get(val, 0) > _KIND_RANK.get(n["kind"], 0):
+                    n["kind"] = val
+            elif key == "label":
+                if val and (n["label"] == nid or not n["label"]):
+                    n["label"] = val
+            elif key == "detail":
+                n["detail"].update({k: v for k, v in (val or {}).items() if v not in (None, "")})
+            elif val not in (None, ""):
+                n[key] = val
+        return n
+
+    def edge(a: str, b: str, layer="l3", media="wired", confidence="inferred", **detail) -> None:
+        key = (a, b)
+        e = edges.get(key)
+        if e is None:
+            e = edges[key] = {"from": a, "to": b, "layer": layer, "media": media,
+                              "confidence": confidence, "detail": {}}
+        # A definitive (observed) sighting upgrades an inferred edge.
+        if confidence == "observed" and e["confidence"] != "observed":
+            e.update({"layer": layer, "media": media, "confidence": "observed"})
+        e["detail"].update({k: v for k, v in detail.items() if v not in (None, "")})
+
+    # --- own interfaces -> self node, own IPs / subnets ---------------------
+    own_ips: set[str] = set()
+    own_subnets: list = []
+    iface_detail: list[dict] = []
+    try:
+        for iface in interfaces():
+            mac = (iface.get("mac") or "").lower()
+            for token in (iface.get("addresses") or "").split():
+                if "/" in token:
+                    own_ips.add(token.split("/")[0])
+                    try:
+                        own_subnets.append(ipaddress.ip_network(token, strict=False))
+                    except ValueError:
+                        pass
+            iface_detail.append({"name": iface.get("name"), "state": iface.get("state"),
+                                 "mac": mac, "addresses": iface.get("addresses")})
+    except Exception:
+        pass
+    own_subnets = list({str(n): n for n in own_subnets}.values())
+    node("self", label="this probe", kind="self", status="up", ips=sorted(own_ips))
+
+    # --- monitor reachability (last ok + 24h loss per target) ---------------
+    monitor_status: dict[str, dict] = {}
+    route_rows: list = []
+    db = monitor_db()
+    if db is not None:
+        day_ago = now - 86400
+        try:
+            for row in db.execute(
+                "SELECT target, COUNT(*) total, SUM(ok) ok, "
+                "AVG(CASE WHEN ok=1 THEN rtt_ms END) rtt_avg, "
+                "(SELECT ok FROM ping_samples p2 WHERE p2.target=p1.target ORDER BY ts DESC LIMIT 1) last_ok "
+                "FROM ping_samples p1 WHERE ts>=? GROUP BY target", (day_ago,)):
+                monitor_status[row["target"]] = {
+                    "up": bool(row["last_ok"]),
+                    "loss_pct": round(100.0 * (row["total"] - (row["ok"] or 0)) / row["total"], 2) if row["total"] else None,
+                    "rtt_ms": round(row["rtt_avg"], 2) if row["rtt_avg"] is not None else None,
+                }
+        except sqlite3.Error:
+            pass
+        try:
+            route_rows = db.execute("SELECT name, hops, updated FROM route_state ORDER BY name").fetchall()
+        except sqlite3.Error:
+            route_rows = []
+        db.close()
+
+    def status_for(ip: str, last_seen: float | None = None) -> str:
+        st = monitor_status.get(ip)
+        if st is not None:
+            return "up" if st["up"] else "down"
+        if last_seen and (now - last_seen) < 900:
+            return "up"
+        return "unknown"
+
+    # --- enrichment lookups (reused from the topology endpoint) -------------
+    target_names: dict[str, str] = {}
+    try:
+        for tgt in _monitor_config_effective().get("targets", []):
+            if tgt.get("address"):
+                target_names[tgt["address"]] = tgt.get("name") or tgt["address"]
+    except Exception:
+        pass
+    lldp_state: list[dict] = []
+    try:
+        lldp_state = history.get_lldp_state()
+    except Exception:
+        lldp_state = []
+    lldp_by_ip = {(n.get("mgmt_ip") or "").strip(): (n.get("system") or "").strip()
+                  for n in lldp_state if (n.get("mgmt_ip") or "").strip() and (n.get("system") or "").strip()}
+
+    def label_for(ip: str) -> tuple[str, str]:
+        if ip in own_ips:
+            return "this probe", "self"
+        if ip in target_names:
+            return target_names[ip], "target"
+        if ip in lldp_by_ip:
+            return lldp_by_ip[ip], "neighbour"
+        return ip, "hop"
+
+    # --- subnet clouds ------------------------------------------------------
+    def subnet_node(cidr: str) -> str | None:
+        if not cidr:
+            return None
+        if cidr not in subnets:
+            subnets[cidr] = {"cidr": cidr, "role": None, "count": 0}
+            node("subnet:" + cidr, label=cidr, kind="subnet", status="up")
+        return "subnet:" + cidr
+
+    def attach_host(node_id: str, ip: str, media="wired") -> None:
+        cidr = _map_subnet_of(ip, own_subnets)
+        if not cidr:
+            return
+        sid = subnet_node(cidr)
+        nodes[node_id]["subnet"] = cidr
+        edge(sid, node_id, layer="l2", media=media, confidence="inferred")
+
+    for ip in own_ips:
+        attach_host("self", ip)
+
+    # --- Layer-3 hierarchy from traceroute hop-chains -----------------------
+    wan_gateways: set[str] = set()
+    for row in route_rows:
+        chain = [h for h in (row["hops"] or "").split(">") if h]
+        internal, wan_gateway = _trim_to_wan(chain)
+        internal = [h for h in internal if h != "[LOCALHOST]" and h not in own_ips]
+        prev = "self"
+        for ip in internal:
+            label, kind = label_for(ip)
+            node(ip, label=label, kind=kind if kind in ("target", "neighbour") else "hop",
+                 ips=[ip], status=status_for(ip))
+            edge(prev, ip, layer="l3", media="wired", confidence="observed")
+            prev = ip
+        if wan_gateway:
+            wan_gateways.add(wan_gateway)
+
+    primary_gw = None
+    if wan_gateways:
+        node("internet", label="Internet", kind="internet", status="up")
+        for gw in wan_gateways:
+            node(gw, kind="wan-gateway")
+            edge(gw, "internet", layer="l3", media="wired", confidence="observed")
+        primary_gw = sorted(wan_gateways)[0]
+    # Hang each subnet under the gateway (or the probe if no gateway is known).
+    for cidr in list(subnets):
+        parent = primary_gw if (primary_gw and primary_gw in nodes) else "self"
+        edge(parent, "subnet:" + cidr, layer="l3", media="wired", confidence="inferred")
+
+    # --- Layer-1 wired neighbours from LLDP ---------------------------------
+    for nb in lldp_state:
+        ip = (nb.get("mgmt_ip") or "").strip()
+        sysname = (nb.get("system") or "").strip()
+        port = nb.get("local_port") or ""
+        if not (ip or sysname):
+            continue
+        nid = ip or ("lldp:" + (sysname or port))
+        node(nid, label=sysname or ip or port, kind="neighbour",
+             ips=[ip] if ip else [], status=status_for(ip) if ip else "up",
+             detail={"lldp_port": port, "port_id": nb.get("port_id"), "vlan": nb.get("vlan")})
+        if ip:
+            attach_host(nid, ip)
+        edge("self", nid, layer="l1", media="wired", confidence="observed", via=port)
+
+    # --- ARP / discovery hosts ----------------------------------------------
+    try:
+        hosts = history.get_hosts(500)
+    except Exception:
+        hosts = []
+    for h in hosts:
+        ip = (h.get("address") or "").strip()
+        if not ip:
+            continue
+        mac = (h.get("mac") or "").lower()
+        if ip in own_ips:
+            node("self", macs=[mac] if mac else [], vendor=h.get("vendor") or "")
+            continue
+        kind = "neighbour" if h.get("last_kind") == "lldp" else "host"
+        node(ip, label=(h.get("name") or ip), kind=kind, ips=[ip], macs=[mac] if mac else [],
+             vendor=h.get("vendor") or "", status=status_for(ip, h.get("last_seen")),
+             detail={"sources": h.get("sources"), "last_seen": h.get("last_seen"),
+                     "discovered": h.get("last_kind")})
+        attach_host(ip, ip)
+
+    # --- Wi-Fi APs the probe currently hears (RF neighbours) ----------------
+    try:
+        aps = history.get_ap_state(400)
+    except Exception:
+        aps = []
+    for ap in aps:
+        if not ap.get("present"):
+            continue
+        bssid = (ap.get("bssid") or "").lower()
+        if not bssid:
+            continue
+        nid = "mac:" + bssid
+        node(nid, label=ap.get("ssid") or "(hidden)", kind="ap", macs=[bssid], status="up",
+             detail={"band": ap.get("band"), "channel": ap.get("channel"),
+                     "signal": ap.get("signal"), "security": ap.get("security"), "bssid": bssid})
+        edge("self", nid, layer="l1", media="wireless", confidence="observed", signal=ap.get("signal"))
+
+    # --- enrich monitored nodes + finalise subnet counts --------------------
+    for ip, st in monitor_status.items():
+        if ip in nodes:
+            nodes[ip]["status"] = "up" if st["up"] else "down"
+            nodes[ip]["detail"].update({"loss_pct": st["loss_pct"], "rtt_ms": st["rtt_ms"]})
+    for cidr, meta in subnets.items():
+        meta["count"] = sum(1 for n in nodes.values() if n.get("subnet") == cidr)
+
+    return jsonify({
+        "updated": now,
+        "collector": "local",
+        "nodes": list(nodes.values()),
+        "edges": list(edges.values()),
+        "subnets": list(subnets.values()),
+        "wan_gateways": sorted(wan_gateways),
+        "interfaces": iface_detail,
     })
 
 

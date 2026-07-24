@@ -48,6 +48,15 @@ DEFAULTS: dict = {
     # an active action, so it stays allow-list-gated - but the list is now
     # operator-editable from the dashboard instead of only /etc.
     "traffic_allow": [],
+    # Multi-node role + the master switch for accepting pushed data from remote
+    # collectors. Per-collector keys are enrolled/revoked separately and stored
+    # (hashed) in the history DB, not here. A standalone node is self-sufficient
+    # and MAY act as the aggregator others push to; that ingest is off until the
+    # operator turns this on.
+    "multinode": {
+        "role": "standalone",                 # standalone | collector
+        "accept_external_collectors": False,
+    },
 }
 
 # Dotted paths whose values are secrets: never returned to the browser in the
