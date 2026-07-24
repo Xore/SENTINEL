@@ -1517,6 +1517,162 @@ def monitor_events():
     ])
 
 
+def _chan_from_freq(freq):
+    """2.4/5/6 GHz channel number from centre frequency in MHz (best-effort)."""
+    if not freq:
+        return None
+    f = int(freq)
+    if 2412 <= f <= 2484:
+        return 14 if f == 2484 else (f - 2407) // 5
+    if 5160 <= f <= 5885:
+        return (f - 5000) // 5
+    if 5955 <= f <= 7115:  # 6 GHz
+        return (f - 5950) // 5
+    return None
+
+
+def _band_from_freq(freq):
+    if not freq:
+        return None
+    f = int(freq)
+    if f < 2500:
+        return "2.4 GHz"
+    if f < 5925:
+        return "5 GHz"
+    return "6 GHz"
+
+
+# Signal considered "weak" once it drops below this (dBm); crossing it fires a warning.
+WIFI_WEAK_DBM = -75
+
+@app.get("/api/wifi/handovers")
+def wifi_handovers():
+    """Colorized roam/handover event log derived from consecutive wifi_samples.
+
+    Levels map to the requested colours: info=BLUE (handover / (re)association),
+    warning=YELLOW (weak signal, tx failures, beacon loss), error=RED (association
+    lost / roam failed). Events are edge-triggered from transitions between adjacent
+    samples so a steady link produces no noise."""
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    try:
+        minutes = max(5, min(int(request.args.get("minutes", 720)), 14 * 1440))
+        limit = max(1, min(int(request.args.get("limit", 200)), 1000))
+    except ValueError:
+        return jsonify(error="minutes/limit must be numbers"), 400
+    since = time.time() - minutes * 60
+    rows = db.execute(
+        """
+        SELECT ts, interface, connected, ssid, bssid, freq_mhz, signal_dbm,
+               tx_retries, tx_failed, beacon_loss
+        FROM wifi_samples WHERE ts >= ? ORDER BY interface, ts
+        """,
+        (since,),
+    ).fetchall()
+    db.close()
+
+    events: list[dict] = []
+
+    def emit(ts, iface, level, kind, summary, cur, extra=None):
+        ev = {
+            "ts": round(ts, 1),
+            "interface": iface,
+            "level": level,                       # error | warning | info
+            "color": {"error": "red", "warning": "yellow", "info": "blue"}[level],
+            "kind": kind,
+            "summary": summary,
+            "ssid": cur["ssid"],
+            "bssid": cur["bssid"],
+            "signal_dbm": cur["signal_dbm"],
+            "band": _band_from_freq(cur["freq_mhz"]),
+            "channel": _chan_from_freq(cur["freq_mhz"]),
+        }
+        if extra:
+            ev.update(extra)
+        events.append(ev)
+
+    prev_by_iface: dict[str, sqlite3.Row] = {}
+    weak_by_iface: dict[str, bool] = {}
+    for cur in rows:
+        iface = cur["interface"]
+        prev = prev_by_iface.get(iface)
+        prev_by_iface[iface] = cur
+
+        if prev is None:
+            weak_by_iface[iface] = bool(cur["connected"] and cur["signal_dbm"] is not None
+                                        and cur["signal_dbm"] < WIFI_WEAK_DBM)
+            continue
+
+        # (Re)association / loss transitions.
+        if prev["connected"] and not cur["connected"]:
+            emit(cur["ts"], iface, "error", "assoc-lost",
+                 f"Disconnected from {prev['ssid'] or 'network'}", prev,
+                 {"from_bssid": prev["bssid"]})
+            weak_by_iface[iface] = False
+            continue
+        if not prev["connected"] and cur["connected"]:
+            emit(cur["ts"], iface, "info", "associated",
+                 f"Associated with {cur['ssid'] or 'network'}", cur)
+            weak_by_iface[iface] = bool(cur["signal_dbm"] is not None and cur["signal_dbm"] < WIFI_WEAK_DBM)
+            continue
+        if not cur["connected"]:
+            continue
+
+        # Both connected: look for a roam (BSSID change) or SSID change.
+        if prev["bssid"] and cur["bssid"] and prev["bssid"] != cur["bssid"]:
+            same_net = (prev["ssid"] == cur["ssid"])
+            band_note = ""
+            if _band_from_freq(prev["freq_mhz"]) != _band_from_freq(cur["freq_mhz"]):
+                band_note = f" ({_band_from_freq(prev['freq_mhz'])} → {_band_from_freq(cur['freq_mhz'])})"
+            emit(cur["ts"], iface, "info", "handover",
+                 f"Roamed to {cur['bssid']}{band_note}" if same_net
+                 else f"Switched network to {cur['ssid'] or '?'}{band_note}", cur,
+                 {"from_bssid": prev["bssid"], "from_signal_dbm": prev["signal_dbm"]})
+        elif prev["ssid"] != cur["ssid"]:
+            emit(cur["ts"], iface, "info", "network-change",
+                 f"Network changed to {cur['ssid'] or '?'}", cur)
+
+        # Counter-based warnings (cumulative counters; a positive delta = new events
+        # this window). Reset the baseline across a roam so we don't count the wrap.
+        roamed = prev["bssid"] != cur["bssid"]
+        if not roamed:
+            for col, kind, label in (
+                ("tx_failed", "tx-failures", "TX failures"),
+                ("beacon_loss", "beacon-loss", "Beacon loss"),
+            ):
+                pv, cv = prev[col], cur[col]
+                if pv is not None and cv is not None and cv > pv:
+                    emit(cur["ts"], iface, "warning", kind,
+                         f"{label}: +{cv - pv}", cur, {"delta": cv - pv})
+
+        # Weak-signal edge trigger (only when crossing the threshold).
+        now_weak = cur["signal_dbm"] is not None and cur["signal_dbm"] < WIFI_WEAK_DBM
+        if now_weak and not weak_by_iface.get(iface):
+            emit(cur["ts"], iface, "warning", "weak-signal",
+                 f"Weak signal {cur['signal_dbm']} dBm", cur)
+        weak_by_iface[iface] = now_weak
+
+    events.sort(key=lambda e: e["ts"], reverse=True)
+    counts = {"error": 0, "warning": 0, "info": 0}
+    for ev in events:
+        counts[ev["level"]] += 1
+
+    current = {}
+    for iface, last in prev_by_iface.items():
+        current[iface] = {
+            "connected": bool(last["connected"]),
+            "ssid": last["ssid"],
+            "bssid": last["bssid"],
+            "signal_dbm": last["signal_dbm"],
+            "band": _band_from_freq(last["freq_mhz"]),
+            "channel": _chan_from_freq(last["freq_mhz"]),
+            "ts": round(last["ts"], 1),
+        }
+    return jsonify({"events": events[:limit], "counts": counts, "current": current,
+                    "window_minutes": minutes, "total": len(events)})
+
+
 @app.get("/api/monitor/services")
 def monitor_services():
     db = monitor_db()

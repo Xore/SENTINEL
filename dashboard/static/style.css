@@ -4,3 +4,14 @@
 
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:900px){.grid-2{grid-template-columns:1fr}}.subhead{display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px;font-size:.82rem;letter-spacing:.03em;text-transform:uppercase;color:var(--muted)}.subhead button{font-size:.78rem}tr.muted td{opacity:.5}
 .mc-run{font:11px var(--mono);padding:5px 10px;border-radius:999px;white-space:nowrap}.mc-run[data-on="1"]{color:var(--cyan);border-color:var(--cyan)}.mc-run:not([data-on="1"]){color:var(--muted)}.mc-run:disabled{opacity:.4;cursor:not-allowed}tr.mc-off td{opacity:.72}tr.mc-disabled td{opacity:.45}
+
+/* Wi-Fi roam/handover event log + AP proximity map */
+:root{--blue:#60a5fa}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:middle;margin:0 3px}
+.dot-red{background:var(--red)}.dot-yellow{background:var(--amber)}.dot-blue{background:var(--blue)}
+tr.ev-error td:first-child{border-left:3px solid var(--red)}
+tr.ev-warning td:first-child{border-left:3px solid var(--amber)}
+tr.ev-info td:first-child{border-left:3px solid var(--blue)}
+.ev-error .lvl{color:var(--red)}.ev-warning .lvl{color:var(--amber)}.ev-info .lvl{color:var(--blue)}
+#wifiMap svg{width:100%;height:auto;max-width:420px}
+#wifiMap text{font-family:var(--mono);fill:var(--muted)}

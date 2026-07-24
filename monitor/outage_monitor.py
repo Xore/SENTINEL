@@ -305,7 +305,7 @@ def wifi_sample(interface: str) -> tuple | None:
         find(r"SSID: (.+)", link),
         find(r"Connected to ([0-9a-f:]+)", link),
         find(r"freq: (\d+)", link, int),
-        find(r"signal: (-?\d+)", station, int),
+        find(r"signal:\s*(-?\d+)", station, int),
         find(r"tx bitrate:\s+([\d.]+)", station, float),
         find(r"rx bitrate:\s+([\d.]+)", station, float),
         find(r"tx retries:\s+(\d+)", station, int),
