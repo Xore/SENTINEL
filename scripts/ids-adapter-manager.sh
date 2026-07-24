@@ -119,11 +119,20 @@ pick_auto() {
 }
 
 # Interfaces Suricata is currently configured to capture on (af-packet blocks,
-# excluding the `default` catch-all), space-separated.
+# excluding the `default` catch-all), space-separated. Scoped to the af-packet
+# section ONLY - the yaml also has `- interface:` lines under pcap/netmap/dpdk,
+# and counting those would make the idempotency check never match, restarting
+# Suricata every cycle.
 current_ifaces() {
   [[ -r $SURICATA_YAML ]] || return 0
-  sed -n 's/^[[:space:]]*- interface:[[:space:]]*//p' "$SURICATA_YAML" \
-    | grep -vx default | tr '\n' ' '
+  awk '
+    /^af-packet:[[:space:]]*$/ { inaf=1; next }
+    inaf && /^[^[:space:]#]/   { inaf=0 }
+    inaf && match($0, /^[[:space:]]*-[[:space:]]*interface:[[:space:]]*/) {
+      v = substr($0, RLENGTH + 1); sub(/[[:space:]#].*$/, "", v)
+      if (v != "" && v != "default") print v
+    }
+  ' "$SURICATA_YAML" | tr '\n' ' '
 }
 
 # --- apply ------------------------------------------------------------------
@@ -230,12 +239,26 @@ once() {
   echo "$note"
 }
 
+# Poll cadence: the daemon wakes every TICK seconds and re-reads the config, but
+# only runs a full evaluation when either (a) the config changed since the last
+# tick - so a web/desktop edit applies within ~TICK seconds instead of waiting
+# out the old recheck - or (b) recheck_seconds have elapsed, which is what makes
+# a pinned-but-down NIC get bound the moment it comes up.
+DAEMON_TICK=${PROBE_IDS_DAEMON_TICK:-5}
+
 daemon() {
-  echo "ids-adapter-manager: daemon started (config: $CONFIG)"
+  echo "ids-adapter-manager: daemon started (config: $CONFIG, tick: ${DAEMON_TICK}s)"
+  local last_sig="" last_eval=0
   while true; do
-    once || true
-    local recheck; recheck=$(read_cfg | cut -d'|' -f3)
-    sleep "${recheck:-$DEFAULT_RECHECK}"
+    local cfg sig recheck now
+    cfg=$(read_cfg); sig=$cfg
+    recheck=$(printf '%s' "$cfg" | cut -d'|' -f3); recheck=${recheck:-$DEFAULT_RECHECK}
+    now=$(date +%s)
+    if [[ $sig != "$last_sig" ]] || (( now - last_eval >= recheck )); then
+      once || true
+      last_sig=$sig; last_eval=$now
+    fi
+    sleep "$DAEMON_TICK"
   done
 }
 

@@ -22,11 +22,13 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import history
     from dashboard import services
     from dashboard import monitor_config
+    from dashboard import ids_adapter
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
     import services
     import monitor_config
+    import ids_adapter
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_DIR = Path(os.environ.get("PROBE_CAPTURE_DIR", ROOT / "captures")).resolve()
@@ -620,6 +622,58 @@ def ids_alerts():
         payload["alerts"] = [a for a in alerts if keep(a)][:limit]
         payload["filtered"] = True
     return jsonify(payload)
+
+
+def _ids_adapters() -> list[dict]:
+    """Real NICs on this probe that Suricata could capture on (loopback aside),
+    each with live up/down and wired/wireless for the picker."""
+    out = []
+    for i in interfaces():
+        name = i["name"]
+        if name == "lo":
+            continue
+        out.append({
+            "name": name,
+            "up": str(i.get("state", "")).lower() == "up",
+            "wired": name.startswith(("en", "eth")),
+        })
+    return out
+
+
+@app.get("/api/ids/adapter")
+def get_ids_adapter():
+    """Desired capture-adapter config (dashboard-editable) plus the live state
+    the root daemon publishes, so the UI can show configured-vs-active."""
+    cfg = ids_adapter.load()
+    cfg["config_file"] = str(ids_adapter.CONFIG_FILE)
+    cfg["adapters"] = _ids_adapters()
+    # Live state from the read-only reader (active/resolved NICs, note).
+    _, summary = _ids_summary(1)
+    engine = summary.get("engine", {}) if isinstance(summary, dict) else {}
+    cfg["live"] = engine.get("adapter", {})
+    cfg["service_active"] = bool(engine.get("service_active"))
+    return jsonify(cfg)
+
+
+@app.put("/api/ids/adapter")
+def put_ids_adapter():
+    """Write desired capture-adapter state. The root daemon re-reads this within
+    one recheck cycle, rewrites suricata.yaml, validates it, and rolls back on
+    failure - the web process never touches Suricata directly."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(error="expected a JSON object"), 400
+    valid_names = {a["name"] for a in _ids_adapters()}
+    cfg, errors = ids_adapter.validate(payload, valid_names)
+    if errors:
+        return jsonify(error="validation failed", details=errors), 400
+    try:
+        ids_adapter.save(cfg)
+    except OSError as exc:
+        return jsonify(error=f"could not save IDS adapter config: {exc}"), 500
+    cfg["config_file"] = str(ids_adapter.CONFIG_FILE)
+    cfg["adapters"] = _ids_adapters()
+    return jsonify(cfg)
 
 
 def valid_ip(value: str) -> str:

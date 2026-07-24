@@ -106,6 +106,18 @@
       </div>
     </section>
     <section id="security" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">CAPTURE ADAPTER</p><h2>Which NIC(s) Suricata watches</h2></div><button onclick="loadIdsAdapter()">Reload</button></div>
+        <p class="hint">Choose how the IDS picks its capture interface. <strong>Auto</strong> follows the best connected NIC; <strong>All</strong> captures on every up NIC; <strong>Specific</strong> lets you tick a set (a down/prepared NIC is bound the moment it comes up). A root daemon enacts the change, validates the config, and rolls back on failure — the dashboard never touches Suricata directly.</p>
+        <div id="idsAdapterLive" class="hint"></div>
+        <div class="form-row">
+          <label class="inline"><input type="radio" name="idsMode" value="auto" onchange="idsModeChange()"> Auto</label>
+          <label class="inline"><input type="radio" name="idsMode" value="all" onchange="idsModeChange()"> All up NICs</label>
+          <label class="inline"><input type="radio" name="idsMode" value="manual" onchange="idsModeChange()"> Specific</label>
+          <label class="inline">recheck <input id="idsRecheck" type="number" min="10" max="600" value="60" style="max-width:6rem"> s</label>
+          <button class="primary" onclick="saveIdsAdapter()">Save adapter</button>
+        </div>
+        <div id="idsAdapterNics" class="table-wrap"></div>
+      </div>
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">INTRUSION DETECTION</p><h2>Signature alerts (Suricata)</h2></div><button class="primary" onclick="loadIds()">Refresh</button></div>
         <p class="hint">Passive signature-based IDS on the monitored interface (ET Open ruleset). Detection only — Suricata never blocks or alters traffic. If it is not installed, run <code>sudo scripts/install-ids.sh --apply</code> on the probe. Click any IP for its full dossier; click <strong>Details</strong> on an alert for every correlated event (domain, path, headers, DNS, TLS).</p>
         <div class="form-row"><select id="idsSev" onchange="renderIds()"><option value="">any severity</option><option value="critical">critical</option><option value="major">major</option><option value="minor">minor</option><option value="info">info</option></select><input id="idsQ" placeholder="filter signature/category" oninput="renderIds()" aria-label="Filter text"><input id="idsSrc" placeholder="source IP" oninput="renderIds()" aria-label="Source IP" style="max-width:11rem"><input id="idsDst" placeholder="dest IP" oninput="renderIds()" aria-label="Destination IP" style="max-width:11rem"><span id="idsCount" class="hint"></span></div>
