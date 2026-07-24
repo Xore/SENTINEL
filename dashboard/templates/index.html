@@ -21,6 +21,7 @@
       <button data-view="discovery" title="Sweep a subnet for live hosts (IP, MAC, vendor, name)">Discovery</button>
       <button data-view="neighbours" title="Which switch/port you're plugged into (LLDP) plus single-host SNMP">Neighbours</button>
       <button data-view="wifi" title="One-off scan of nearby access points and local radio health">Wi-Fi</button>
+      <button data-view="heatmap" title="Walk-around Wi-Fi coverage heatmap: drop sample points as you move, drag APs to their real positions">Heatmap</button>
       <button data-view="endpoints" title="Approved-scope targets, checked by TCP-connect and route only">Endpoints</button>
     </div></div>
     <div class="nav-group"><span class="nav-label">Diagnose</span><div class="nav-btns">
@@ -107,6 +108,40 @@
         <div id="wifiEventStatus" class="hint"></div>
         <div id="wifiEventCounts" class="chips"></div>
         <div id="wifiEvents" class="table-wrap"></div>
+      </div></section>
+    <section id="heatmap" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">WALK-AROUND SITE SURVEY</p><h2>Wi-Fi coverage heatmap</h2></div>
+        <div class="form-row" style="margin:0">
+          <select id="hmSurvey" onchange="hmLoadSurvey(this.value)"></select>
+          <button onclick="hmNewSurvey()">New</button>
+          <button onclick="hmRenameSurvey()">Rename</button>
+          <button onclick="hmDeleteSurvey()">Delete</button>
+        </div></div>
+        <p class="hint">Walk the space with the probe. At each spot, pick your position on the floor below (or use <em>Sample here</em> to reuse the last click) — the probe scans and records the signal of every AP it hears. Choose an AP to render its coverage heatmap (green = strong, red = weak). Drag the ▲ AP markers to where the access points physically are. Everything is saved to the selected survey; captures build a history you can reload. There is no indoor-positioning hardware, so position is where you click — this is a manual survey, honest about that.</p>
+        <div class="form-row">
+          <label class="inline">Heatmap for AP: <select id="hmApSelect" onchange="hmRender()"></select></label>
+          <label class="inline"><input type="checkbox" id="hmMode" onchange="hmModeChange()"> place AP markers (drag mode)</label>
+          <label class="inline"><input type="checkbox" id="hmLive" checked onchange="hmToggleLive()"> live signal meter</label>
+          <button class="primary" onclick="hmSampleLast()">Sample here</button>
+          <button onclick="hmPlaceSelected()" title="Drop a marker for the selected AP at your last click, then fine-tune by dragging in place mode">Place selected AP here</button>
+          <button onclick="hmExportPng()">Export PNG</button>
+        </div>
+        <div id="hmStatus" class="hint"></div>
+        <div id="hmLiveMeter" class="chips"></div>
+        <div class="grid-2" style="align-items:start">
+          <div>
+            <div id="hmCanvasWrap" style="position:relative;width:100%;max-width:640px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#0a0f14">
+              <svg id="hmCanvas" viewBox="0 0 640 440" xmlns="http://www.w3.org/2000/svg" style="width:100%;display:block;cursor:crosshair"></svg>
+            </div>
+            <p class="hint">Click the floor to set your current position, then <em>Sample here</em>. In drag mode, drag AP markers instead.</p>
+          </div>
+          <div>
+            <p class="eyebrow">SAMPLE POINTS</p>
+            <div id="hmPoints" class="table-wrap"></div>
+            <p class="eyebrow" style="margin-top:14px">COLOUR SCALE</p>
+            <div id="hmScale" class="chips"></div>
+          </div>
+        </div>
       </div></section>
     <section id="apwatch" class="view">
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">CONTINUOUS RF WATCH</p><h2>Access points</h2></div><button class="primary" onclick="apScanNow()">Scan now</button></div>

@@ -555,6 +555,132 @@ def wifi_ap_monitor_scan():
     return jsonify(result)
 
 
+# --- Wi-Fi coverage heatmap / walk-around site survey ----------------------
+
+def _scan_readings(rescan: bool = True) -> tuple[list[dict], str]:
+    """Run one Wi-Fi scan and return normalised per-BSSID readings for the
+    heatmap: bssid, ssid, signal_dbm (real from iw, or approximated from an
+    nmcli %), channel, band, freq. Second tuple item is an error/'' string."""
+    wireless = _wireless_interfaces()
+    if not wireless:
+        return [], "no wireless interface detected"
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "wifi_survey.py"),
+               "--iface", wireless[0]]
+    if rescan:
+        command.append("--rescan")
+    code, output = run(command, 40)
+    if code != 0 or not output.strip():
+        return [], "scan failed (the radio may be blocked)"
+    try:
+        data = json.loads(output)
+    except ValueError:
+        return [], "scan produced no parseable output"
+    readings = []
+    for ap in data.get("aps") or []:
+        dbm = ap.get("signal_dbm")
+        if dbm is None and ap.get("signal_pct") is not None:
+            dbm = ap["signal_pct"] / 2.0 - 100.0  # 100%->-50, 50%->-75 (approx)
+        readings.append({
+            "bssid": ap.get("bssid"), "ssid": ap.get("ssid"),
+            "signal_dbm": round(dbm, 1) if dbm is not None else None,
+            "signal_pct": ap.get("signal_pct"),
+            "channel": ap.get("channel"), "band": ap.get("band"),
+            "freq_mhz": ap.get("freq_mhz"), "in_use": ap.get("in_use", False),
+        })
+    return readings, ("" if readings else (data.get("note") or "no APs visible"))
+
+
+@app.get("/api/wifi/heatmap/live")
+def heatmap_live():
+    """A fresh scan without storing it - drives the live signal meter you watch
+    while walking. Uses the NM scan cache (no forced rescan) so it stays snappy."""
+    readings, note = _scan_readings(rescan=request.args.get("rescan") == "1")
+    return jsonify(readings=readings, note=note, ts=time.time())
+
+
+@app.get("/api/wifi/heatmap/surveys")
+def heatmap_surveys():
+    return jsonify(surveys=history.list_heatmap_surveys())
+
+
+@app.post("/api/wifi/heatmap/surveys")
+def heatmap_create():
+    name = str((request.get_json(silent=True) or {}).get("name", "")).strip() or "Survey"
+    survey = history.create_heatmap_survey(name[:80])
+    if survey is None:
+        return jsonify(error="could not create survey"), 500
+    return jsonify(survey), 201
+
+
+@app.get("/api/wifi/heatmap/surveys/<int:survey_id>")
+def heatmap_get(survey_id: int):
+    survey = history.get_heatmap_survey(survey_id)
+    if survey is None:
+        return jsonify(error="survey not found"), 404
+    return jsonify(survey)
+
+
+@app.delete("/api/wifi/heatmap/surveys/<int:survey_id>")
+def heatmap_delete(survey_id: int):
+    return jsonify(ok=history.delete_heatmap_survey(survey_id))
+
+
+@app.post("/api/wifi/heatmap/surveys/<int:survey_id>/rename")
+def heatmap_rename(survey_id: int):
+    name = str((request.get_json(silent=True) or {}).get("name", "")).strip()
+    if not name:
+        return jsonify(error="name required"), 400
+    if not history.rename_heatmap_survey(survey_id, name[:80]):
+        return jsonify(error="survey not found"), 404
+    return jsonify(ok=True, name=name[:80])
+
+
+@app.post("/api/wifi/heatmap/surveys/<int:survey_id>/sample")
+def heatmap_sample(survey_id: int):
+    """Capture the RF at the operator's current position (x,y as 0..1 fractions
+    on the canvas). Scans, stores the readings against this survey, returns them."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        x, y = float(payload.get("x")), float(payload.get("y"))
+    except (TypeError, ValueError):
+        return jsonify(error="x and y (0..1) are required"), 400
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+        return jsonify(error="x and y must be between 0 and 1"), 400
+    readings, note = _scan_readings(rescan=payload.get("rescan", True))
+    if not readings:
+        return jsonify(error=note or "scan returned no APs"), 400
+    point = history.add_heatmap_point(survey_id, x, y, readings)
+    if point is None:
+        return jsonify(error="survey not found"), 404
+    return jsonify(point=point, note=note), 201
+
+
+@app.delete("/api/wifi/heatmap/surveys/<int:survey_id>/points/<int:point_id>")
+def heatmap_point_delete(survey_id: int, point_id: int):
+    return jsonify(ok=history.delete_heatmap_point(survey_id, point_id))
+
+
+@app.put("/api/wifi/heatmap/surveys/<int:survey_id>/ap-positions")
+def heatmap_ap_positions(survey_id: int):
+    payload = request.get_json(silent=True) or {}
+    positions = payload.get("positions")
+    if not isinstance(positions, dict):
+        return jsonify(error="positions must be an object keyed by BSSID"), 400
+    clean = {}
+    for bssid, pos in positions.items():
+        if not isinstance(pos, dict):
+            continue
+        try:
+            px, py = float(pos.get("x")), float(pos.get("y"))
+        except (TypeError, ValueError):
+            continue
+        clean[str(bssid).lower()] = {"x": max(0.0, min(1.0, px)), "y": max(0.0, min(1.0, py)),
+                                     "ssid": str(pos.get("ssid", ""))[:64]}
+    if not history.set_heatmap_ap_positions(survey_id, clean):
+        return jsonify(error="survey not found"), 404
+    return jsonify(ok=True, positions=clean)
+
+
 @app.post("/api/discovery")
 def discovery():
     payload = request.get_json(silent=True) or {}

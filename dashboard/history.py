@@ -100,6 +100,23 @@ CREATE TABLE IF NOT EXISTS ap_events (
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ap_events_ts ON ap_events(ts);
+CREATE TABLE IF NOT EXISTS heatmap_surveys (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT,
+    created      REAL,
+    updated      REAL,
+    ap_positions TEXT,          -- JSON {bssid: {x,y,ssid}} placed on the floor
+    floorplan    TEXT           -- optional data: URL background image
+);
+CREATE TABLE IF NOT EXISTS heatmap_points (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    survey_id INTEGER,
+    ts        REAL,
+    x         REAL,             -- 0..1 fractional position on the canvas
+    y         REAL,
+    readings  TEXT              -- JSON [{bssid,ssid,signal_dbm,channel,band,freq_mhz}]
+);
+CREATE INDEX IF NOT EXISTS idx_heatmap_points_survey ON heatmap_points(survey_id);
 """
 
 
@@ -442,3 +459,120 @@ def ap_last_update() -> float | None:
         return row["t"] if row and row["t"] else None
     except sqlite3.Error:
         return None
+
+
+# --- Wi-Fi coverage heatmap / site survey ----------------------------------
+# A survey is a set of sample points on a floor canvas (positions are stored as
+# 0..1 fractions so the canvas can be any size), each holding the per-BSSID RSSI
+# read at that spot. AP markers can be dragged to their real-world position.
+
+def create_heatmap_survey(name: str) -> dict | None:
+    now = time.time()
+    try:
+        with _lock, _connect() as db:
+            cur = db.execute(
+                "INSERT INTO heatmap_surveys(name, created, updated, ap_positions, floorplan) "
+                "VALUES(?,?,?,?,?)", (name or "Survey", now, now, "{}", None))
+            db.commit()
+            sid = cur.lastrowid
+        return {"id": sid, "name": name or "Survey", "created": now, "updated": now,
+                "ap_positions": {}, "points": []}
+    except sqlite3.Error:
+        return None
+
+
+def list_heatmap_surveys() -> list[dict]:
+    try:
+        with _lock, _connect() as db:
+            rows = db.execute(
+                """SELECT s.id, s.name, s.created, s.updated,
+                          (SELECT COUNT(*) FROM heatmap_points p WHERE p.survey_id = s.id) AS point_count
+                   FROM heatmap_surveys s ORDER BY s.updated DESC""").fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+def get_heatmap_survey(survey_id: int) -> dict | None:
+    try:
+        with _lock, _connect() as db:
+            row = db.execute("SELECT * FROM heatmap_surveys WHERE id = ?", (survey_id,)).fetchone()
+            if row is None:
+                return None
+            pts = db.execute(
+                "SELECT id, ts, x, y, readings FROM heatmap_points WHERE survey_id = ? ORDER BY ts",
+                (survey_id,)).fetchall()
+        survey = dict(row)
+        try:
+            survey["ap_positions"] = json.loads(survey.get("ap_positions") or "{}")
+        except ValueError:
+            survey["ap_positions"] = {}
+        survey["points"] = [
+            {"id": p["id"], "ts": p["ts"], "x": p["x"], "y": p["y"],
+             "readings": json.loads(p["readings"] or "[]")} for p in pts]
+        return survey
+    except (sqlite3.Error, ValueError):
+        return None
+
+
+def add_heatmap_point(survey_id: int, x: float, y: float, readings: list[dict]) -> dict | None:
+    now = time.time()
+    try:
+        with _lock, _connect() as db:
+            if db.execute("SELECT 1 FROM heatmap_surveys WHERE id = ?", (survey_id,)).fetchone() is None:
+                return None
+            cur = db.execute(
+                "INSERT INTO heatmap_points(survey_id, ts, x, y, readings) VALUES(?,?,?,?,?)",
+                (survey_id, now, x, y, json.dumps(readings)))
+            db.execute("UPDATE heatmap_surveys SET updated = ? WHERE id = ?", (now, survey_id))
+            db.commit()
+            pid = cur.lastrowid
+        return {"id": pid, "ts": now, "x": x, "y": y, "readings": readings}
+    except sqlite3.Error:
+        return None
+
+
+def delete_heatmap_point(survey_id: int, point_id: int) -> bool:
+    try:
+        with _lock, _connect() as db:
+            cur = db.execute("DELETE FROM heatmap_points WHERE id = ? AND survey_id = ?",
+                             (point_id, survey_id))
+            db.execute("UPDATE heatmap_surveys SET updated = ? WHERE id = ?", (time.time(), survey_id))
+            db.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error:
+        return False
+
+
+def set_heatmap_ap_positions(survey_id: int, positions: dict) -> bool:
+    try:
+        with _lock, _connect() as db:
+            cur = db.execute(
+                "UPDATE heatmap_surveys SET ap_positions = ?, updated = ? WHERE id = ?",
+                (json.dumps(positions), time.time(), survey_id))
+            db.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error:
+        return False
+
+
+def rename_heatmap_survey(survey_id: int, name: str) -> bool:
+    try:
+        with _lock, _connect() as db:
+            cur = db.execute("UPDATE heatmap_surveys SET name = ?, updated = ? WHERE id = ?",
+                             (name, time.time(), survey_id))
+            db.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error:
+        return False
+
+
+def delete_heatmap_survey(survey_id: int) -> bool:
+    try:
+        with _lock, _connect() as db:
+            db.execute("DELETE FROM heatmap_points WHERE survey_id = ?", (survey_id,))
+            cur = db.execute("DELETE FROM heatmap_surveys WHERE id = ?", (survey_id,))
+            db.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error:
+        return False
