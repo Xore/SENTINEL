@@ -3,38 +3,58 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Fieldline Network Probe</title>
+  <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+  <link rel="stylesheet" href="/static/vendor/bootstrap/css/bootstrap.min.css">
+  <link rel="stylesheet" href="/static/vendor/adminlte/css/adminlte.min.css">
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/theme.css">
 </head>
-<body>
-  <header><div><p class="eyebrow">FIELDLINE / PASSIVE-FIRST</p><h1>Network Probe</h1></div><div id="clock" class="clock">—</div></header>
-  <nav>
-    <div class="nav-group"><span class="nav-label">Home</span><div class="nav-btns">
-      <button data-view="overview" class="active" title="Probe status, anomalies and interfaces at a glance">Overview</button>
-    </div></div>
-    <div class="nav-group"><span class="nav-label">Watch</span><div class="nav-btns">
-      <button onclick="location.href='/monitor'" title="Always-on outage, latency and path monitoring (opens the Monitor page)">Monitor</button>
-      <button data-view="security" title="Passive intrusion-detection alerts from Suricata">Security</button>
-      <button data-view="apwatch" title="Continuous Wi-Fi watch — logs when an access point appears or disappears">Access Points</button>
-    </div></div>
-    <div class="nav-group"><span class="nav-label">Investigate</span><div class="nav-btns">
-      <button data-view="assets" title="Every host the probe has seen, with per-host history">Assets</button>
-      <button data-view="discovery" title="Sweep a subnet for live hosts (IP, MAC, vendor, name)">Discovery</button>
-      <button data-view="neighbours" title="Which switch/port you're plugged into (LLDP) plus single-host SNMP">Neighbours</button>
-      <button data-view="wifi" title="One-off scan of nearby access points and local radio health">Wi-Fi</button>
-      <button data-view="heatmap" title="Walk-around Wi-Fi coverage heatmap: drop sample points as you move, drag APs to their real positions">Heatmap</button>
-      <button data-view="endpoints" title="Approved-scope targets, checked by TCP-connect and route only">Endpoints</button>
-    </div></div>
-    <div class="nav-group"><span class="nav-label">Diagnose</span><div class="nav-btns">
-      <button data-view="actions" title="Run a read-only check against any host (reachability, trace, SNMP)">Actions</button>
-      <button data-view="health" title="Link-health samples and diagnostic profiles (path / services / infra / baseline)">Health</button>
-      <button data-view="captures" title="Start a bounded PCAP ring capture for evidence">Captures</button>
-    </div></div>
-    <div class="nav-group"><span class="nav-label">System</span><div class="nav-btns">
-      <button data-view="jobs" title="Log of recent jobs and their results">Activity</button>
-      <button data-view="settings" title="Interfaces, SNMP credentials, custom services and the outage monitor">Settings</button>
-    </div></div>
+<body class="hold-transition sidebar-mini layout-fixed">
+<div class="wrapper">
+  <nav class="main-header navbar navbar-expand navbar-white navbar-light">
+    <ul class="navbar-nav">
+      <li class="nav-item"><a class="nav-link" data-widget="pushmenu" href="#" role="button" title="Toggle sidebar"><i class="fas fa-bars"></i></a></li>
+      <li class="nav-item d-none d-md-inline-block"><span class="nav-link"><span class="eyebrow">FIELDLINE / PASSIVE-FIRST</span></span></li>
+    </ul>
+    <ul class="navbar-nav ml-auto">
+      <li class="nav-item"><span class="nav-link" id="clock" style="font-variant-numeric:tabular-nums">—</span></li>
+    </ul>
   </nav>
-  <main>
+  <aside class="main-sidebar sidebar-dark-primary elevation-4">
+    <a href="/" class="brand-link">
+      <i class="fas fa-network-wired brand-image ml-2 mr-1" style="opacity:.9"></i>
+      <span class="brand-text font-weight-light">Network&nbsp;Probe</span>
+    </a>
+    <div class="sidebar">
+      <nav class="mt-2">
+        <ul class="nav nav-pills nav-sidebar flex-column" role="menu">
+          <li class="nav-header">HOME</li>
+          <li class="nav-item"><button data-view="overview" class="nav-link active" title="Probe status, anomalies and interfaces at a glance"><i class="nav-icon fas fa-gauge-high"></i><p>Overview</p></button></li>
+          <li class="nav-header">WATCH</li>
+          <li class="nav-item"><a href="/monitor" class="nav-link" title="Always-on outage, latency and path monitoring"><i class="nav-icon fas fa-wave-square"></i><p>Monitor</p></a></li>
+          <li class="nav-item"><button data-view="security" class="nav-link" title="Passive intrusion-detection alerts from Suricata"><i class="nav-icon fas fa-shield-halved"></i><p>Security</p></button></li>
+          <li class="nav-item"><button data-view="apwatch" class="nav-link" title="Continuous Wi-Fi watch — logs when an access point appears or disappears"><i class="nav-icon fas fa-wifi"></i><p>Access Points</p></button></li>
+          <li class="nav-header">INVESTIGATE</li>
+          <li class="nav-item"><button data-view="assets" class="nav-link" title="Every host the probe has seen, with per-host history"><i class="nav-icon fas fa-server"></i><p>Assets</p></button></li>
+          <li class="nav-item"><button data-view="discovery" class="nav-link" title="Sweep a subnet for live hosts (IP, MAC, vendor, name)"><i class="nav-icon fas fa-magnifying-glass"></i><p>Discovery</p></button></li>
+          <li class="nav-item"><button data-view="neighbours" class="nav-link" title="Which switch/port you're plugged into (LLDP) plus single-host SNMP"><i class="nav-icon fas fa-diagram-project"></i><p>Neighbours</p></button></li>
+          <li class="nav-item"><button data-view="wifi" class="nav-link" title="One-off scan of nearby access points and local radio health"><i class="nav-icon fas fa-tower-broadcast"></i><p>Wi-Fi</p></button></li>
+          <li class="nav-item"><button data-view="heatmap" class="nav-link" title="Walk-around Wi-Fi coverage heatmap: drop sample points as you move, drag APs to their real positions"><i class="nav-icon fas fa-fire"></i><p>Heatmap</p></button></li>
+          <li class="nav-item"><button data-view="endpoints" class="nav-link" title="Approved-scope targets, checked by TCP-connect and route only"><i class="nav-icon fas fa-list-check"></i><p>Endpoints</p></button></li>
+          <li class="nav-header">DIAGNOSE</li>
+          <li class="nav-item"><button data-view="actions" class="nav-link" title="Run a read-only check against any host (reachability, trace, SNMP)"><i class="nav-icon fas fa-bolt"></i><p>Actions</p></button></li>
+          <li class="nav-item"><button data-view="health" class="nav-link" title="Link-health samples and diagnostic profiles (path / services / infra / baseline)"><i class="nav-icon fas fa-heart-pulse"></i><p>Health</p></button></li>
+          <li class="nav-item"><button data-view="captures" class="nav-link" title="Start a bounded PCAP ring capture for evidence"><i class="nav-icon fas fa-file-arrow-down"></i><p>Captures</p></button></li>
+          <li class="nav-header">SYSTEM</li>
+          <li class="nav-item"><button data-view="jobs" class="nav-link" title="Log of recent jobs and their results"><i class="nav-icon fas fa-clock-rotate-left"></i><p>Activity</p></button></li>
+          <li class="nav-item"><button data-view="settings" class="nav-link" title="Interfaces, SNMP credentials, custom services and the outage monitor"><i class="nav-icon fas fa-gear"></i><p>Settings</p></button></li>
+        </ul>
+      </nav>
+    </div>
+  </aside>
+  <div class="content-wrapper">
+    <section class="content-header"><div class="container-fluid"><h1 class="m-0" id="pageTitle">Overview</h1></div></section>
+    <section class="content"><div class="container-fluid">
     <section id="overview" class="view active">
       <div class="metrics"><article><span>Probe</span><strong id="hostname">—</strong><small id="uptime">—</small></article><article><span>Load</span><strong id="load">—</strong><small>1 / 5 / 15 min</small></article><article><span>Capture disk</span><strong id="disk">—</strong><small id="diskDetail">—</small></article><article><span>Toolset</span><strong id="toolCount">—</strong><small>available locally</small></article></div>
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">ATTENTION</p><h2>Anomalies &amp; data freshness</h2></div><button onclick="loadAttention()">Refresh</button></div><div id="freshness" class="chips"></div><div id="attention" class="attention"></div></div>
@@ -229,6 +249,23 @@
     <section id="jobs" class="view"><div class="panel"><div class="panel-head"><h2>Recent activity</h2><button onclick="loadJobs()">Refresh</button></div><div id="jobsList"></div></div></section>
     <div id="ipTrace" class="ip-trace" style="display:none"><div class="panel-head"><h2 id="ipTraceTitle">Trace</h2><button onclick="document.querySelector('#ipTrace').style.display='none'">Close</button></div><pre id="ipTraceOut">…</pre></div>
     <div id="alertDetail" class="modal" style="display:none"><div class="modal-box"><div class="panel-head"><h2 id="alertDetailTitle">Alert detail</h2><button onclick="document.querySelector('#alertDetail').style.display='none'">Close</button></div><div id="alertDetailBody">…</div></div></div>
-  </main>
-  <div id="toast" role="status"></div><script src="/static/app.js"></script>
+    </div></section>
+  </div>
+  <footer class="main-footer"><strong>Fieldline Network Probe</strong> · passive-first field diagnostics<span class="float-right d-none d-sm-inline">AdminLTE shell</span></footer>
+</div>
+  <div id="toast" role="status"></div>
+  <script src="/static/vendor/jquery/jquery.min.js"></script>
+  <script src="/static/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+  <script src="/static/vendor/adminlte/js/adminlte.min.js"></script>
+  <script src="/static/app.js"></script>
+  <script>
+  // Keep the AdminLTE content-header title in sync with the active view (app.js is untouched).
+  (function(){
+    const orig=window.activateView;
+    if(typeof orig==='function'){
+      window.activateView=function(v){orig(v);const b=document.querySelector('nav button[data-view="'+v+'"]');const p=b&&b.querySelector('p');const t=document.querySelector('#pageTitle');if(p&&t)t.textContent=p.textContent;};
+    }
+    document.querySelectorAll('nav button[data-view]').forEach(b=>b.onclick=()=>window.activateView(b.dataset.view));
+  })();
+  </script>
 </body></html>
