@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Network Probe Dashboard
+Comment=Start the probe services and open the dashboard
+Exec=/opt/analyseLaptop/scripts/start-probe.sh
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Network;System;Monitor;
+Keywords=probe;network;dashboard;monitor;

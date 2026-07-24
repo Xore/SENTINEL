@@ -76,6 +76,20 @@ def _s(value) -> str:
     return str(value or "").strip()
 
 
+def _enabled(item) -> bool:
+    """A probe is curated-in unless explicitly turned off. Absent/true -> enabled;
+    only a literal False (from the dashboard's Enabled checkbox) disables it."""
+    return item.get("enabled", True) is not False
+
+
+def _started(item) -> bool:
+    """Whether this probe is currently running. Absent -> True so pre-existing
+    configs (written before the start/stop toggle existed) keep running; only a
+    literal False (from the dashboard's Start/stop toggle) stops it. New probes
+    are added with started=False by the UI, so 'default stopped' still holds."""
+    return item.get("started", True) is not False
+
+
 def clean_targets(items) -> tuple[list[dict], list[str]]:
     out, errors, seen = [], [], set()
     for i, item in enumerate(items or []):
@@ -93,7 +107,8 @@ def clean_targets(items) -> tuple[list[dict], list[str]]:
             errors.append(f"duplicate target name '{name}'")
             continue
         seen.add(name)
-        out.append({"name": name, "address": address, "interface": interface, "group": group})
+        out.append({"name": name, "address": address, "interface": interface,
+                    "group": group, "enabled": _enabled(item), "started": _started(item)})
     return out, errors
 
 
@@ -113,7 +128,8 @@ def clean_services(items) -> tuple[list[dict], list[str]]:
             errors.append(f"duplicate service name '{name}'")
             continue
         seen.add(name)
-        out.append({"name": name, "kind": kind, "target": target})
+        out.append({"name": name, "kind": kind, "target": target,
+                    "enabled": _enabled(item), "started": _started(item)})
     return out, errors
 
 
@@ -143,5 +159,6 @@ def clean_ports(items) -> tuple[list[dict], list[str]]:
             continue
         seen.add(name)
         out.append({"name": name, "host": host, "port": port, "proto": proto,
-                    "send": _s(item.get("send")), "expect": _s(item.get("expect"))})
+                    "send": _s(item.get("send")), "expect": _s(item.get("expect")),
+                    "enabled": _enabled(item), "started": _started(item)})
     return out, errors
