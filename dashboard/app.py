@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import ipaddress
 import json
+import logging
 import os
 import re
 import shutil
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from pathlib import Path
 
@@ -53,6 +55,47 @@ app = Flask(__name__)
 jobs: dict[str, dict] = {}
 job_procs: dict[str, subprocess.Popen] = {}
 jobs_lock = threading.Lock()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stderr,
+)
+log = logging.getLogger("network-probe")
+
+
+def supervise(name: str, fn, *, restart: bool = True, min_backoff: float = 1.0,
+              max_backoff: float = 30.0) -> threading.Thread:
+    """Run ``fn`` on a daemon thread that can never take the process down.
+
+    Any exception escaping ``fn`` is logged with a traceback. For a long-lived
+    loop (``restart=True``) the thread is respawned with exponential backoff so
+    a background worker crash self-heals instead of silently dying; a one-shot
+    worker (``restart=False``) just logs and exits its thread. Either way the
+    Flask/waitress process keeps serving."""
+    def runner() -> None:
+        backoff = min_backoff
+        while True:
+            started = time.monotonic()
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - deliberate catch-all supervisor
+                log.error("worker %r crashed:\n%s", name, traceback.format_exc())
+            else:
+                if not restart:
+                    return
+                log.warning("worker %r returned; restarting", name)
+            if not restart:
+                return
+            # Reset backoff if the worker ran for a healthy while before dying.
+            if time.monotonic() - started > max_backoff:
+                backoff = min_backoff
+            time.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
+
+    thread = threading.Thread(target=runner, name=name, daemon=True)
+    thread.start()
+    return thread
 
 AUTH_TOKEN_FILE = Path(os.environ.get("PROBE_AUTH_TOKEN_FILE", "/etc/network-probe/dashboard-token"))
 
@@ -216,22 +259,33 @@ def launch_job(kind: str, command: list[str], timeout: int = 120,
             history.record_host(target, source=kind, kind=kind)
 
     def worker() -> None:
-        code, output = _run_tracked(job_id, command, timeout)
+        try:
+            code, output = _run_tracked(job_id, command, timeout)
+        except Exception:  # the subprocess plumbing itself failed
+            log.error("job %s (%s) crashed:\n%s", job_id, kind, traceback.format_exc())
+            code, output = 1, "job crashed:\n" + traceback.format_exc()[-4000:]
         with jobs_lock:
-            stopping = jobs[job_id].get("state") == "stopping"
+            entry = jobs.get(job_id, {"id": job_id, "kind": kind, "target": target})
+            stopping = entry.get("state") == "stopping"
             final = "complete" if code == 0 else ("stopped" if stopping else "failed")
-            jobs[job_id].update(state=final, code=code, output=output, ended=time.time())
-            snap = dict(jobs[job_id])
-        history.upsert_job(snap)
-        if target:
-            history.update_scan_result(job_id, ok=(code == 0), summary=output[:1000])
+            entry.update(state=final, code=code, output=output, ended=time.time())
+            jobs[job_id] = entry
+            snap = dict(entry)
+        try:  # persistence must never leave the job hung or crash the worker
+            history.upsert_job(snap)
+            if target:
+                history.update_scan_result(job_id, ok=(code == 0), summary=output[:1000])
+        except Exception:
+            log.error("job %s persistence failed:\n%s", job_id, traceback.format_exc())
         if on_done:
             try:
                 on_done(snap, output)
             except Exception:  # never let post-processing break a job
-                pass
+                log.error("job %s on_done failed:\n%s", job_id, traceback.format_exc())
 
-    threading.Thread(target=worker, daemon=True).start()
+    # restart=False: a job runs once; supervise() is the last-resort net that
+    # guarantees a crash is logged and can never reach the serving process.
+    supervise(f"job:{kind}:{job_id}", worker, restart=False)
     return job_id
 
 
@@ -2179,7 +2233,9 @@ def _background_poller() -> None:
 def _start_background_poller() -> None:
     if os.environ.get("PROBE_DISABLE_POLLER"):
         return
-    threading.Thread(target=_background_poller, name="lldp-poller", daemon=True).start()
+    # Supervised: if the outer loop ever throws (config load, parsing, …) it is
+    # logged and respawned with backoff rather than dying for the process life.
+    supervise("lldp-poller", _background_poller, restart=True)
 
 
 # Start the continuous-inventory poller when served under waitress (module
