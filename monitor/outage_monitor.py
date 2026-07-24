@@ -88,8 +88,8 @@ def load_targets() -> list[dict]:
     if config is not None:
         rows = []
         for item in config.get("targets", []) or []:
-            if not isinstance(item, dict):
-                continue
+            if not isinstance(item, dict) or item.get("enabled") is False or item.get("started") is False:
+                continue  # disabled from the dashboard: skip so its worker stops
             name, address = str(item.get("name", "")).strip(), str(item.get("address", "")).strip()
             if name and address:
                 rows.append({"name": name, "address": address,
@@ -305,7 +305,7 @@ def wifi_sample(interface: str) -> tuple | None:
         find(r"SSID: (.+)", link),
         find(r"Connected to ([0-9a-f:]+)", link),
         find(r"freq: (\d+)", link, int),
-        find(r"signal: (-?\d+)", station, int),
+        find(r"signal:\s*(-?\d+)", station, int),
         find(r"tx bitrate:\s+([\d.]+)", station, float),
         find(r"rx bitrate:\s+([\d.]+)", station, float),
         find(r"tx retries:\s+(\d+)", station, int),
@@ -373,8 +373,8 @@ def load_services() -> list[dict]:
     if config is not None:
         rows = []
         for item in config.get("services", []) or []:
-            if not isinstance(item, dict):
-                continue
+            if not isinstance(item, dict) or item.get("enabled") is False or item.get("started") is False:
+                continue  # disabled from the dashboard
             name, kind, target = (str(item.get(k, "")).strip() for k in ("name", "kind", "target"))
             if name and kind in {"dns", "http", "tcp", "ntp"} and target:
                 rows.append({"name": name, "kind": kind, "target": target})
@@ -400,8 +400,8 @@ def load_ports() -> list[dict]:
     if config is not None:
         rows = []
         for item in config.get("ports", []) or []:
-            if not isinstance(item, dict):
-                continue
+            if not isinstance(item, dict) or item.get("enabled") is False or item.get("started") is False:
+                continue  # disabled from the dashboard
             name, host = str(item.get("name", "")).strip(), str(item.get("host", "")).strip()
             try:
                 port = int(item.get("port"))

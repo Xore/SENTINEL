@@ -17,8 +17,10 @@ Everything is best-effort: a failure to record history never breaks a request.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import secrets
 import sqlite3
 import threading
 import time
@@ -100,6 +102,49 @@ CREATE TABLE IF NOT EXISTS ap_events (
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ap_events_ts ON ap_events(ts);
+CREATE TABLE IF NOT EXISTS heatmap_surveys (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT,
+    created      REAL,
+    updated      REAL,
+    ap_positions TEXT,          -- JSON {bssid: {x,y,ssid}} placed on the floor
+    floorplan    TEXT           -- optional data: URL background image
+);
+CREATE TABLE IF NOT EXISTS heatmap_points (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    survey_id INTEGER,
+    ts        REAL,
+    x         REAL,             -- 0..1 fractional position on the canvas
+    y         REAL,
+    readings  TEXT              -- JSON [{bssid,ssid,signal_dbm,channel,band,freq_mhz}]
+);
+CREATE INDEX IF NOT EXISTS idx_heatmap_points_survey ON heatmap_points(survey_id);
+CREATE TABLE IF NOT EXISTS collectors (
+    collector_id TEXT PRIMARY KEY,
+    name         TEXT,
+    key_hash     TEXT,          -- sha256 hex of the ingest key (plaintext never stored)
+    key_prefix   TEXT,          -- first chars of the key, for display/identification
+    enabled      INTEGER,       -- 1 = active, 0 = revoked
+    created      REAL,
+    last_seen    REAL,
+    hostname     TEXT,
+    node_ip      TEXT,
+    version      TEXT,
+    status       TEXT,           -- agent self-report: RUNNING | DEGRADED | STARTING
+    status_meta  TEXT,           -- JSON {detail, cycles, last_error}
+    update_requested INTEGER,    -- 1 = operator asked this collector to self-update
+    update_secret TEXT,          -- per-collector HMAC secret: signs update instructions
+                                 -- so only THIS backend can authorize a binary swap
+    meta         TEXT           -- JSON blob of last-reported telemetry
+);
+CREATE TABLE IF NOT EXISTS collector_samples (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    collector_id TEXT,
+    stream       TEXT,          -- interfaces | neighbours | ping | ...
+    ts           REAL,
+    payload      TEXT           -- JSON
+);
+CREATE INDEX IF NOT EXISTS idx_collector_samples ON collector_samples(collector_id, stream, ts);
 """
 
 
@@ -110,6 +155,15 @@ def _connect() -> sqlite3.Connection:
     db.row_factory = sqlite3.Row
     if not _initialised:
         db.executescript(SCHEMA)
+        # Additive migrations for DBs created before a column existed. CREATE
+        # TABLE IF NOT EXISTS won't add columns to a table that already exists,
+        # so patch them in idempotently.
+        for col, decl in (("status", "TEXT"), ("status_meta", "TEXT"),
+                          ("update_requested", "INTEGER"), ("update_secret", "TEXT")):
+            try:
+                db.execute(f"ALTER TABLE collectors ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError:
+                pass  # column already present
         db.commit()
         _initialised = True
     return db
@@ -442,3 +496,337 @@ def ap_last_update() -> float | None:
         return row["t"] if row and row["t"] else None
     except sqlite3.Error:
         return None
+
+
+# --- Wi-Fi coverage heatmap / site survey ----------------------------------
+# A survey is a set of sample points on a floor canvas (positions are stored as
+# 0..1 fractions so the canvas can be any size), each holding the per-BSSID RSSI
+# read at that spot. AP markers can be dragged to their real-world position.
+
+def create_heatmap_survey(name: str) -> dict | None:
+    now = time.time()
+    try:
+        with _lock, _connect() as db:
+            cur = db.execute(
+                "INSERT INTO heatmap_surveys(name, created, updated, ap_positions, floorplan) "
+                "VALUES(?,?,?,?,?)", (name or "Survey", now, now, "{}", None))
+            db.commit()
+            sid = cur.lastrowid
+        return {"id": sid, "name": name or "Survey", "created": now, "updated": now,
+                "ap_positions": {}, "points": []}
+    except sqlite3.Error:
+        return None
+
+
+def list_heatmap_surveys() -> list[dict]:
+    try:
+        with _lock, _connect() as db:
+            rows = db.execute(
+                """SELECT s.id, s.name, s.created, s.updated,
+                          (SELECT COUNT(*) FROM heatmap_points p WHERE p.survey_id = s.id) AS point_count
+                   FROM heatmap_surveys s ORDER BY s.updated DESC""").fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+def get_heatmap_survey(survey_id: int) -> dict | None:
+    try:
+        with _lock, _connect() as db:
+            row = db.execute("SELECT * FROM heatmap_surveys WHERE id = ?", (survey_id,)).fetchone()
+            if row is None:
+                return None
+            pts = db.execute(
+                "SELECT id, ts, x, y, readings FROM heatmap_points WHERE survey_id = ? ORDER BY ts",
+                (survey_id,)).fetchall()
+        survey = dict(row)
+        try:
+            survey["ap_positions"] = json.loads(survey.get("ap_positions") or "{}")
+        except ValueError:
+            survey["ap_positions"] = {}
+        survey["points"] = [
+            {"id": p["id"], "ts": p["ts"], "x": p["x"], "y": p["y"],
+             "readings": json.loads(p["readings"] or "[]")} for p in pts]
+        return survey
+    except (sqlite3.Error, ValueError):
+        return None
+
+
+def add_heatmap_point(survey_id: int, x: float, y: float, readings: list[dict]) -> dict | None:
+    now = time.time()
+    try:
+        with _lock, _connect() as db:
+            if db.execute("SELECT 1 FROM heatmap_surveys WHERE id = ?", (survey_id,)).fetchone() is None:
+                return None
+            cur = db.execute(
+                "INSERT INTO heatmap_points(survey_id, ts, x, y, readings) VALUES(?,?,?,?,?)",
+                (survey_id, now, x, y, json.dumps(readings)))
+            db.execute("UPDATE heatmap_surveys SET updated = ? WHERE id = ?", (now, survey_id))
+            db.commit()
+            pid = cur.lastrowid
+        return {"id": pid, "ts": now, "x": x, "y": y, "readings": readings}
+    except sqlite3.Error:
+        return None
+
+
+def delete_heatmap_point(survey_id: int, point_id: int) -> bool:
+    try:
+        with _lock, _connect() as db:
+            cur = db.execute("DELETE FROM heatmap_points WHERE id = ? AND survey_id = ?",
+                             (point_id, survey_id))
+            db.execute("UPDATE heatmap_surveys SET updated = ? WHERE id = ?", (time.time(), survey_id))
+            db.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error:
+        return False
+
+
+def set_heatmap_ap_positions(survey_id: int, positions: dict) -> bool:
+    try:
+        with _lock, _connect() as db:
+            cur = db.execute(
+                "UPDATE heatmap_surveys SET ap_positions = ?, updated = ? WHERE id = ?",
+                (json.dumps(positions), time.time(), survey_id))
+            db.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error:
+        return False
+
+
+def rename_heatmap_survey(survey_id: int, name: str) -> bool:
+    try:
+        with _lock, _connect() as db:
+            cur = db.execute("UPDATE heatmap_surveys SET name = ?, updated = ? WHERE id = ?",
+                             (name, time.time(), survey_id))
+            db.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error:
+        return False
+
+
+def delete_heatmap_survey(survey_id: int) -> bool:
+    try:
+        with _lock, _connect() as db:
+            db.execute("DELETE FROM heatmap_points WHERE survey_id = ?", (survey_id,))
+            cur = db.execute("DELETE FROM heatmap_surveys WHERE id = ?", (survey_id,))
+            db.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error:
+        return False
+
+
+# --- Multi-collector enrollment + ingest -----------------------------------
+# The standalone (aggregator) node enrolls remote collectors. Each collector
+# gets its OWN ingest key, shown once at enrollment and stored only as a SHA-256
+# hash, so a leaked database never yields a usable key. A key can be revoked
+# (enabled=0) without deleting the collector's history. Ingest requires the
+# global accept-external-collectors toggle AND a valid, non-revoked key.
+
+def _hash_key(key: str) -> str:
+    return hashlib.sha256((key or "").encode("utf-8")).hexdigest()
+
+
+def enroll_collector(name: str) -> dict | None:
+    """Create a collector and mint its ingest key. Returns the PLAINTEXT key
+    once - it is never retrievable again. Returns None on failure."""
+    collector_id = "col-" + secrets.token_hex(4)
+    key = secrets.token_urlsafe(24)
+    # A distinct secret (NOT the ingest key) signs update instructions. It is
+    # shared with this one collector so it can verify a binary swap was authorized
+    # by us, not injected by an on-path attacker. Stored as-is because it grants no
+    # push access - only the ability to verify our HMAC over an update payload.
+    update_secret = secrets.token_hex(32)
+    now = time.time()
+    try:
+        with _lock, _connect() as db:
+            db.execute(
+                "INSERT INTO collectors(collector_id, name, key_hash, key_prefix, enabled, created, last_seen, update_secret) "
+                "VALUES(?,?,?,?,1,?,NULL,?)",
+                (collector_id, name or collector_id, _hash_key(key), key[:6], now, update_secret))
+            db.commit()
+        return {"collector_id": collector_id, "name": name or collector_id, "key": key,
+                "update_secret": update_secret, "created": now}
+    except sqlite3.Error:
+        return None
+
+
+def rotate_collector_key(collector_id: str) -> dict | None:
+    """Issue a fresh key for an existing collector (invalidates the old one)."""
+    key = secrets.token_urlsafe(24)
+    # Re-keying issues a fresh signing secret too, so a fully re-provisioned
+    # collector shares all-new credentials with us.
+    update_secret = secrets.token_hex(32)
+    try:
+        with _lock, _connect() as db:
+            cur = db.execute(
+                "UPDATE collectors SET key_hash = ?, key_prefix = ?, update_secret = ?, enabled = 1 WHERE collector_id = ?",
+                (_hash_key(key), key[:6], update_secret, collector_id))
+            db.commit()
+            if cur.rowcount == 0:
+                return None
+        return {"collector_id": collector_id, "key": key, "update_secret": update_secret}
+    except sqlite3.Error:
+        return None
+
+
+def get_collector_update_secret(collector_id: str) -> str | None:
+    """The HMAC secret shared with one collector, used to sign update instructions
+    so it can verify they genuinely came from this backend."""
+    try:
+        with _lock, _connect() as db:
+            row = db.execute(
+                "SELECT update_secret FROM collectors WHERE collector_id = ? AND enabled = 1",
+                (collector_id,)).fetchone()
+        return row["update_secret"] if row and row["update_secret"] else None
+    except sqlite3.Error:
+        return None
+
+
+def revoke_collector(collector_id: str) -> bool:
+    """Invalidate a collector's key without deleting its history."""
+    try:
+        with _lock, _connect() as db:
+            cur = db.execute("UPDATE collectors SET enabled = 0 WHERE collector_id = ?", (collector_id,))
+            db.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error:
+        return False
+
+
+def delete_collector(collector_id: str) -> bool:
+    try:
+        with _lock, _connect() as db:
+            db.execute("DELETE FROM collector_samples WHERE collector_id = ?", (collector_id,))
+            cur = db.execute("DELETE FROM collectors WHERE collector_id = ?", (collector_id,))
+            db.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error:
+        return False
+
+
+def list_collectors() -> list[dict]:
+    """Enrolled collectors, without any key material (only the prefix)."""
+    try:
+        with _lock, _connect() as db:
+            rows = db.execute(
+                "SELECT collector_id, name, key_prefix, enabled, created, last_seen, "
+                "hostname, node_ip, version, status, status_meta, update_requested, meta "
+                "FROM collectors ORDER BY created").fetchall()
+    except sqlite3.Error:
+        return []
+    out = []
+    for r in rows:
+        item = dict(r)
+        item["enabled"] = bool(item["enabled"])
+        item["update_requested"] = bool(item.get("update_requested"))
+        for field in ("meta", "status_meta"):
+            try:
+                item[field] = json.loads(item.get(field) or "{}")
+            except ValueError:
+                item[field] = {}
+        item["status"] = item.get("status") or "UNKNOWN"
+        out.append(item)
+    return out
+
+
+def request_collector_update(collector_id: str, requested: bool = True) -> bool:
+    """Flag (or clear) a pending self-update for one collector. The collector
+    learns of it in its next heartbeat response and pulls the new binary."""
+    try:
+        with _lock, _connect() as db:
+            cur = db.execute(
+                "UPDATE collectors SET update_requested = ? WHERE collector_id = ?",
+                (1 if requested else 0, collector_id))
+            db.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error:
+        return False
+
+
+def collector_update_pending(collector_id: str) -> bool:
+    try:
+        with _lock, _connect() as db:
+            row = db.execute(
+                "SELECT update_requested FROM collectors WHERE collector_id = ?",
+                (collector_id,)).fetchone()
+        return bool(row and row["update_requested"])
+    except sqlite3.Error:
+        return False
+
+
+def authenticate_collector(key: str) -> str | None:
+    """Return the collector_id for a presented key if it is valid and enabled,
+    else None. Compares against the stored SHA-256 hash."""
+    if not key:
+        return None
+    digest = _hash_key(key)
+    try:
+        with _lock, _connect() as db:
+            row = db.execute(
+                "SELECT collector_id FROM collectors WHERE key_hash = ? AND enabled = 1",
+                (digest,)).fetchone()
+        return row["collector_id"] if row else None
+    except sqlite3.Error:
+        return None
+
+
+def touch_collector(collector_id: str, *, hostname: str = "", node_ip: str = "",
+                    version: str = "", meta: dict | None = None,
+                    status: dict | None = None) -> None:
+    """Record a heartbeat: last_seen + last-reported telemetry + self-reported
+    lifecycle status (RUNNING/DEGRADED/STARTING). DOWN is not stored here - it is
+    derived from a stale last_seen when the collector list is built."""
+    status = status or {}
+    status_str = str(status.get("status") or "RUNNING")
+    status_meta = {k: status.get(k) for k in ("detail", "cycles", "last_error") if k in status}
+    try:
+        with _lock, _connect() as db:
+            db.execute(
+                "UPDATE collectors SET last_seen = ?, hostname = ?, node_ip = ?, version = ?, "
+                "meta = ?, status = ?, status_meta = ? WHERE collector_id = ?",
+                (time.time(), hostname, node_ip, version, json.dumps(meta or {}),
+                 status_str, json.dumps(status_meta), collector_id))
+            db.commit()
+    except sqlite3.Error:
+        pass
+
+
+def ingest_samples(collector_id: str, stream: str, rows: list[dict], cap: int = 5000) -> int:
+    """Store a batch of pushed samples for one stream, keeping the per-collector
+    /stream history bounded. Returns the number stored."""
+    if not rows:
+        return 0
+    now = time.time()
+    try:
+        with _lock, _connect() as db:
+            db.executemany(
+                "INSERT INTO collector_samples(collector_id, stream, ts, payload) VALUES(?,?,?,?)",
+                [(collector_id, stream, (r.get("ts") if isinstance(r, dict) else None) or now,
+                  json.dumps(r)) for r in rows])
+            db.execute(
+                "DELETE FROM collector_samples WHERE collector_id = ? AND stream = ? AND id NOT IN "
+                "(SELECT id FROM collector_samples WHERE collector_id = ? AND stream = ? ORDER BY ts DESC LIMIT ?)",
+                (collector_id, stream, collector_id, stream, cap))
+            db.commit()
+        return len(rows)
+    except sqlite3.Error:
+        return 0
+
+
+def get_collector_samples(collector_id: str, stream: str, limit: int = 200) -> list[dict]:
+    try:
+        with _lock, _connect() as db:
+            rows = db.execute(
+                "SELECT ts, payload FROM collector_samples WHERE collector_id = ? AND stream = ? "
+                "ORDER BY ts DESC LIMIT ?", (collector_id, stream, limit)).fetchall()
+    except sqlite3.Error:
+        return []
+    out = []
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"] or "{}")
+        except ValueError:
+            payload = {}
+        payload.setdefault("ts", r["ts"])
+        out.append(payload)
+    return out

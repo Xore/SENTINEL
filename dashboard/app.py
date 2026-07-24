@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
 import shutil
@@ -12,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from pathlib import Path
 
@@ -22,11 +26,13 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import history
     from dashboard import services
     from dashboard import monitor_config
+    from dashboard import ids_adapter
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
     import services
     import monitor_config
+    import ids_adapter
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_DIR = Path(os.environ.get("PROBE_CAPTURE_DIR", ROOT / "captures")).resolve()
@@ -52,6 +58,47 @@ jobs: dict[str, dict] = {}
 job_procs: dict[str, subprocess.Popen] = {}
 jobs_lock = threading.Lock()
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stderr,
+)
+log = logging.getLogger("network-probe")
+
+
+def supervise(name: str, fn, *, restart: bool = True, min_backoff: float = 1.0,
+              max_backoff: float = 30.0) -> threading.Thread:
+    """Run ``fn`` on a daemon thread that can never take the process down.
+
+    Any exception escaping ``fn`` is logged with a traceback. For a long-lived
+    loop (``restart=True``) the thread is respawned with exponential backoff so
+    a background worker crash self-heals instead of silently dying; a one-shot
+    worker (``restart=False``) just logs and exits its thread. Either way the
+    Flask/waitress process keeps serving."""
+    def runner() -> None:
+        backoff = min_backoff
+        while True:
+            started = time.monotonic()
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - deliberate catch-all supervisor
+                log.error("worker %r crashed:\n%s", name, traceback.format_exc())
+            else:
+                if not restart:
+                    return
+                log.warning("worker %r returned; restarting", name)
+            if not restart:
+                return
+            # Reset backoff if the worker ran for a healthy while before dying.
+            if time.monotonic() - started > max_backoff:
+                backoff = min_backoff
+            time.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
+
+    thread = threading.Thread(target=runner, name=name, daemon=True)
+    thread.start()
+    return thread
+
 AUTH_TOKEN_FILE = Path(os.environ.get("PROBE_AUTH_TOKEN_FILE", "/etc/network-probe/dashboard-token"))
 
 
@@ -68,7 +115,9 @@ def auth_token() -> str:
 @app.before_request
 def require_token():
     token = auth_token()
-    if not token or request.path == "/healthz":
+    # Collector ingest authenticates with a per-collector key (see _require_ingest),
+    # not the rotating dashboard token, so it is exempt from this gate.
+    if not token or request.path == "/healthz" or request.path.startswith("/api/ingest/"):
         return None
     supplied = request.authorization
     if supplied and supplied.password == token:
@@ -214,22 +263,33 @@ def launch_job(kind: str, command: list[str], timeout: int = 120,
             history.record_host(target, source=kind, kind=kind)
 
     def worker() -> None:
-        code, output = _run_tracked(job_id, command, timeout)
+        try:
+            code, output = _run_tracked(job_id, command, timeout)
+        except Exception:  # the subprocess plumbing itself failed
+            log.error("job %s (%s) crashed:\n%s", job_id, kind, traceback.format_exc())
+            code, output = 1, "job crashed:\n" + traceback.format_exc()[-4000:]
         with jobs_lock:
-            stopping = jobs[job_id].get("state") == "stopping"
+            entry = jobs.get(job_id, {"id": job_id, "kind": kind, "target": target})
+            stopping = entry.get("state") == "stopping"
             final = "complete" if code == 0 else ("stopped" if stopping else "failed")
-            jobs[job_id].update(state=final, code=code, output=output, ended=time.time())
-            snap = dict(jobs[job_id])
-        history.upsert_job(snap)
-        if target:
-            history.update_scan_result(job_id, ok=(code == 0), summary=output[:1000])
+            entry.update(state=final, code=code, output=output, ended=time.time())
+            jobs[job_id] = entry
+            snap = dict(entry)
+        try:  # persistence must never leave the job hung or crash the worker
+            history.upsert_job(snap)
+            if target:
+                history.update_scan_result(job_id, ok=(code == 0), summary=output[:1000])
+        except Exception:
+            log.error("job %s persistence failed:\n%s", job_id, traceback.format_exc())
         if on_done:
             try:
                 on_done(snap, output)
             except Exception:  # never let post-processing break a job
-                pass
+                log.error("job %s on_done failed:\n%s", job_id, traceback.format_exc())
 
-    threading.Thread(target=worker, daemon=True).start()
+    # restart=False: a job runs once; supervise() is the last-resort net that
+    # guarantees a crash is logged and can never reach the serving process.
+    supervise(f"job:{kind}:{job_id}", worker, restart=False)
     return job_id
 
 
@@ -553,6 +613,132 @@ def wifi_ap_monitor_scan():
     return jsonify(result)
 
 
+# --- Wi-Fi coverage heatmap / walk-around site survey ----------------------
+
+def _scan_readings(rescan: bool = True) -> tuple[list[dict], str]:
+    """Run one Wi-Fi scan and return normalised per-BSSID readings for the
+    heatmap: bssid, ssid, signal_dbm (real from iw, or approximated from an
+    nmcli %), channel, band, freq. Second tuple item is an error/'' string."""
+    wireless = _wireless_interfaces()
+    if not wireless:
+        return [], "no wireless interface detected"
+    command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "wifi_survey.py"),
+               "--iface", wireless[0]]
+    if rescan:
+        command.append("--rescan")
+    code, output = run(command, 40)
+    if code != 0 or not output.strip():
+        return [], "scan failed (the radio may be blocked)"
+    try:
+        data = json.loads(output)
+    except ValueError:
+        return [], "scan produced no parseable output"
+    readings = []
+    for ap in data.get("aps") or []:
+        dbm = ap.get("signal_dbm")
+        if dbm is None and ap.get("signal_pct") is not None:
+            dbm = ap["signal_pct"] / 2.0 - 100.0  # 100%->-50, 50%->-75 (approx)
+        readings.append({
+            "bssid": ap.get("bssid"), "ssid": ap.get("ssid"),
+            "signal_dbm": round(dbm, 1) if dbm is not None else None,
+            "signal_pct": ap.get("signal_pct"),
+            "channel": ap.get("channel"), "band": ap.get("band"),
+            "freq_mhz": ap.get("freq_mhz"), "in_use": ap.get("in_use", False),
+        })
+    return readings, ("" if readings else (data.get("note") or "no APs visible"))
+
+
+@app.get("/api/wifi/heatmap/live")
+def heatmap_live():
+    """A fresh scan without storing it - drives the live signal meter you watch
+    while walking. Uses the NM scan cache (no forced rescan) so it stays snappy."""
+    readings, note = _scan_readings(rescan=request.args.get("rescan") == "1")
+    return jsonify(readings=readings, note=note, ts=time.time())
+
+
+@app.get("/api/wifi/heatmap/surveys")
+def heatmap_surveys():
+    return jsonify(surveys=history.list_heatmap_surveys())
+
+
+@app.post("/api/wifi/heatmap/surveys")
+def heatmap_create():
+    name = str((request.get_json(silent=True) or {}).get("name", "")).strip() or "Survey"
+    survey = history.create_heatmap_survey(name[:80])
+    if survey is None:
+        return jsonify(error="could not create survey"), 500
+    return jsonify(survey), 201
+
+
+@app.get("/api/wifi/heatmap/surveys/<int:survey_id>")
+def heatmap_get(survey_id: int):
+    survey = history.get_heatmap_survey(survey_id)
+    if survey is None:
+        return jsonify(error="survey not found"), 404
+    return jsonify(survey)
+
+
+@app.delete("/api/wifi/heatmap/surveys/<int:survey_id>")
+def heatmap_delete(survey_id: int):
+    return jsonify(ok=history.delete_heatmap_survey(survey_id))
+
+
+@app.post("/api/wifi/heatmap/surveys/<int:survey_id>/rename")
+def heatmap_rename(survey_id: int):
+    name = str((request.get_json(silent=True) or {}).get("name", "")).strip()
+    if not name:
+        return jsonify(error="name required"), 400
+    if not history.rename_heatmap_survey(survey_id, name[:80]):
+        return jsonify(error="survey not found"), 404
+    return jsonify(ok=True, name=name[:80])
+
+
+@app.post("/api/wifi/heatmap/surveys/<int:survey_id>/sample")
+def heatmap_sample(survey_id: int):
+    """Capture the RF at the operator's current position (x,y as 0..1 fractions
+    on the canvas). Scans, stores the readings against this survey, returns them."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        x, y = float(payload.get("x")), float(payload.get("y"))
+    except (TypeError, ValueError):
+        return jsonify(error="x and y (0..1) are required"), 400
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+        return jsonify(error="x and y must be between 0 and 1"), 400
+    readings, note = _scan_readings(rescan=payload.get("rescan", True))
+    if not readings:
+        return jsonify(error=note or "scan returned no APs"), 400
+    point = history.add_heatmap_point(survey_id, x, y, readings)
+    if point is None:
+        return jsonify(error="survey not found"), 404
+    return jsonify(point=point, note=note), 201
+
+
+@app.delete("/api/wifi/heatmap/surveys/<int:survey_id>/points/<int:point_id>")
+def heatmap_point_delete(survey_id: int, point_id: int):
+    return jsonify(ok=history.delete_heatmap_point(survey_id, point_id))
+
+
+@app.put("/api/wifi/heatmap/surveys/<int:survey_id>/ap-positions")
+def heatmap_ap_positions(survey_id: int):
+    payload = request.get_json(silent=True) or {}
+    positions = payload.get("positions")
+    if not isinstance(positions, dict):
+        return jsonify(error="positions must be an object keyed by BSSID"), 400
+    clean = {}
+    for bssid, pos in positions.items():
+        if not isinstance(pos, dict):
+            continue
+        try:
+            px, py = float(pos.get("x")), float(pos.get("y"))
+        except (TypeError, ValueError):
+            continue
+        clean[str(bssid).lower()] = {"x": max(0.0, min(1.0, px)), "y": max(0.0, min(1.0, py)),
+                                     "ssid": str(pos.get("ssid", ""))[:64]}
+    if not history.set_heatmap_ap_positions(survey_id, clean):
+        return jsonify(error="survey not found"), 404
+    return jsonify(ok=True, positions=clean)
+
+
 @app.post("/api/discovery")
 def discovery():
     payload = request.get_json(silent=True) or {}
@@ -620,6 +806,58 @@ def ids_alerts():
         payload["alerts"] = [a for a in alerts if keep(a)][:limit]
         payload["filtered"] = True
     return jsonify(payload)
+
+
+def _ids_adapters() -> list[dict]:
+    """Real NICs on this probe that Suricata could capture on (loopback aside),
+    each with live up/down and wired/wireless for the picker."""
+    out = []
+    for i in interfaces():
+        name = i["name"]
+        if name == "lo":
+            continue
+        out.append({
+            "name": name,
+            "up": str(i.get("state", "")).lower() == "up",
+            "wired": name.startswith(("en", "eth")),
+        })
+    return out
+
+
+@app.get("/api/ids/adapter")
+def get_ids_adapter():
+    """Desired capture-adapter config (dashboard-editable) plus the live state
+    the root daemon publishes, so the UI can show configured-vs-active."""
+    cfg = ids_adapter.load()
+    cfg["config_file"] = str(ids_adapter.CONFIG_FILE)
+    cfg["adapters"] = _ids_adapters()
+    # Live state from the read-only reader (active/resolved NICs, note).
+    _, summary = _ids_summary(1)
+    engine = summary.get("engine", {}) if isinstance(summary, dict) else {}
+    cfg["live"] = engine.get("adapter", {})
+    cfg["service_active"] = bool(engine.get("service_active"))
+    return jsonify(cfg)
+
+
+@app.put("/api/ids/adapter")
+def put_ids_adapter():
+    """Write desired capture-adapter state. The root daemon re-reads this within
+    one recheck cycle, rewrites suricata.yaml, validates it, and rolls back on
+    failure - the web process never touches Suricata directly."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(error="expected a JSON object"), 400
+    valid_names = {a["name"] for a in _ids_adapters()}
+    cfg, errors = ids_adapter.validate(payload, valid_names)
+    if errors:
+        return jsonify(error="validation failed", details=errors), 400
+    try:
+        ids_adapter.save(cfg)
+    except OSError as exc:
+        return jsonify(error=f"could not save IDS adapter config: {exc}"), 500
+    cfg["config_file"] = str(ids_adapter.CONFIG_FILE)
+    cfg["adapters"] = _ids_adapters()
+    return jsonify(cfg)
 
 
 def valid_ip(value: str) -> str:
@@ -1463,6 +1701,162 @@ def monitor_events():
     ])
 
 
+def _chan_from_freq(freq):
+    """2.4/5/6 GHz channel number from centre frequency in MHz (best-effort)."""
+    if not freq:
+        return None
+    f = int(freq)
+    if 2412 <= f <= 2484:
+        return 14 if f == 2484 else (f - 2407) // 5
+    if 5160 <= f <= 5885:
+        return (f - 5000) // 5
+    if 5955 <= f <= 7115:  # 6 GHz
+        return (f - 5950) // 5
+    return None
+
+
+def _band_from_freq(freq):
+    if not freq:
+        return None
+    f = int(freq)
+    if f < 2500:
+        return "2.4 GHz"
+    if f < 5925:
+        return "5 GHz"
+    return "6 GHz"
+
+
+# Signal considered "weak" once it drops below this (dBm); crossing it fires a warning.
+WIFI_WEAK_DBM = -75
+
+@app.get("/api/wifi/handovers")
+def wifi_handovers():
+    """Colorized roam/handover event log derived from consecutive wifi_samples.
+
+    Levels map to the requested colours: info=BLUE (handover / (re)association),
+    warning=YELLOW (weak signal, tx failures, beacon loss), error=RED (association
+    lost / roam failed). Events are edge-triggered from transitions between adjacent
+    samples so a steady link produces no noise."""
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    try:
+        minutes = max(5, min(int(request.args.get("minutes", 720)), 14 * 1440))
+        limit = max(1, min(int(request.args.get("limit", 200)), 1000))
+    except ValueError:
+        return jsonify(error="minutes/limit must be numbers"), 400
+    since = time.time() - minutes * 60
+    rows = db.execute(
+        """
+        SELECT ts, interface, connected, ssid, bssid, freq_mhz, signal_dbm,
+               tx_retries, tx_failed, beacon_loss
+        FROM wifi_samples WHERE ts >= ? ORDER BY interface, ts
+        """,
+        (since,),
+    ).fetchall()
+    db.close()
+
+    events: list[dict] = []
+
+    def emit(ts, iface, level, kind, summary, cur, extra=None):
+        ev = {
+            "ts": round(ts, 1),
+            "interface": iface,
+            "level": level,                       # error | warning | info
+            "color": {"error": "red", "warning": "yellow", "info": "blue"}[level],
+            "kind": kind,
+            "summary": summary,
+            "ssid": cur["ssid"],
+            "bssid": cur["bssid"],
+            "signal_dbm": cur["signal_dbm"],
+            "band": _band_from_freq(cur["freq_mhz"]),
+            "channel": _chan_from_freq(cur["freq_mhz"]),
+        }
+        if extra:
+            ev.update(extra)
+        events.append(ev)
+
+    prev_by_iface: dict[str, sqlite3.Row] = {}
+    weak_by_iface: dict[str, bool] = {}
+    for cur in rows:
+        iface = cur["interface"]
+        prev = prev_by_iface.get(iface)
+        prev_by_iface[iface] = cur
+
+        if prev is None:
+            weak_by_iface[iface] = bool(cur["connected"] and cur["signal_dbm"] is not None
+                                        and cur["signal_dbm"] < WIFI_WEAK_DBM)
+            continue
+
+        # (Re)association / loss transitions.
+        if prev["connected"] and not cur["connected"]:
+            emit(cur["ts"], iface, "error", "assoc-lost",
+                 f"Disconnected from {prev['ssid'] or 'network'}", prev,
+                 {"from_bssid": prev["bssid"]})
+            weak_by_iface[iface] = False
+            continue
+        if not prev["connected"] and cur["connected"]:
+            emit(cur["ts"], iface, "info", "associated",
+                 f"Associated with {cur['ssid'] or 'network'}", cur)
+            weak_by_iface[iface] = bool(cur["signal_dbm"] is not None and cur["signal_dbm"] < WIFI_WEAK_DBM)
+            continue
+        if not cur["connected"]:
+            continue
+
+        # Both connected: look for a roam (BSSID change) or SSID change.
+        if prev["bssid"] and cur["bssid"] and prev["bssid"] != cur["bssid"]:
+            same_net = (prev["ssid"] == cur["ssid"])
+            band_note = ""
+            if _band_from_freq(prev["freq_mhz"]) != _band_from_freq(cur["freq_mhz"]):
+                band_note = f" ({_band_from_freq(prev['freq_mhz'])} → {_band_from_freq(cur['freq_mhz'])})"
+            emit(cur["ts"], iface, "info", "handover",
+                 f"Roamed to {cur['bssid']}{band_note}" if same_net
+                 else f"Switched network to {cur['ssid'] or '?'}{band_note}", cur,
+                 {"from_bssid": prev["bssid"], "from_signal_dbm": prev["signal_dbm"]})
+        elif prev["ssid"] != cur["ssid"]:
+            emit(cur["ts"], iface, "info", "network-change",
+                 f"Network changed to {cur['ssid'] or '?'}", cur)
+
+        # Counter-based warnings (cumulative counters; a positive delta = new events
+        # this window). Reset the baseline across a roam so we don't count the wrap.
+        roamed = prev["bssid"] != cur["bssid"]
+        if not roamed:
+            for col, kind, label in (
+                ("tx_failed", "tx-failures", "TX failures"),
+                ("beacon_loss", "beacon-loss", "Beacon loss"),
+            ):
+                pv, cv = prev[col], cur[col]
+                if pv is not None and cv is not None and cv > pv:
+                    emit(cur["ts"], iface, "warning", kind,
+                         f"{label}: +{cv - pv}", cur, {"delta": cv - pv})
+
+        # Weak-signal edge trigger (only when crossing the threshold).
+        now_weak = cur["signal_dbm"] is not None and cur["signal_dbm"] < WIFI_WEAK_DBM
+        if now_weak and not weak_by_iface.get(iface):
+            emit(cur["ts"], iface, "warning", "weak-signal",
+                 f"Weak signal {cur['signal_dbm']} dBm", cur)
+        weak_by_iface[iface] = now_weak
+
+    events.sort(key=lambda e: e["ts"], reverse=True)
+    counts = {"error": 0, "warning": 0, "info": 0}
+    for ev in events:
+        counts[ev["level"]] += 1
+
+    current = {}
+    for iface, last in prev_by_iface.items():
+        current[iface] = {
+            "connected": bool(last["connected"]),
+            "ssid": last["ssid"],
+            "bssid": last["bssid"],
+            "signal_dbm": last["signal_dbm"],
+            "band": _band_from_freq(last["freq_mhz"]),
+            "channel": _chan_from_freq(last["freq_mhz"]),
+            "ts": round(last["ts"], 1),
+        }
+    return jsonify({"events": events[:limit], "counts": counts, "current": current,
+                    "window_minutes": minutes, "total": len(events)})
+
+
 @app.get("/api/monitor/services")
 def monitor_services():
     db = monitor_db()
@@ -1699,6 +2093,550 @@ def monitor_topology():
     })
 
 
+# --- Multi-collector: enrollment, ingest, scoped registry -------------------
+COLLECTOR_DIST = Path(os.environ.get("PROBE_COLLECTOR_DIST", ROOT / "collector" / "dist")).resolve()
+
+
+def _multinode_cfg() -> dict:
+    return settings_store.load().get("multinode", {}) or {}
+
+
+def _collector_release() -> dict:
+    """The collector binaries this aggregator can hand out, from the build
+    manifest in collector/dist/. Returns {version, files:{'os/arch': filename}}.
+    Empty version means no release is available to push."""
+    manifest = COLLECTOR_DIST / "manifest.json"
+    try:
+        data = json.loads(manifest.read_text())
+        files = data.get("files") if isinstance(data.get("files"), dict) else {}
+        return {"version": str(data.get("version") or ""), "files": files}
+    except (OSError, ValueError):
+        return {"version": "", "files": {}}
+
+
+def _release_sha256(path: Path) -> str:
+    """SHA-256 of a release binary, so the update instruction can pin exactly
+    which bytes the collector must install."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _sign_update(secret: str, version: str, os_arch: str, sha256hex: str) -> str:
+    """HMAC-SHA256 over the canonical update message, keyed by the collector's own
+    signing secret. The exact same message is reconstructed and verified agent-side
+    (see collector selfUpdate), so an on-path attacker who cannot produce this MAC
+    cannot make the agent swap its binary - even over plain HTTP or with TLS
+    verification off. Message layout MUST stay byte-identical on both ends."""
+    msg = f"{version}\n{os_arch}\n{sha256hex}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def _release_file_for(os_name: str, arch: str) -> Path | None:
+    """Resolve (and sandbox) the binary path for one os/arch inside the dist dir."""
+    rel = _collector_release().get("files", {}).get(f"{os_name}/{arch}")
+    if not rel:
+        return None
+    path = (COLLECTOR_DIST / rel).resolve()
+    # Never serve anything outside the dist dir, whatever the manifest claims.
+    if COLLECTOR_DIST not in path.parents or not path.is_file():
+        return None
+    return path
+
+
+def _require_ingest() -> tuple[str | None, object]:
+    """Authenticate a pushing collector. Ingest is allowed only when this node's
+    accept-external-collectors toggle is on AND the presented key matches an
+    enrolled, non-revoked collector. The key travels in the X-Ingest-Key header
+    (or HTTP Basic password). Returns (collector_id, None) on success, else
+    (None, error_response)."""
+    if not _multinode_cfg().get("accept_external_collectors"):
+        return None, (jsonify(error="this node is not accepting external collectors"), 403)
+    key = request.headers.get("X-Ingest-Key", "")
+    if not key and request.authorization:
+        key = request.authorization.password or ""
+    collector_id = history.authenticate_collector(key)
+    if not collector_id:
+        return None, (jsonify(error="invalid or revoked collector key"), 401)
+    return collector_id, None
+
+
+@app.post("/api/ingest/heartbeat")
+def ingest_heartbeat():
+    collector_id, err = _require_ingest()
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    reported_version = str(body.get("version", ""))[:80]
+    meta = body.get("meta") if isinstance(body.get("meta"), dict) else {}
+    history.touch_collector(
+        collector_id,
+        hostname=str(body.get("hostname", ""))[:200],
+        node_ip=str(body.get("node_ip", ""))[:200],
+        version=reported_version,
+        meta=meta,
+        status=body.get("status") if isinstance(body.get("status"), dict) else {})
+
+    resp = {"ok": True, "collector_id": collector_id}
+    release = _collector_release()
+    resp["latest_version"] = release["version"]
+    # If an operator asked this collector to update and it is genuinely behind,
+    # tell it where to fetch the new binary. Once it reports the new version the
+    # request is auto-cleared so it does not loop.
+    if release["version"] and reported_version == release["version"]:
+        history.request_collector_update(collector_id, False)
+    elif release["version"] and history.collector_update_pending(collector_id):
+        # Sign the instruction so the agent can prove it came from us and pins the
+        # exact bytes to install. We sign for the agent's OWN os/arch (from its
+        # heartbeat) - if we hold no matching binary, or no signing secret, we
+        # simply do not offer an update rather than send an unverifiable one.
+        os_name = re.sub(r"[^a-z0-9]", "", str(meta.get("os", "")).lower())[:16]
+        arch = re.sub(r"[^a-z0-9]", "", str(meta.get("arch", "")).lower())[:16]
+        bin_path = _release_file_for(os_name, arch)
+        secret = history.get_collector_update_secret(collector_id)
+        if bin_path and secret:
+            sha256hex = _release_sha256(bin_path)
+            os_arch = f"{os_name}/{arch}"
+            resp["update"] = {
+                "version": release["version"],
+                "download": "/api/ingest/binary",  # collector appends ?os=&arch=
+                "os": os_name, "arch": arch,
+                "sha256": sha256hex,
+                "sig": _sign_update(secret, release["version"], os_arch, sha256hex),
+            }
+    return jsonify(resp)
+
+
+@app.get("/api/ingest/binary")
+def ingest_binary():
+    """Serve a collector binary to an authenticated collector for self-update.
+    Gated by the same ingest auth as heartbeats/samples."""
+    collector_id, err = _require_ingest()
+    if err:
+        return err
+    os_name = re.sub(r"[^a-z0-9]", "", request.args.get("os", "").lower())[:16]
+    arch = re.sub(r"[^a-z0-9]", "", request.args.get("arch", "").lower())[:16]
+    path = _release_file_for(os_name, arch)
+    if not path:
+        return jsonify(error=f"no release binary for {os_name}/{arch}"), 404
+    return send_from_directory(str(path.parent), path.name, as_attachment=True)
+
+
+@app.get("/api/ingest/checks")
+def ingest_checks():
+    """Hand a collector the enabled+started probe plan so it runs the SAME active
+    checks a standalone node runs, from the same central monitor config. The
+    collector pushes results back via /api/ingest/samples as host_checks /
+    service_checks / port_checks. Gated by the same ingest auth."""
+    _, err = _require_ingest()
+    if err:
+        return err
+    cfg = _monitor_config_effective()
+
+    def live(items):
+        return [i for i in items if i.get("enabled", True) and i.get("started", True)]
+
+    targets = [{"name": t["name"], "address": t["address"], "group": t.get("group", "custom")}
+               for t in live(cfg.get("targets", []))]
+    services = [{"name": s["name"], "kind": s["kind"], "target": s["target"]}
+                for s in live(cfg.get("services", []))]
+    ports = [{"name": p["name"], "host": p["host"], "port": p["port"],
+              "proto": p.get("proto", "tcp"), "send": p.get("send", ""),
+              "expect": p.get("expect", "")}
+             for p in live(cfg.get("ports", []))]
+    return jsonify(targets=targets, services=services, ports=ports)
+
+
+@app.post("/api/ingest/samples")
+def ingest_samples():
+    collector_id, err = _require_ingest()
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    stream = str(body.get("stream", "")).strip()[:40]
+    rows = body.get("rows")
+    if not stream or not isinstance(rows, list):
+        return jsonify(error="body must be {stream: str, rows: [ ... ]}"), 400
+    rows = [r for r in rows if isinstance(r, dict)][:1000]
+    stored = history.ingest_samples(collector_id, stream, rows)
+    return jsonify(ok=True, collector_id=collector_id, stream=stream, stored=stored)
+
+
+@app.get("/api/collectors")
+def list_collectors_api():
+    """Enrolled collectors + this local node, for the scoped selector. Marks a
+    collector stale if it has not sent a heartbeat within ~3 intervals."""
+    now = time.time()
+    release = _collector_release()
+    latest = release["version"]
+    collectors = history.list_collectors()
+    for c in collectors:
+        last = c.get("last_seen")
+        c["online"] = bool(last and (now - last) < 180)
+        cur = c.get("version") or ""
+        # An update is offered only when we actually hold a newer build for it.
+        c["latest_version"] = latest
+        c["update_available"] = bool(latest and cur and cur != latest)
+    local = {"collector_id": "local", "name": "this node", "enabled": True,
+             "online": True, "local": True, "version": _collector_release()["version"],
+             "role": _multinode_cfg().get("role", "standalone")}
+    return jsonify(local=local, collectors=collectors, latest_version=latest,
+                   accept_external_collectors=bool(_multinode_cfg().get("accept_external_collectors")))
+
+
+@app.post("/api/collectors")
+def enroll_collector_api():
+    """Enroll a new collector and return its key ONCE (never retrievable again)."""
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name", "")).strip()[:80]
+    result = history.enroll_collector(name)
+    if result is None:
+        return jsonify(error="could not enroll collector"), 500
+    return jsonify(result), 201
+
+
+@app.post("/api/collectors/<collector_id>/rotate")
+def rotate_collector_api(collector_id: str):
+    """Issue a fresh key (invalidating the previous one)."""
+    result = history.rotate_collector_key(collector_id)
+    if result is None:
+        return jsonify(error="collector not found"), 404
+    return jsonify(result)
+
+
+@app.post("/api/collectors/<collector_id>/revoke")
+def revoke_collector_api(collector_id: str):
+    """Invalidate a collector's key without deleting its history."""
+    if not history.revoke_collector(collector_id):
+        return jsonify(error="collector not found"), 404
+    return jsonify(ok=True, collector_id=collector_id, enabled=False)
+
+
+@app.post("/api/collectors/<collector_id>/update")
+def update_collector_api(collector_id: str):
+    """Request that a collector self-update to the latest binary we hold. The
+    collector picks this up on its next heartbeat and pulls the new binary."""
+    release = _collector_release()
+    if not release["version"]:
+        return jsonify(error="no collector release is available to push"), 409
+    if not history.request_collector_update(collector_id, True):
+        return jsonify(error="collector not found"), 404
+    return jsonify(ok=True, collector_id=collector_id, target_version=release["version"])
+
+
+@app.delete("/api/collectors/<collector_id>")
+def delete_collector_api(collector_id: str):
+    if not history.delete_collector(collector_id):
+        return jsonify(error="collector not found"), 404
+    return jsonify(ok=True, deleted=collector_id)
+
+
+@app.get("/api/multinode")
+def get_multinode():
+    cfg = _multinode_cfg()
+    return jsonify(role=cfg.get("role", "standalone"),
+                   accept_external_collectors=bool(cfg.get("accept_external_collectors")))
+
+
+@app.post("/api/multinode")
+def set_multinode():
+    """Update this node's role and the accept-external-collectors master switch."""
+    body = request.get_json(silent=True) or {}
+    update: dict = {}
+    if "role" in body:
+        role = str(body["role"]).strip()
+        if role not in ("standalone", "collector"):
+            return jsonify(error="role must be 'standalone' or 'collector'"), 400
+        update["role"] = role
+    if "accept_external_collectors" in body:
+        update["accept_external_collectors"] = bool(body["accept_external_collectors"])
+    if not update:
+        return jsonify(error="nothing to update"), 400
+    settings_store.apply_update({"multinode": update})
+    return jsonify(_multinode_cfg())
+
+
+# --- Auvik-style network map ------------------------------------------------
+# Relative "specificity" of a node kind: a later observation may only *promote*
+# a node to a richer role (a plain host that turns out to be the gateway), never
+# demote it. See docs/07-network-map-and-monitoring-roadmap.md.
+_KIND_RANK = {
+    "unknown": 0, "host": 1, "hop": 1, "target": 2, "neighbour": 2,
+    "ap": 3, "printer": 3, "phone": 3, "server": 3, "workstation": 3, "iot": 3,
+    "router": 4, "switch": 4, "wan-gateway": 5, "firewall": 5,
+    "self": 6, "internet": 6, "subnet": 6,
+}
+
+
+def _map_subnet_of(ip_text: str, own_subnets: list) -> str | None:
+    """Which subnet an IP belongs to: an own-interface network if one contains
+    it, else a synthetic /24 grouping for any other internal address."""
+    try:
+        addr = ipaddress.ip_address(ip_text)
+    except ValueError:
+        return None
+    for net in own_subnets:
+        if addr in net:
+            return str(net)
+    if _is_internal_ip(ip_text) and addr.version == 4:
+        try:
+            return str(ipaddress.ip_network(f"{ip_text}/24", strict=False))
+        except ValueError:
+            return None
+    return None
+
+
+@app.get("/api/map")
+def network_map():
+    """Assemble one Auvik-style topology graph from the probe's existing
+    passive/safe data: own interfaces, traceroute hop-chains, LLDP neighbours,
+    ARP/discovery hosts, Wi-Fi APs and outage-monitor reachability. Read-only and
+    cached - it never launches a scan. Every node is tagged with the observing
+    collector (`local` on a standalone box) so the multi-collector view can later
+    narrow to one. See docs/07-network-map-and-monitoring-roadmap.md."""
+    now = time.time()
+
+    nodes: dict[str, dict] = {}
+    edges: dict[tuple, dict] = {}
+    subnets: dict[str, dict] = {}
+
+    def node(nid: str, **kw) -> dict:
+        n = nodes.get(nid)
+        if n is None:
+            n = nodes[nid] = {
+                "id": nid, "label": nid, "kind": "unknown", "status": "unknown",
+                "ips": [], "macs": [], "vendor": "", "subnet": None,
+                "confidence": "observed", "collector": "local", "detail": {},
+            }
+        for key, val in kw.items():
+            if key in ("ips", "macs"):
+                for item in (val or []):
+                    item = (item or "").strip()
+                    if item and item not in n[key]:
+                        n[key].append(item)
+            elif key == "kind":
+                if val and _KIND_RANK.get(val, 0) > _KIND_RANK.get(n["kind"], 0):
+                    n["kind"] = val
+            elif key == "label":
+                if val and (n["label"] == nid or not n["label"]):
+                    n["label"] = val
+            elif key == "detail":
+                n["detail"].update({k: v for k, v in (val or {}).items() if v not in (None, "")})
+            elif val not in (None, ""):
+                n[key] = val
+        return n
+
+    def edge(a: str, b: str, layer="l3", media="wired", confidence="inferred", **detail) -> None:
+        key = (a, b)
+        e = edges.get(key)
+        if e is None:
+            e = edges[key] = {"from": a, "to": b, "layer": layer, "media": media,
+                              "confidence": confidence, "detail": {}}
+        # A definitive (observed) sighting upgrades an inferred edge.
+        if confidence == "observed" and e["confidence"] != "observed":
+            e.update({"layer": layer, "media": media, "confidence": "observed"})
+        e["detail"].update({k: v for k, v in detail.items() if v not in (None, "")})
+
+    # --- own interfaces -> self node, own IPs / subnets ---------------------
+    own_ips: set[str] = set()
+    own_subnets: list = []
+    iface_detail: list[dict] = []
+    try:
+        for iface in interfaces():
+            mac = (iface.get("mac") or "").lower()
+            for token in (iface.get("addresses") or "").split():
+                if "/" in token:
+                    own_ips.add(token.split("/")[0])
+                    try:
+                        own_subnets.append(ipaddress.ip_network(token, strict=False))
+                    except ValueError:
+                        pass
+            iface_detail.append({"name": iface.get("name"), "state": iface.get("state"),
+                                 "mac": mac, "addresses": iface.get("addresses")})
+    except Exception:
+        pass
+    own_subnets = list({str(n): n for n in own_subnets}.values())
+    node("self", label="this probe", kind="self", status="up", ips=sorted(own_ips))
+
+    # --- monitor reachability (last ok + 24h loss per target) ---------------
+    monitor_status: dict[str, dict] = {}
+    route_rows: list = []
+    db = monitor_db()
+    if db is not None:
+        day_ago = now - 86400
+        try:
+            for row in db.execute(
+                "SELECT target, COUNT(*) total, SUM(ok) ok, "
+                "AVG(CASE WHEN ok=1 THEN rtt_ms END) rtt_avg, "
+                "(SELECT ok FROM ping_samples p2 WHERE p2.target=p1.target ORDER BY ts DESC LIMIT 1) last_ok "
+                "FROM ping_samples p1 WHERE ts>=? GROUP BY target", (day_ago,)):
+                monitor_status[row["target"]] = {
+                    "up": bool(row["last_ok"]),
+                    "loss_pct": round(100.0 * (row["total"] - (row["ok"] or 0)) / row["total"], 2) if row["total"] else None,
+                    "rtt_ms": round(row["rtt_avg"], 2) if row["rtt_avg"] is not None else None,
+                }
+        except sqlite3.Error:
+            pass
+        try:
+            route_rows = db.execute("SELECT name, hops, updated FROM route_state ORDER BY name").fetchall()
+        except sqlite3.Error:
+            route_rows = []
+        db.close()
+
+    def status_for(ip: str, last_seen: float | None = None) -> str:
+        st = monitor_status.get(ip)
+        if st is not None:
+            return "up" if st["up"] else "down"
+        if last_seen and (now - last_seen) < 900:
+            return "up"
+        return "unknown"
+
+    # --- enrichment lookups (reused from the topology endpoint) -------------
+    target_names: dict[str, str] = {}
+    try:
+        for tgt in _monitor_config_effective().get("targets", []):
+            if tgt.get("address"):
+                target_names[tgt["address"]] = tgt.get("name") or tgt["address"]
+    except Exception:
+        pass
+    lldp_state: list[dict] = []
+    try:
+        lldp_state = history.get_lldp_state()
+    except Exception:
+        lldp_state = []
+    lldp_by_ip = {(n.get("mgmt_ip") or "").strip(): (n.get("system") or "").strip()
+                  for n in lldp_state if (n.get("mgmt_ip") or "").strip() and (n.get("system") or "").strip()}
+
+    def label_for(ip: str) -> tuple[str, str]:
+        if ip in own_ips:
+            return "this probe", "self"
+        if ip in target_names:
+            return target_names[ip], "target"
+        if ip in lldp_by_ip:
+            return lldp_by_ip[ip], "neighbour"
+        return ip, "hop"
+
+    # --- subnet clouds ------------------------------------------------------
+    def subnet_node(cidr: str) -> str | None:
+        if not cidr:
+            return None
+        if cidr not in subnets:
+            subnets[cidr] = {"cidr": cidr, "role": None, "count": 0}
+            node("subnet:" + cidr, label=cidr, kind="subnet", status="up")
+        return "subnet:" + cidr
+
+    def attach_host(node_id: str, ip: str, media="wired") -> None:
+        cidr = _map_subnet_of(ip, own_subnets)
+        if not cidr:
+            return
+        sid = subnet_node(cidr)
+        nodes[node_id]["subnet"] = cidr
+        edge(sid, node_id, layer="l2", media=media, confidence="inferred")
+
+    for ip in own_ips:
+        attach_host("self", ip)
+
+    # --- Layer-3 hierarchy from traceroute hop-chains -----------------------
+    wan_gateways: set[str] = set()
+    for row in route_rows:
+        chain = [h for h in (row["hops"] or "").split(">") if h]
+        internal, wan_gateway = _trim_to_wan(chain)
+        internal = [h for h in internal if h != "[LOCALHOST]" and h not in own_ips]
+        prev = "self"
+        for ip in internal:
+            label, kind = label_for(ip)
+            node(ip, label=label, kind=kind if kind in ("target", "neighbour") else "hop",
+                 ips=[ip], status=status_for(ip))
+            edge(prev, ip, layer="l3", media="wired", confidence="observed")
+            prev = ip
+        if wan_gateway:
+            wan_gateways.add(wan_gateway)
+
+    primary_gw = None
+    if wan_gateways:
+        node("internet", label="Internet", kind="internet", status="up")
+        for gw in wan_gateways:
+            node(gw, kind="wan-gateway")
+            edge(gw, "internet", layer="l3", media="wired", confidence="observed")
+        primary_gw = sorted(wan_gateways)[0]
+    # Hang each subnet under the gateway (or the probe if no gateway is known).
+    for cidr in list(subnets):
+        parent = primary_gw if (primary_gw and primary_gw in nodes) else "self"
+        edge(parent, "subnet:" + cidr, layer="l3", media="wired", confidence="inferred")
+
+    # --- Layer-1 wired neighbours from LLDP ---------------------------------
+    for nb in lldp_state:
+        ip = (nb.get("mgmt_ip") or "").strip()
+        sysname = (nb.get("system") or "").strip()
+        port = nb.get("local_port") or ""
+        if not (ip or sysname):
+            continue
+        nid = ip or ("lldp:" + (sysname or port))
+        node(nid, label=sysname or ip or port, kind="neighbour",
+             ips=[ip] if ip else [], status=status_for(ip) if ip else "up",
+             detail={"lldp_port": port, "port_id": nb.get("port_id"), "vlan": nb.get("vlan")})
+        if ip:
+            attach_host(nid, ip)
+        edge("self", nid, layer="l1", media="wired", confidence="observed", via=port)
+
+    # --- ARP / discovery hosts ----------------------------------------------
+    try:
+        hosts = history.get_hosts(500)
+    except Exception:
+        hosts = []
+    for h in hosts:
+        ip = (h.get("address") or "").strip()
+        if not ip:
+            continue
+        mac = (h.get("mac") or "").lower()
+        if ip in own_ips:
+            node("self", macs=[mac] if mac else [], vendor=h.get("vendor") or "")
+            continue
+        kind = "neighbour" if h.get("last_kind") == "lldp" else "host"
+        node(ip, label=(h.get("name") or ip), kind=kind, ips=[ip], macs=[mac] if mac else [],
+             vendor=h.get("vendor") or "", status=status_for(ip, h.get("last_seen")),
+             detail={"sources": h.get("sources"), "last_seen": h.get("last_seen"),
+                     "discovered": h.get("last_kind")})
+        attach_host(ip, ip)
+
+    # --- Wi-Fi APs the probe currently hears (RF neighbours) ----------------
+    try:
+        aps = history.get_ap_state(400)
+    except Exception:
+        aps = []
+    for ap in aps:
+        if not ap.get("present"):
+            continue
+        bssid = (ap.get("bssid") or "").lower()
+        if not bssid:
+            continue
+        nid = "mac:" + bssid
+        node(nid, label=ap.get("ssid") or "(hidden)", kind="ap", macs=[bssid], status="up",
+             detail={"band": ap.get("band"), "channel": ap.get("channel"),
+                     "signal": ap.get("signal"), "security": ap.get("security"), "bssid": bssid})
+        edge("self", nid, layer="l1", media="wireless", confidence="observed", signal=ap.get("signal"))
+
+    # --- enrich monitored nodes + finalise subnet counts --------------------
+    for ip, st in monitor_status.items():
+        if ip in nodes:
+            nodes[ip]["status"] = "up" if st["up"] else "down"
+            nodes[ip]["detail"].update({"loss_pct": st["loss_pct"], "rtt_ms": st["rtt_ms"]})
+    for cidr, meta in subnets.items():
+        meta["count"] = sum(1 for n in nodes.values() if n.get("subnet") == cidr)
+
+    return jsonify({
+        "updated": now,
+        "collector": "local",
+        "nodes": list(nodes.values()),
+        "edges": list(edges.values()),
+        "subnets": list(subnets.values()),
+        "wan_gateways": sorted(wan_gateways),
+        "interfaces": iface_detail,
+    })
+
+
 @app.get("/api/monitor/throughput")
 def monitor_throughput():
     """Packets/s and multicast/s per interface, derived from counter deltas."""
@@ -1843,7 +2781,9 @@ def _background_poller() -> None:
 def _start_background_poller() -> None:
     if os.environ.get("PROBE_DISABLE_POLLER"):
         return
-    threading.Thread(target=_background_poller, name="lldp-poller", daemon=True).start()
+    # Supervised: if the outer loop ever throws (config load, parsing, …) it is
+    # logged and respawned with backoff rather than dying for the process life.
+    supervise("lldp-poller", _background_poller, restart=True)
 
 
 # Start the continuous-inventory poller when served under waitress (module

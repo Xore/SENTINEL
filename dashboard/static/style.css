@@ -3,3 +3,15 @@
 .modal{position:fixed;inset:0;background:rgba(4,8,12,.72);display:flex;align-items:center;justify-content:center;z-index:60;padding:4vw}.modal-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;width:min(880px,96vw);max-height:88vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)}.modal-box .chips{margin-top:0}.attention{margin-top:14px}.attn-list{list-style:none;margin:0;padding:0}.attn{border:1px solid var(--line);border-left:3px solid var(--line);border-radius:7px;padding:12px 14px;margin-top:9px}.attn.bad{border-left-color:var(--red)}.attn.warn{border-left-color:var(--amber)}.attn.ok{border-left-color:var(--cyan)}.attn .hint{margin-top:5px}.clickrow{cursor:pointer}.clickrow:hover td{background:rgba(94,234,212,.06)}
 
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:900px){.grid-2{grid-template-columns:1fr}}.subhead{display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px;font-size:.82rem;letter-spacing:.03em;text-transform:uppercase;color:var(--muted)}.subhead button{font-size:.78rem}tr.muted td{opacity:.5}
+.mc-run{font:11px var(--mono);padding:5px 10px;border-radius:999px;white-space:nowrap}.mc-run[data-on="1"]{color:var(--cyan);border-color:var(--cyan)}.mc-run:not([data-on="1"]){color:var(--muted)}.mc-run:disabled{opacity:.4;cursor:not-allowed}tr.mc-off td{opacity:.72}tr.mc-disabled td{opacity:.45}
+
+/* Wi-Fi roam/handover event log + AP proximity map */
+:root{--blue:#60a5fa}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:middle;margin:0 3px}
+.dot-red{background:var(--red)}.dot-yellow{background:var(--amber)}.dot-blue{background:var(--blue)}
+tr.ev-error td:first-child{border-left:3px solid var(--red)}
+tr.ev-warning td:first-child{border-left:3px solid var(--amber)}
+tr.ev-info td:first-child{border-left:3px solid var(--blue)}
+.ev-error .lvl{color:var(--red)}.ev-warning .lvl{color:var(--amber)}.ev-info .lvl{color:var(--blue)}
+#wifiMap svg{width:100%;height:auto;max-width:420px}
+#wifiMap text{font-family:var(--mono);fill:var(--muted)}

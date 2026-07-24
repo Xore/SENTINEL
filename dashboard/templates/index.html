@@ -3,37 +3,59 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Fieldline Network Probe</title>
+  <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+  <link rel="stylesheet" href="/static/vendor/bootstrap/css/bootstrap.min.css">
+  <link rel="stylesheet" href="/static/vendor/adminlte/css/adminlte.min.css">
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/theme.css">
 </head>
-<body>
-  <header><div><p class="eyebrow">FIELDLINE / PASSIVE-FIRST</p><h1>Network Probe</h1></div><div id="clock" class="clock">—</div></header>
-  <nav>
-    <div class="nav-group"><span class="nav-label">Home</span><div class="nav-btns">
-      <button data-view="overview" class="active" title="Probe status, anomalies and interfaces at a glance">Overview</button>
-    </div></div>
-    <div class="nav-group"><span class="nav-label">Watch</span><div class="nav-btns">
-      <button onclick="location.href='/monitor'" title="Always-on outage, latency and path monitoring (opens the Monitor page)">Monitor</button>
-      <button data-view="security" title="Passive intrusion-detection alerts from Suricata">Security</button>
-      <button data-view="apwatch" title="Continuous Wi-Fi watch — logs when an access point appears or disappears">Access Points</button>
-    </div></div>
-    <div class="nav-group"><span class="nav-label">Investigate</span><div class="nav-btns">
-      <button data-view="assets" title="Every host the probe has seen, with per-host history">Assets</button>
-      <button data-view="discovery" title="Sweep a subnet for live hosts (IP, MAC, vendor, name)">Discovery</button>
-      <button data-view="neighbours" title="Which switch/port you're plugged into (LLDP) plus single-host SNMP">Neighbours</button>
-      <button data-view="wifi" title="One-off scan of nearby access points and local radio health">Wi-Fi</button>
-      <button data-view="endpoints" title="Approved-scope targets, checked by TCP-connect and route only">Endpoints</button>
-    </div></div>
-    <div class="nav-group"><span class="nav-label">Diagnose</span><div class="nav-btns">
-      <button data-view="actions" title="Run a read-only check against any host (reachability, trace, SNMP)">Actions</button>
-      <button data-view="health" title="Link-health samples and diagnostic profiles (path / services / infra / baseline)">Health</button>
-      <button data-view="captures" title="Start a bounded PCAP ring capture for evidence">Captures</button>
-    </div></div>
-    <div class="nav-group"><span class="nav-label">System</span><div class="nav-btns">
-      <button data-view="jobs" title="Log of recent jobs and their results">Activity</button>
-      <button data-view="settings" title="Interfaces, SNMP credentials, custom services and the outage monitor">Settings</button>
-    </div></div>
+<body class="hold-transition sidebar-mini layout-fixed">
+<div class="wrapper">
+  <nav class="main-header navbar navbar-expand navbar-white navbar-light">
+    <ul class="navbar-nav">
+      <li class="nav-item"><a class="nav-link" data-widget="pushmenu" href="#" role="button" title="Toggle sidebar"><i class="fas fa-bars"></i></a></li>
+      <li class="nav-item d-none d-md-inline-block"><span class="nav-link"><span class="eyebrow">FIELDLINE / PASSIVE-FIRST</span></span></li>
+    </ul>
+    <ul class="navbar-nav ml-auto">
+      <li class="nav-item"><span class="nav-link" id="clock" style="font-variant-numeric:tabular-nums">—</span></li>
+    </ul>
   </nav>
-  <main>
+  <aside class="main-sidebar sidebar-dark-primary elevation-4">
+    <a href="/" class="brand-link">
+      <i class="fas fa-network-wired brand-image ml-2 mr-1" style="opacity:.9"></i>
+      <span class="brand-text font-weight-light">Network&nbsp;Probe</span>
+    </a>
+    <div class="sidebar">
+      <nav class="mt-2">
+        <ul class="nav nav-pills nav-sidebar flex-column" role="menu">
+          <li class="nav-header">HOME</li>
+          <li class="nav-item"><button data-view="overview" class="nav-link active" title="Probe status, anomalies and interfaces at a glance"><i class="nav-icon fas fa-gauge-high"></i><p>Overview</p></button></li>
+          <li class="nav-header">WATCH</li>
+          <li class="nav-item"><a href="/monitor" class="nav-link" title="Always-on outage, latency and path monitoring"><i class="nav-icon fas fa-wave-square"></i><p>Monitor</p></a></li>
+          <li class="nav-item"><button data-view="security" class="nav-link" title="Passive intrusion-detection alerts from Suricata"><i class="nav-icon fas fa-shield-halved"></i><p>Security</p></button></li>
+          <li class="nav-item"><button data-view="apwatch" class="nav-link" title="Continuous Wi-Fi watch — logs when an access point appears or disappears"><i class="nav-icon fas fa-wifi"></i><p>Access Points</p></button></li>
+          <li class="nav-header">INVESTIGATE</li>
+          <li class="nav-item"><button data-view="assets" class="nav-link" title="Every host the probe has seen, with per-host history"><i class="nav-icon fas fa-server"></i><p>Assets</p></button></li>
+          <li class="nav-item"><button data-view="discovery" class="nav-link" title="Sweep a subnet for live hosts (IP, MAC, vendor, name)"><i class="nav-icon fas fa-magnifying-glass"></i><p>Discovery</p></button></li>
+          <li class="nav-item"><button data-view="neighbours" class="nav-link" title="Which switch/port you're plugged into (LLDP) plus single-host SNMP"><i class="nav-icon fas fa-diagram-project"></i><p>Neighbours</p></button></li>
+          <li class="nav-item"><button data-view="wifi" class="nav-link" title="One-off scan of nearby access points and local radio health"><i class="nav-icon fas fa-tower-broadcast"></i><p>Wi-Fi</p></button></li>
+          <li class="nav-item"><button data-view="heatmap" class="nav-link" title="Walk-around Wi-Fi coverage heatmap: drop sample points as you move, drag APs to their real positions"><i class="nav-icon fas fa-fire"></i><p>Heatmap</p></button></li>
+          <li class="nav-item"><button data-view="endpoints" class="nav-link" title="Approved-scope targets, checked by TCP-connect and route only"><i class="nav-icon fas fa-list-check"></i><p>Endpoints</p></button></li>
+          <li class="nav-header">DIAGNOSE</li>
+          <li class="nav-item"><button data-view="actions" class="nav-link" title="Run a read-only check against any host (reachability, trace, SNMP)"><i class="nav-icon fas fa-bolt"></i><p>Actions</p></button></li>
+          <li class="nav-item"><button data-view="health" class="nav-link" title="Link-health samples and diagnostic profiles (path / services / infra / baseline)"><i class="nav-icon fas fa-heart-pulse"></i><p>Health</p></button></li>
+          <li class="nav-item"><button data-view="captures" class="nav-link" title="Start a bounded PCAP ring capture for evidence"><i class="nav-icon fas fa-file-arrow-down"></i><p>Captures</p></button></li>
+          <li class="nav-header">SYSTEM</li>
+          <li class="nav-item"><button data-view="collectors" class="nav-link" title="Remote collector nodes pushing data to this aggregator — status, versions and updates"><i class="nav-icon fas fa-diagram-project"></i><p>Collectors</p></button></li>
+          <li class="nav-item"><button data-view="jobs" class="nav-link" title="Log of recent jobs and their results"><i class="nav-icon fas fa-clock-rotate-left"></i><p>Activity</p></button></li>
+          <li class="nav-item"><button data-view="settings" class="nav-link" title="Interfaces, SNMP credentials, custom services and the outage monitor"><i class="nav-icon fas fa-gear"></i><p>Settings</p></button></li>
+        </ul>
+      </nav>
+    </div>
+  </aside>
+  <div class="content-wrapper">
+    <section class="content-header"><div class="container-fluid"><h1 class="m-0" id="pageTitle">Overview</h1></div></section>
+    <section class="content"><div class="container-fluid">
     <section id="overview" class="view active">
       <div class="metrics"><article><span>Probe</span><strong id="hostname">—</strong><small id="uptime">—</small></article><article><span>Load</span><strong id="load">—</strong><small>1 / 5 / 15 min</small></article><article><span>Capture disk</span><strong id="disk">—</strong><small id="diskDetail">—</small></article><article><span>Toolset</span><strong id="toolCount">—</strong><small>available locally</small></article></div>
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">ATTENTION</p><h2>Anomalies &amp; data freshness</h2></div><button onclick="loadAttention()">Refresh</button></div><div id="freshness" class="chips"></div><div id="attention" class="attention"></div></div>
@@ -93,7 +115,55 @@
         <div id="surveyChannels" class="chips"></div>
         <div id="surveyResult" class="table-wrap"></div>
       </div>
-      <div class="panel"><p class="eyebrow">RADIO HEALTH</p><h2>Local Wi-Fi links</h2><p class="hint">Signal, bitrate, channel and association data from local adapters. Deeper 802.11 management-frame analysis: run <code>sudo scripts/wifi-monitor-capture.sh &lt;iface&gt; &lt;channels&gt;</code> on the probe.</p><pre id="wifiData">Loading…</pre></div><div class="panel"><h2>Assessment</h2><p class="hint">Computed from the survey above once you scan. Until then, this is what the survey evaluates.</p><div id="wifiAssess"><div class="check-grid"><div><strong>Coverage</strong><span>Signal strength across the visible APs</span></div><div><strong>RF design</strong><span>Band use and co-channel overlap</span></div><div><strong>Security</strong><span>Encryption mix, open networks</span></div><div><strong>Rogue/evil-twin clues</strong><span>Same SSID on multiple BSSIDs, hidden SSIDs</span></div></div></div></div></section>
+      <div class="panel"><p class="eyebrow">RADIO HEALTH</p><h2>Local Wi-Fi links</h2><p class="hint">Signal, bitrate, channel and association data from local adapters. Deeper 802.11 management-frame analysis: run <code>sudo scripts/wifi-monitor-capture.sh &lt;iface&gt; &lt;channels&gt;</code> on the probe.</p><pre id="wifiData">Loading…</pre></div><div class="panel"><h2>Assessment</h2><p class="hint">Computed from the survey above once you scan. Until then, this is what the survey evaluates.</p><div id="wifiAssess"><div class="check-grid"><div><strong>Coverage</strong><span>Signal strength across the visible APs</span></div><div><strong>RF design</strong><span>Band use and co-channel overlap</span></div><div><strong>Security</strong><span>Encryption mix, open networks</span></div><div><strong>Rogue/evil-twin clues</strong><span>Same SSID on multiple BSSIDs, hidden SSIDs</span></div></div></div></div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">SPATIAL MAP</p><h2>AP proximity map</h2></div><button onclick="loadWifiMap()">Refresh</button></div>
+        <p class="hint">A radial map of the access points around this probe. Distance from the centre tracks signal strength (stronger = closer); angle is spread for legibility — a single antenna can't sense true bearing, so this is proximity, not a compass. The AP this probe is associated with is highlighted.</p>
+        <div id="wifiMapStatus" class="hint"></div>
+        <div class="grid-2" style="align-items:start">
+          <div id="wifiMap" style="min-height:320px"></div>
+          <div><p class="eyebrow">LEGEND</p><div id="wifiMapLegend" class="table-wrap"></div></div>
+        </div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">ROAM / HANDOVER LOG</p><h2>Wi-Fi event log</h2></div><button onclick="loadWifiEvents()">Refresh</button></div>
+        <p class="hint">Roaming, (re)association, drops and link warnings, derived from the 5-second link samples the monitor records. <span class="dot dot-blue"></span> blue = information (handover / associated) · <span class="dot dot-yellow"></span> yellow = warning (weak signal, TX failures, beacon loss) · <span class="dot dot-red"></span> red = error (disconnected / roam failed).</p>
+        <div id="wifiEventStatus" class="hint"></div>
+        <div id="wifiEventCounts" class="chips"></div>
+        <div id="wifiEvents" class="table-wrap"></div>
+      </div></section>
+    <section id="heatmap" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">WALK-AROUND SITE SURVEY</p><h2>Wi-Fi coverage heatmap</h2></div>
+        <div class="form-row" style="margin:0">
+          <select id="hmSurvey" onchange="hmLoadSurvey(this.value)"></select>
+          <button onclick="hmNewSurvey()">New</button>
+          <button onclick="hmRenameSurvey()">Rename</button>
+          <button onclick="hmDeleteSurvey()">Delete</button>
+        </div></div>
+        <p class="hint">Walk the space with the probe. At each spot, pick your position on the floor below (or use <em>Sample here</em> to reuse the last click) — the probe scans and records the signal of every AP it hears. Choose an AP to render its coverage heatmap (green = strong, red = weak). Drag the ▲ AP markers to where the access points physically are. Everything is saved to the selected survey; captures build a history you can reload. There is no indoor-positioning hardware, so position is where you click — this is a manual survey, honest about that.</p>
+        <div class="form-row">
+          <label class="inline">Heatmap for AP: <select id="hmApSelect" onchange="hmRender()"></select></label>
+          <label class="inline"><input type="checkbox" id="hmMode" onchange="hmModeChange()"> place AP markers (drag mode)</label>
+          <label class="inline"><input type="checkbox" id="hmLive" checked onchange="hmToggleLive()"> live signal meter</label>
+          <button class="primary" onclick="hmSampleLast()">Sample here</button>
+          <button onclick="hmPlaceSelected()" title="Drop a marker for the selected AP at your last click, then fine-tune by dragging in place mode">Place selected AP here</button>
+          <button onclick="hmExportPng()">Export PNG</button>
+        </div>
+        <div id="hmStatus" class="hint"></div>
+        <div id="hmLiveMeter" class="chips"></div>
+        <div class="grid-2" style="align-items:start">
+          <div>
+            <div id="hmCanvasWrap" style="position:relative;width:100%;max-width:640px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#0a0f14">
+              <svg id="hmCanvas" viewBox="0 0 640 440" xmlns="http://www.w3.org/2000/svg" style="width:100%;display:block;cursor:crosshair"></svg>
+            </div>
+            <p class="hint">Click the floor to set your current position, then <em>Sample here</em>. In drag mode, drag AP markers instead.</p>
+          </div>
+          <div>
+            <p class="eyebrow">SAMPLE POINTS</p>
+            <div id="hmPoints" class="table-wrap"></div>
+            <p class="eyebrow" style="margin-top:14px">COLOUR SCALE</p>
+            <div id="hmScale" class="chips"></div>
+          </div>
+        </div>
+      </div></section>
     <section id="apwatch" class="view">
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">CONTINUOUS RF WATCH</p><h2>Access points</h2></div><button class="primary" onclick="apScanNow()">Scan now</button></div>
         <p class="hint">A background scanner records every AP it can see and logs the moment one <strong>disappears</strong> (stops beaconing) or a new one appears. Unprivileged nmcli — needs the radio enabled; interval is set in Settings → Monitor. An empty scan (radio blocked) is ignored, never counted as a mass disappearance.</p>
@@ -106,6 +176,18 @@
       </div>
     </section>
     <section id="security" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">CAPTURE ADAPTER</p><h2>Which NIC(s) Suricata watches</h2></div><button onclick="loadIdsAdapter()">Reload</button></div>
+        <p class="hint">Choose how the IDS picks its capture interface. <strong>Auto</strong> follows the best connected NIC; <strong>All</strong> captures on every up NIC; <strong>Specific</strong> lets you tick a set (a down/prepared NIC is bound the moment it comes up). A root daemon enacts the change, validates the config, and rolls back on failure — the dashboard never touches Suricata directly.</p>
+        <div id="idsAdapterLive" class="hint"></div>
+        <div class="form-row">
+          <label class="inline"><input type="radio" name="idsMode" value="auto" onchange="idsModeChange()"> Auto</label>
+          <label class="inline"><input type="radio" name="idsMode" value="all" onchange="idsModeChange()"> All up NICs</label>
+          <label class="inline"><input type="radio" name="idsMode" value="manual" onchange="idsModeChange()"> Specific</label>
+          <label class="inline">recheck <input id="idsRecheck" type="number" min="10" max="600" value="60" style="max-width:6rem"> s</label>
+          <button class="primary" onclick="saveIdsAdapter()">Save adapter</button>
+        </div>
+        <div id="idsAdapterNics" class="table-wrap"></div>
+      </div>
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">INTRUSION DETECTION</p><h2>Signature alerts (Suricata)</h2></div><button class="primary" onclick="loadIds()">Refresh</button></div>
         <p class="hint">Passive signature-based IDS on the monitored interface (ET Open ruleset). Detection only — Suricata never blocks or alters traffic. If it is not installed, run <code>sudo scripts/install-ids.sh --apply</code> on the probe. Click any IP for its full dossier; click <strong>Details</strong> on an alert for every correlated event (domain, path, headers, DNS, TLS).</p>
         <div class="form-row"><select id="idsSev" onchange="renderIds()"><option value="">any severity</option><option value="critical">critical</option><option value="major">major</option><option value="minor">minor</option><option value="info">info</option></select><input id="idsQ" placeholder="filter signature/category" oninput="renderIds()" aria-label="Filter text"><input id="idsSrc" placeholder="source IP" oninput="renderIds()" aria-label="Source IP" style="max-width:11rem"><input id="idsDst" placeholder="dest IP" oninput="renderIds()" aria-label="Destination IP" style="max-width:11rem"><span id="idsCount" class="hint"></span></div>
@@ -148,8 +230,9 @@
         <div class="form-row"><input id="csName" placeholder="name (e.g. plc-line3)" aria-label="Custom service name"><input id="csPort" type="number" placeholder="port" style="max-width:7rem" aria-label="Custom service port"><select id="csProto" aria-label="Custom service protocol"><option>tcp</option><option>udp</option></select><button class="primary" onclick="addCustomService()">Save service</button></div>
         <div id="customSvcList" class="table-wrap"></div>
       </div>
-      <div class="panel"><div class="panel-head"><div><p class="eyebrow">OUTAGE MONITOR</p><h2>What to probe</h2></div><button onclick="loadMonitorConfig()">Refresh</button></div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">OUTAGE MONITOR</p><h2>What to probe</h2></div><div><button onclick="mcToggleAll(true)" title="Start every enabled probe">▶ Start all</button> <button onclick="mcToggleAll(false)" title="Stop every probe">⏸ Stop all</button> <button onclick="loadMonitorConfig()">Refresh</button></div></div>
         <p class="hint">Edit who the always-on outage monitor pings, which services and TCP ports it checks, and how often it scans for access points. Saved to a config the monitor <strong>hot-reloads within seconds</strong> — no restart. <span id="mcSource" class="hint"></span></p>
+        <p class="hint">Each probe has an <strong>enabled</strong> checkbox (include it at all) and a <strong>▶/⏸ start/stop</strong> toggle (its live run state). A probe runs only when it is both enabled and started. <strong>New probes are added stopped.</strong> <em>Start all</em> starts only the enabled probes (so a probe you keep disabled — e.g. an OT check — is never started in bulk); <em>Stop all</em> stops everything. Toggles save and hot-reload immediately.</p>
         <div class="subhead"><strong>Ping targets</strong><button onclick="mcAddRow('targets')">+ target</button></div>
         <p class="hint">The <em>interface</em> column picks which adapter each target is probed over (ping <em>and</em> the traceroute/hop-quality probe are both sourced from it). Leave it on <em>auto</em> to let the OS route it. Binding a target to a specific adapter tests that path independently — e.g. the wired uplink vs. a secondary NIC.</p>
         <div id="mcTargets" class="table-wrap"></div>
@@ -164,9 +247,44 @@
       </div>
       <div class="panel"><p class="eyebrow">ACCESS</p><h2>Dashboard token</h2><p class="hint">The access token rotates on every dashboard restart, so a restart signs everyone out. Read the current token on the probe with <code>sudo cat /etc/network-probe/dashboard-token</code>.</p></div>
     </section>
+    <section id="collectors" class="view">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">MULTI-NODE</p><h2>This node</h2></div><button onclick="loadCollectors()">Refresh</button></div>
+        <p class="hint">A <strong>standalone</strong> node runs the full dashboard and can also aggregate data pushed by remote <strong>collector</strong> nodes. Ingest from external collectors is off until you enable it below — and even then only enrolled, non-revoked keys are accepted.</p>
+        <div class="form-row">
+          <label class="inline">Role
+            <select id="mnRole" onchange="saveMultinode()"><option value="standalone">standalone (aggregator)</option><option value="collector">collector (push-only)</option></select>
+          </label>
+          <label class="inline"><input type="checkbox" id="mnAccept" onchange="saveMultinode()"> accept data from external collectors</label>
+          <span id="mnStatus" class="hint"></span>
+        </div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">FLEET</p><h2>Enrolled collectors</h2></div><button class="primary" onclick="enrollCollector()">+ Enroll collector</button></div>
+        <p class="hint">Each collector gets its own ingest key, shown once at enrollment and stored only as a hash. A collector is <strong>UP</strong> while it keeps pinging (every few seconds); it flips to <strong>DOWN</strong> when pings stop. When a collector runs an older agent than the release this node holds, an <strong>Update</strong> button appears — click it and the collector self-updates on its next ping.</p>
+        <div id="collectorsRelease" class="chips"></div>
+        <div id="collectorsStatus" class="hint"></div>
+        <div id="collectorsList" class="table-wrap"></div>
+      </div>
+    </section>
     <section id="jobs" class="view"><div class="panel"><div class="panel-head"><h2>Recent activity</h2><button onclick="loadJobs()">Refresh</button></div><div id="jobsList"></div></div></section>
     <div id="ipTrace" class="ip-trace" style="display:none"><div class="panel-head"><h2 id="ipTraceTitle">Trace</h2><button onclick="document.querySelector('#ipTrace').style.display='none'">Close</button></div><pre id="ipTraceOut">…</pre></div>
     <div id="alertDetail" class="modal" style="display:none"><div class="modal-box"><div class="panel-head"><h2 id="alertDetailTitle">Alert detail</h2><button onclick="document.querySelector('#alertDetail').style.display='none'">Close</button></div><div id="alertDetailBody">…</div></div></div>
-  </main>
-  <div id="toast" role="status"></div><script src="/static/app.js"></script>
+    </div></section>
+  </div>
+  <footer class="main-footer"><strong>Fieldline Network Probe</strong> · passive-first field diagnostics<span class="float-right d-none d-sm-inline">AdminLTE shell</span></footer>
+</div>
+  <div id="toast" role="status"></div>
+  <script src="/static/vendor/jquery/jquery.min.js"></script>
+  <script src="/static/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+  <script src="/static/vendor/adminlte/js/adminlte.min.js"></script>
+  <script src="/static/app.js"></script>
+  <script>
+  // Keep the AdminLTE content-header title in sync with the active view (app.js is untouched).
+  (function(){
+    const orig=window.activateView;
+    if(typeof orig==='function'){
+      window.activateView=function(v){orig(v);const b=document.querySelector('nav button[data-view="'+v+'"]');const p=b&&b.querySelector('p');const t=document.querySelector('#pageTitle');if(p&&t)t.textContent=p.textContent;};
+    }
+    document.querySelectorAll('nav button[data-view]').forEach(b=>b.onclick=()=>window.activateView(b.dataset.view));
+  })();
+  </script>
 </body></html>
