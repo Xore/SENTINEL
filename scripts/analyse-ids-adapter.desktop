@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Select IDS Capture Adapter
+Comment=Choose which NIC Suricata (the IDS) captures on, or set it to auto
+Exec=/opt/analyseLaptop/scripts/ids-adapter-select.sh
+Icon=network-wired
+Terminal=false
+Categories=Network;System;Security;
+Keywords=ids;suricata;adapter;interface;capture;nic;

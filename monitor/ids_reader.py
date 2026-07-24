@@ -71,6 +71,41 @@ def _log_family(log: str) -> list[str]:
     return found
 
 
+IDS_ADAPTER_STATE = "/run/network-probe-ids/state.json"
+SURICATA_DEFAULT = "/etc/default/suricata"
+
+
+def _capture_adapter() -> dict:
+    """Which NIC Suricata is capturing on and how the adapter is managed.
+
+    Read-only: reads the world-readable state file the adapter manager refreshes
+    (auto/manual + recheck), falling back to the IFACE line in
+    /etc/default/suricata. Returns {} if neither is readable."""
+    info: dict = {}
+    try:
+        with open(IDS_ADAPTER_STATE, encoding="utf-8") as fh:
+            state = json.load(fh)
+        for src, dst in (("active_interface", "interface"), ("mode", "mode"),
+                         ("recheck_seconds", "recheck_seconds"),
+                         ("configured_interface", "configured_interface")):
+            if state.get(src) not in (None, ""):
+                info[dst] = state[src]
+        if isinstance(state.get("interfaces"), list):
+            info["interfaces"] = state["interfaces"]
+    except (OSError, ValueError):
+        pass
+    if "interface" not in info:
+        try:
+            with open(SURICATA_DEFAULT, encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("IFACE="):
+                        info["interface"] = line.split("=", 1)[1].strip()
+                        break
+        except OSError:
+            pass
+    return info
+
+
 def _engine_status(log: str) -> dict:
     installed = shutil.which("suricata") is not None
     active = False
@@ -82,6 +117,9 @@ def _engine_status(log: str) -> dict:
         except (OSError, subprocess.SubprocessError):
             active = False
     out = {"installed": installed, "service_active": active, "log": log}
+    adapter = _capture_adapter()
+    if adapter:
+        out["adapter"] = adapter
     if os.path.exists(log):
         st = os.stat(log)
         out["log_size"] = st.st_size
