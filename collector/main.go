@@ -336,6 +336,40 @@ func versionNewer(a, b string) bool {
 	return false
 }
 
+// authorizeUpdate is the security core of self-update, split out so it can be
+// unit-tested with no network or filesystem. It decides whether an update
+// instruction is safe to apply and returns the target version + expected SHA-256
+// to fetch, or ok=false with a human reason. goos/goarch/curVersion are passed in
+// so tests can drive them; production callers pass runtime.GOOS/GOARCH + version.
+// The MAC is checked over a message built from the CALLER's own platform, so a
+// tampered os/arch in the response can never be substituted; layout must stay
+// byte-identical to the backend's _sign_update().
+func authorizeUpdate(secret, goos, goarch, curVersion string, upd map[string]any) (target, wantSHA string, ok bool, reason string) {
+	target, _ = upd["version"].(string)
+	sig, _ := upd["sig"].(string)
+	wantSHA, _ = upd["sha256"].(string)
+	if target == "" || target == curVersion {
+		return "", "", false, "no newer version offered"
+	}
+	if secret == "" {
+		return "", "", false, "no update_secret configured; re-enroll to enable signed updates"
+	}
+	if sig == "" || wantSHA == "" {
+		return "", "", false, "instruction is unsigned"
+	}
+	if !versionNewer(target, curVersion) {
+		return "", "", false, "not newer than current " + curVersion + " (downgrade blocked)"
+	}
+	msg := fmt.Sprintf("%s\n%s/%s\n%s", target, goos, goarch, wantSHA)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(msg))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(expected), []byte(sig)) {
+		return "", "", false, "signature mismatch (not from the authorized backend)"
+	}
+	return target, wantSHA, true, ""
+}
+
 // selfUpdate applies an operator-requested update, but ONLY after cryptographically
 // proving the instruction is authentic. The chain of trust:
 //
@@ -350,34 +384,15 @@ func versionNewer(a, b string) bool {
 //
 // Only if all three hold do we swap the binary in place and re-exec.
 func selfUpdate(client *http.Client, cfg config, st *agentState, upd map[string]any) {
-	target, _ := upd["version"].(string)
-	sig, _ := upd["sig"].(string)
-	wantSHA, _ := upd["sha256"].(string)
-	if target == "" || target == version {
-		return // nothing to do; not an error
-	}
-	if cfg.UpdateSecret == "" {
-		logf("update to %s offered but no update_secret is configured; refusing (re-enroll to enable signed updates)", target)
-		return
-	}
-	if sig == "" || wantSHA == "" {
-		logf("update to %s rejected: instruction is unsigned", target)
-		return
-	}
-	if !versionNewer(target, version) {
-		logf("update to %s rejected: not newer than current %s (downgrade blocked)", target, version)
-		return
-	}
-	// Verify the MAC over the canonical message, built from our own platform so a
-	// tampered os/arch in the response cannot be substituted. Must match the
-	// backend's _sign_update() layout exactly.
-	msg := fmt.Sprintf("%s\n%s/%s\n%s", target, runtime.GOOS, runtime.GOARCH, wantSHA)
-	mac := hmac.New(sha256.New, []byte(cfg.UpdateSecret))
-	mac.Write([]byte(msg))
-	expected := hex.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(expected), []byte(sig)) {
-		logf("update to %s rejected: signature mismatch (not from the authorized backend)", target)
-		st.set(statusDegraded, "rejected unsigned/forged update to "+target)
+	target, wantSHA, ok, reason := authorizeUpdate(cfg.UpdateSecret, runtime.GOOS, runtime.GOARCH, version, upd)
+	if !ok {
+		// Stay quiet about the ordinary "nothing newer" case; log real rejections.
+		if t, _ := upd["version"].(string); t != "" && t != version {
+			logf("update to %s rejected: %s", t, reason)
+			if strings.Contains(reason, "signature") {
+				st.set(statusDegraded, "rejected forged update to "+t)
+			}
+		}
 		return
 	}
 
