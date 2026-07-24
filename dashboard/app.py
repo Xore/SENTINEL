@@ -35,6 +35,8 @@ except ImportError:  # run from inside the dashboard directory
     import ids_adapter
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:  # let us import the monitor/* helpers as a namespace pkg
+    sys.path.insert(0, str(ROOT))
 CAPTURE_DIR = Path(os.environ.get("PROBE_CAPTURE_DIR", ROOT / "captures")).resolve()
 SNAPSHOT_DIR = Path(os.environ.get("PROBE_SNAPSHOT_DIR", ROOT / "snapshots")).resolve()
 TARGET_FILE = Path(os.environ.get("PROBE_TARGET_FILE", ROOT / "config" / "targets.csv")).resolve()
@@ -646,6 +648,18 @@ def _scan_readings(rescan: bool = True) -> tuple[list[dict], str]:
             "freq_mhz": ap.get("freq_mhz"), "in_use": ap.get("in_use", False),
         })
     return readings, ("" if readings else (data.get("note") or "no APs visible"))
+
+
+@app.get("/api/wifi/spectrum")
+def wifi_spectrum():
+    """Channel-occupancy / interference model from one passive scan. Not a true
+    RF spectrum (no SDR) - it spreads each AP's received power across the
+    channels its carrier overlaps and recommends the cleanest channel per band.
+    See monitor/wifi_survey.py:spectrum()."""
+    readings, note = _scan_readings(rescan=request.args.get("rescan") == "1")
+    from monitor.wifi_survey import spectrum as _spectrum  # pure, no side effects
+    return jsonify(spectrum=_spectrum(readings), ap_count=len(readings),
+                   note=note, ts=time.time())
 
 
 @app.get("/api/wifi/heatmap/live")

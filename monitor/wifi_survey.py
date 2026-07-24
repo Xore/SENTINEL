@@ -222,6 +222,118 @@ def channel_summary(aps: list[dict]) -> list[dict]:
             for (band, chan), n in sorted(counts.items(), key=lambda item: -item[1])]
 
 
+# --- Spectrum / interference analyser --------------------------------------
+# We have no SDR, so this is not a true RF spectrum - it is a *channel*
+# occupancy model built from the passive AP scan. Each AP spreads its energy
+# across the channels its 20 MHz carrier physically overlaps (in 2.4 GHz the
+# 5 MHz-spaced channels overlap heavily; in 5/6 GHz the common 20 MHz channels
+# do not), weighted by received power. That is exactly the interference an AP
+# on a given channel would experience, which is what "pick a clean channel"
+# needs. Honest about its limits: no non-Wi-Fi emitters (microwaves, BT, radar).
+
+# Canonical 20 MHz channel grids per band for a stable x-axis.
+_BAND_CHANNELS = {
+    "2.4 GHz": list(range(1, 14)),
+    "5 GHz": [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120,
+              124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165],
+    "6 GHz": [1 + 4 * i for i in range(59)],  # 6E 20 MHz channels 1..233
+}
+# The classic non-overlapping 2.4 GHz set - what we steer people toward.
+_NON_OVERLAP_24 = [1, 6, 11]
+
+
+def _approx_dbm(ap: dict) -> float | None:
+    """One dBm scale from either back-end (iw gives dBm, nmcli a 0-100%)."""
+    dbm = ap.get("signal_dbm")
+    if dbm is None and ap.get("signal_pct") is not None:
+        dbm = ap["signal_pct"] / 2.0 - 100.0
+    return dbm
+
+
+def _overlap_weights(band: str, channel: int) -> dict[int, float]:
+    """Fraction of a 20 MHz carrier centred on `channel` that lands on each
+    nearby channel slot. 2.4 GHz channels sit 5 MHz apart, so a 20 MHz carrier
+    bleeds onto +/-2 neighbours (triangular roll-off); 5/6 GHz 20 MHz channels
+    are 20 MHz apart and treated as self-only."""
+    if band == "2.4 GHz":
+        return {channel - 2: 0.35, channel - 1: 0.7, channel: 1.0,
+                channel + 1: 0.7, channel + 2: 0.35}
+    return {channel: 1.0}
+
+
+def spectrum(aps: list[dict]) -> dict:
+    """Per-band, per-channel occupancy + a recommended clean channel.
+
+    occupancy is summed received power (linear mW) an AP on that channel would
+    face from every overlapping neighbour, normalised to 0..100 across all
+    bands for display. ap_count is how many APs land on the slot at all."""
+    if not aps:
+        return {"bands": [], "notes": ["no APs visible - enable the radio and rescan"]}
+
+    # Accumulate linear power + counts per (band, channel).
+    power: dict[tuple, float] = {}
+    count: dict[tuple, float] = {}
+    strongest: dict[tuple, tuple] = {}  # (band,chan) -> (dbm, ssid)
+    for ap in aps:
+        band = ap.get("band") or "?"
+        if band not in _BAND_CHANNELS:
+            continue
+        chan = ap.get("channel") or 0
+        dbm = _approx_dbm(ap)
+        # Unknown-signal APs still occupy the channel; treat them as weak (-85).
+        mw = 10 ** ((dbm if dbm is not None else -85.0) / 10.0)
+        for slot, w in _overlap_weights(band, chan).items():
+            if slot not in _BAND_CHANNELS[band]:
+                continue
+            key = (band, slot)
+            power[key] = power.get(key, 0.0) + mw * w
+            count[key] = count.get(key, 0.0) + w
+            if w >= 1.0 and dbm is not None:
+                cur = strongest.get(key)
+                if cur is None or dbm > cur[0]:
+                    strongest[key] = (dbm, ap.get("ssid") or "(hidden)")
+
+    peak = max(power.values()) if power else 1.0
+    bands_out = []
+    for band, channels in _BAND_CHANNELS.items():
+        # Only surface a band we actually heard something on.
+        if not any((band, c) in power for c in channels):
+            continue
+        rows = []
+        for c in channels:
+            key = (band, c)
+            occ = round(100.0 * power.get(key, 0.0) / peak, 1)
+            rows.append({
+                "channel": c,
+                "occupancy": occ,
+                "ap_count": int(round(count.get(key, 0.0))),
+                "dominant": strongest.get(key, (None, None))[1],
+            })
+        candidates = ([c for c in _NON_OVERLAP_24] if band == "2.4 GHz"
+                      else [r["channel"] for r in rows])
+        best = min(candidates, key=lambda c: power.get((band, c), 0.0))
+        occ_by_chan = {r["channel"]: r["occupancy"] for r in rows}
+        reason = ("least-occupied of the non-overlapping 1/6/11 set"
+                  if band == "2.4 GHz" else "least-occupied channel heard")
+        bands_out.append({
+            "band": band,
+            "channels": rows,
+            "recommend": {"channel": best, "occupancy": occ_by_chan.get(best, 0.0),
+                          "reason": reason},
+        })
+
+    # Busiest slot overall + a couple of plain-language notes.
+    notes = []
+    if power:
+        (bb, bc), _ = max(power.items(), key=lambda kv: kv[1])
+        notes.append(f"busiest slot: {bb} ch{bc}")
+    if any(b["band"] == "2.4 GHz" for b in bands_out):
+        rec = next(b["recommend"] for b in bands_out if b["band"] == "2.4 GHz")
+        notes.append(f"2.4 GHz is crowded by design - prefer ch{rec['channel']} "
+                     "and move clients to 5/6 GHz where you can")
+    return {"bands": bands_out, "notes": notes}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Wi-Fi AP/channel survey.")
     parser.add_argument("--iface", required=True)
@@ -258,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({
         "interface": args.iface, "backend": backend, "ap_count": len(aps),
         "channels": channel_summary(aps), "assessment": assess(aps),
-        "aps": aps, "note": note,
+        "spectrum": spectrum(aps), "aps": aps, "note": note,
     }, indent=1))
     return 0
 

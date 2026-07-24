@@ -116,6 +116,12 @@
         <div id="surveyResult" class="table-wrap"></div>
       </div>
       <div class="panel"><p class="eyebrow">RADIO HEALTH</p><h2>Local Wi-Fi links</h2><p class="hint">Signal, bitrate, channel and association data from local adapters. Deeper 802.11 management-frame analysis: run <code>sudo scripts/wifi-monitor-capture.sh &lt;iface&gt; &lt;channels&gt;</code> on the probe.</p><pre id="wifiData">Loading…</pre></div><div class="panel"><h2>Assessment</h2><p class="hint">Computed from the survey above once you scan. Until then, this is what the survey evaluates.</p><div id="wifiAssess"><div class="check-grid"><div><strong>Coverage</strong><span>Signal strength across the visible APs</span></div><div><strong>RF design</strong><span>Band use and co-channel overlap</span></div><div><strong>Security</strong><span>Encryption mix, open networks</span></div><div><strong>Rogue/evil-twin clues</strong><span>Same SSID on multiple BSSIDs, hidden SSIDs</span></div></div></div></div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">CHANNEL SPECTRUM</p><h2>Interference / channel occupancy</h2></div><button onclick="loadSpectrum(true)">Rescan</button></div>
+        <p class="hint">A channel-occupancy model built from the passive AP scan — no SDR, so this is Wi-Fi carriers only (not microwaves, Bluetooth or radar). Each AP's received power is spread across the channels its 20&nbsp;MHz carrier overlaps (heavy overlap in 2.4&nbsp;GHz, none between the standard 5/6&nbsp;GHz channels). Taller / redder bars are busier; the ★ marks the cleanest channel to move to per band.</p>
+        <div id="spectrumStatus" class="hint"></div>
+        <div id="spectrumRec" class="chips"></div>
+        <div id="spectrumChart"></div>
+      </div>
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">SPATIAL MAP</p><h2>AP proximity map</h2></div><button onclick="loadWifiMap()">Refresh</button></div>
         <p class="hint">A radial map of the access points around this probe. Distance from the centre tracks signal strength (stronger = closer); angle is spread for legibility — a single antenna can't sense true bearing, so this is proximity, not a compass. The AP this probe is associated with is highlighted.</p>
         <div id="wifiMapStatus" class="hint"></div>

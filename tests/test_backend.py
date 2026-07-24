@@ -172,6 +172,31 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(self.c.get("/api/ingest/binary?os=linux&arch=sparc",
                                     headers={"X-Ingest-Key": key}).status_code, 404)
 
+    # --- Wi-Fi spectrum / interference model -----------------------------------
+    def test_spectrum_model(self):
+        from monitor.wifi_survey import spectrum
+        # Three APs crowd 2.4 GHz ch6; ch1/ch11 stay clear, so 2.4 should be
+        # recommended toward 1 or 11, never 6.
+        aps = [
+            {"band": "2.4 GHz", "channel": 6, "signal_dbm": -40, "ssid": "A"},
+            {"band": "2.4 GHz", "channel": 6, "signal_dbm": -50, "ssid": "B"},
+            {"band": "2.4 GHz", "channel": 5, "signal_dbm": -55, "ssid": "C"},
+            {"band": "5 GHz", "channel": 36, "signal_dbm": -60, "ssid": "D"},
+        ]
+        s = spectrum(aps)
+        b24 = next(b for b in s["bands"] if b["band"] == "2.4 GHz")
+        self.assertIn(b24["recommend"]["channel"], (1, 11))
+        self.assertNotEqual(b24["recommend"]["channel"], 6)
+        # ch6 slot must carry more occupancy than ch1 (which no AP overlaps).
+        occ = {r["channel"]: r["occupancy"] for r in b24["channels"]}
+        self.assertGreater(occ[6], occ[1])
+        # 5 GHz was heard, so it appears as its own band.
+        self.assertTrue(any(b["band"] == "5 GHz" for b in s["bands"]))
+
+    def test_spectrum_empty(self):
+        from monitor.wifi_survey import spectrum
+        self.assertEqual(spectrum([])["bands"], [])
+
     # --- map assembler smoke ---------------------------------------------------
     def test_map_returns_graph_with_self(self):
         r = self.c.get("/api/map")
