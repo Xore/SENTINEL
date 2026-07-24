@@ -1,48 +1,49 @@
 #!/usr/bin/env bash
 # Suricata capture-adapter manager (root).
 #
-# Keeps the passive IDS bound to a usable NIC without manual babysitting:
+# Keeps the passive IDS bound to the right NIC(s) without manual babysitting.
+# Suricata can capture on several interfaces at once (one af-packet block each),
+# so this supports three modes:
 #
-#   auto   - follow the best currently-up interface (wired preferred, then
-#            wireless). If the active NIC goes down and another is up, switch.
-#   manual - stick to ONE chosen NIC. If that NIC is down right now (e.g. cable
-#            not plugged in yet but prepared), do NOT switch away - just keep
-#            re-checking every `recheck_seconds` and bind Suricata the moment it
-#            comes up. Suricata is never moved off the operator's choice.
+#   auto   - follow the single best currently-up NIC (wired preferred).
+#   all    - capture on EVERY currently-up NIC (multi-interface).
+#   manual - capture on a chosen SET of NICs. NICs that are down right now
+#            (prepared/unplugged) are simply waited on and added the moment they
+#            come up; Suricata is never moved off the operator's choice.
 #
-# Settings persist in a JSON config so a reboot keeps the same behaviour. The
-# daemon subcommand re-reads that config every cycle, so a change made by the
-# desktop selector takes effect on the next recheck with no service restart.
+# Settings persist in a JSON config that the dashboard can also write (so the
+# whole thing is configurable from the website). The daemon re-reads the config
+# every recheck cycle, so a change takes effect with no service restart.
 #
 # Subcommands:
-#   once           evaluate config, switch Suricata if needed, exit
-#   daemon         loop `once` forever, sleeping recheck_seconds between passes
-#   set <sel> [n]  write config (sel = auto | <iface>), optional recheck n secs,
-#                  then apply once
-#   status         print the current resolved state as JSON
-#   apply <iface>  low-level: bind Suricata to <iface> now (validate + restart)
+#   once            evaluate config, reconfigure Suricata if needed, exit
+#   daemon          loop `once`, sleeping recheck_seconds between passes
+#   set <sel> [n]   write config + apply. sel = auto | all | csv of ifaces
+#                   (e.g. "wlp2s0,enp0s31f6"); optional recheck n seconds
+#   status          print the current resolved state as JSON (no root needed)
+#   apply <if...>   low-level: bind Suricata to these NIC(s) now
 #
 # This is the ONLY component that reconfigures Suricata; the dashboard/monitor
-# stay read-only. Run as root (the desktop selector calls it via pkexec).
+# stay read-only. The desktop selector and the dashboard call `set` (via pkexec
+# / the reconciler) - never Suricata directly.
 set -uo pipefail
 
-CONFIG=${PROBE_IDS_ADAPTER_CONFIG:-/etc/network-probe/ids-adapter.json}
+HERE=$(cd "$(dirname "$0")" && pwd)
+CONFIG=${PROBE_IDS_ADAPTER_CONFIG:-/var/lib/network-probe/ids-adapter.json}
 STATE_DIR=${PROBE_IDS_ADAPTER_STATE_DIR:-/run/network-probe-ids}
 STATE="$STATE_DIR/state.json"
+AFPACKET_TOOL=${PROBE_SURICATA_AFPACKET:-$HERE/suricata_afpacket.py}
 SURICATA_DEFAULT=/etc/default/suricata
 SURICATA_YAML=/etc/suricata/suricata.yaml
 DEFAULT_RECHECK=60
 MIN_RECHECK=10
 
 die() { echo "ids-adapter-manager: $*" >&2; exit 1; }
-# `status` only reads a world-readable state file, so it needs no privilege;
-# the mutating subcommands (once/daemon/set/apply) check for root themselves.
 need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || die "must run as root (try: sudo $0 $*)"; }
 
 # --- config ----------------------------------------------------------------
-# Emit: mode|interface|recheck   (defaults applied for a missing file). A pipe,
-# not a tab: with a whitespace IFS `read` collapses an empty middle field (the
-# empty interface in auto mode), which would shift recheck into interface.
+# Emit: mode|iface_csv|recheck   (pipe, not tab: a whitespace IFS would collapse
+# an empty middle field). iface_csv is the chosen set for manual mode.
 read_cfg() {
   python3 - "$CONFIG" "$DEFAULT_RECHECK" "$MIN_RECHECK" <<'PY'
 import json, sys
@@ -54,36 +55,40 @@ try:
 except (OSError, ValueError):
     cfg = {}
 mode = cfg.get("mode")
-mode = "manual" if mode == "manual" else "auto"
-iface = str(cfg.get("interface") or "").strip()
+mode = mode if mode in ("auto", "all", "manual") else "auto"
+# New schema: interfaces[]. Legacy: interface "" (single string).
+ifaces = cfg.get("interfaces")
+if not isinstance(ifaces, list):
+    one = str(cfg.get("interface") or "").strip()
+    ifaces = [one] if one else []
+ifaces = [str(x).strip() for x in ifaces if str(x).strip()]
 try:
     recheck = int(cfg.get("recheck_seconds", default_recheck))
 except (TypeError, ValueError):
     recheck = default_recheck
 recheck = max(min_recheck, min(recheck, 86400))
-print(f"{mode}|{iface}|{recheck}")
+print(f"{mode}|{','.join(ifaces)}|{recheck}")
 PY
 }
 
-write_cfg() {  # mode interface recheck
+write_cfg() {  # mode  iface_csv  recheck
   local dir; dir=$(dirname "$CONFIG")
   mkdir -p "$dir"
   python3 - "$CONFIG" "$1" "$2" "$3" <<'PY'
 import json, os, sys, tempfile
-path, mode, iface, recheck = sys.argv[1:5]
-data = {"mode": mode, "interface": iface, "recheck_seconds": int(recheck)}
+path, mode, csv, recheck = sys.argv[1:5]
+ifaces = [x for x in csv.split(",") if x]
+data = {"mode": mode, "interfaces": ifaces, "recheck_seconds": int(recheck)}
 d = os.path.dirname(path)
 fd, tmp = tempfile.mkstemp(dir=d, prefix=".ids-adapter-")
 with os.fdopen(fd, "w") as fh:
-    json.dump(data, fh, indent=2)
-    fh.write("\n")
-os.chmod(tmp, 0o644)          # no secrets; the desktop selector reads it
+    json.dump(data, fh, indent=2); fh.write("\n")
+os.chmod(tmp, 0o644)     # no secrets; dashboard + desktop selector read it
 os.replace(tmp, path)
 PY
 }
 
 # --- interfaces -------------------------------------------------------------
-# All real NICs (skip loopback and virtual bridges/veth/docker).
 list_ifaces() {
   local n
   for n in /sys/class/net/*; do
@@ -94,84 +99,92 @@ list_ifaces() {
   done
 }
 
-# A NIC is usable for capture when the kernel reports the link operationally up
-# (operstate=up), i.e. it has carrier. A "prepared but unplugged" NIC is
-# administratively up but operstate=down/lowerlayerdown -> not usable yet.
+# Usable = link operationally up (has carrier). A "prepared but unplugged" NIC
+# is admin-up but operstate down -> not usable yet.
 iface_usable() {
   local n=$1 op
   [[ -e /sys/class/net/$n ]] || return 1
   op=$(cat "/sys/class/net/$n/operstate" 2>/dev/null || echo unknown)
   [[ $op == up ]] && return 0
-  # Some drivers report "unknown" while carrying (common on wlan); trust carrier.
   [[ $op == unknown && $(cat "/sys/class/net/$n/carrier" 2>/dev/null || echo 0) == 1 ]]
 }
 
 is_wired() { [[ $1 == en* || $1 == eth* ]]; }
 
-# Auto pick: first usable wired NIC, else first usable wireless NIC. Empty if
-# nothing is up right now (caller then leaves Suricata where it is).
+# Best single up NIC: first usable wired, else first usable wireless.
 pick_auto() {
   local n
   for n in $(list_ifaces); do is_wired "$n" && iface_usable "$n" && { echo "$n"; return; }; done
   for n in $(list_ifaces); do is_wired "$n" || { iface_usable "$n" && { echo "$n"; return; }; }; done
-  echo ""
 }
 
-current_iface() {
-  local i=""
-  [[ -r $SURICATA_DEFAULT ]] && i=$(sed -n 's/^IFACE=//p' "$SURICATA_DEFAULT" | head -1)
-  [[ -z $i && -r $SURICATA_YAML ]] && i=$(sed -n 's/^[[:space:]]*- interface:[[:space:]]*//p' "$SURICATA_YAML" | head -1)
-  echo "$i"
+# Interfaces Suricata is currently configured to capture on (af-packet blocks,
+# excluding the `default` catch-all), space-separated.
+current_ifaces() {
+  [[ -r $SURICATA_YAML ]] || return 0
+  sed -n 's/^[[:space:]]*- interface:[[:space:]]*//p' "$SURICATA_YAML" \
+    | grep -vx default | tr '\n' ' '
 }
 
 # --- apply ------------------------------------------------------------------
-apply_iface() {  # <iface>  -> reconfigure + restart Suricata (idempotent)
-  local iface=$1
-  [[ -n $iface && -e /sys/class/net/$iface ]] || { echo "apply: no such interface '$iface'" >&2; return 1; }
+# Reconfigure Suricata to capture on exactly the given NIC(s). Idempotent, and
+# safe: backs up the yaml, validates, and rolls the yaml back if the test fails.
+apply_ifaces() {  # <iface...>
+  local want=("$@")
+  ((${#want[@]})) || { echo "apply: no interfaces given" >&2; return 1; }
+  local w
+  for w in "${want[@]}"; do [[ -e /sys/class/net/$w ]] || { echo "apply: no such interface '$w'" >&2; return 1; }; done
 
-  if [[ $(current_iface) == "$iface" ]] && systemctl is-active --quiet suricata; then
-    return 0   # already bound and running - nothing to do
+  # Already capturing exactly this set and running? Nothing to do.
+  local cur; cur=$(current_ifaces)
+  local want_sorted cur_sorted
+  want_sorted=$(printf '%s\n' "${want[@]}" | sort | tr '\n' ' ')
+  cur_sorted=$(printf '%s\n' $cur | sort | tr '\n' ' ')
+  if [[ $want_sorted == "$cur_sorted" ]] && systemctl is-active --quiet suricata; then
+    return 0
   fi
 
+  local backup="${SURICATA_YAML}.probe-bak"
+  cp -f "$SURICATA_YAML" "$backup"
+  if ! python3 "$AFPACKET_TOOL" "$SURICATA_YAML" "${want[@]}"; then
+    cp -f "$backup" "$SURICATA_YAML"; echo "apply: yaml rewrite failed; restored" >&2; return 1
+  fi
+  # Keep the pcap-mode IFACE line in sync with the first interface (cosmetic).
   if [[ -f $SURICATA_DEFAULT ]]; then
-    if grep -q '^IFACE=' "$SURICATA_DEFAULT"; then
-      sed -i "s/^IFACE=.*/IFACE=$iface/" "$SURICATA_DEFAULT"
-    else
-      echo "IFACE=$iface" >> "$SURICATA_DEFAULT"
-    fi
+    if grep -q '^IFACE=' "$SURICATA_DEFAULT"; then sed -i "s/^IFACE=.*/IFACE=${want[0]}/" "$SURICATA_DEFAULT"
+    else echo "IFACE=${want[0]}" >> "$SURICATA_DEFAULT"; fi
   fi
-  # Keep the af-packet section's first interface in sync (this is what the
-  # running engine actually captures on).
-  sed -i "0,/^\([[:space:]]*\)- interface:.*/s//\1- interface: $iface/" "$SURICATA_YAML"
-
-  if ! suricata -T -c "$SURICATA_YAML" -i "$iface" >/dev/null 2>&1; then
-    echo "apply: suricata config test failed for '$iface'" >&2
-    return 1
+  if ! suricata -T -c "$SURICATA_YAML" >/dev/null 2>&1; then
+    cp -f "$backup" "$SURICATA_YAML"; echo "apply: suricata config test failed; restored" >&2; return 1
   fi
   systemctl restart suricata
-  echo "apply: Suricata now capturing on $iface"
+  echo "apply: Suricata now capturing on ${want[*]}"
 }
 
 # --- state ------------------------------------------------------------------
-write_state() {  # mode configured recheck resolved active note
+json_array() { local out="" x; for x in "$@"; do out+="\"$x\","; done; echo "[${out%,}]"; }
+
+write_state() {  # mode  configured_csv  recheck  resolved_csv  active_csv  note
   mkdir -p "$STATE_DIR" 2>/dev/null || true
-  local ifjson n
-  ifjson=""
+  local ifjson="" n
   for n in $(list_ifaces); do
     local up=false; iface_usable "$n" && up=true
     ifjson+="{\"name\":\"$n\",\"up\":$up,\"wired\":$(is_wired "$n" && echo true || echo false)},"
   done
-  ifjson="[${ifjson%,}]"
+  local resolved active configured
+  IFS=',' read -ra _r <<< "$4"; resolved=$(json_array "${_r[@]}")
+  IFS=',' read -ra _a <<< "$5"; active=$(json_array "${_a[@]}")
+  IFS=',' read -ra _c <<< "$2"; configured=$(json_array "${_c[@]}")
   cat > "$STATE" 2>/dev/null <<JSON || true
 {
   "mode": "$1",
-  "configured_interface": "$2",
+  "configured_interfaces": $configured,
   "recheck_seconds": $3,
-  "resolved_interface": "$4",
-  "active_interface": "$5",
+  "resolved_interfaces": $resolved,
+  "active_interfaces": $active,
   "suricata_active": $(systemctl is-active --quiet suricata && echo true || echo false),
   "note": "$6",
-  "interfaces": $ifjson,
+  "interfaces": [${ifjson%,}],
   "updated": $(date +%s)
 }
 JSON
@@ -180,35 +193,40 @@ JSON
 
 # --- evaluate ---------------------------------------------------------------
 once() {
-  local mode iface recheck; IFS='|' read -r mode iface recheck < <(read_cfg)
-  local active target note
-  active=$(current_iface)
+  local mode csv recheck; IFS='|' read -r mode csv recheck < <(read_cfg)
+  local -a chosen=(); [[ -n $csv ]] && IFS=',' read -ra chosen <<< "$csv"
+  local -a target=(); local note active
+  active=$(current_ifaces); active=${active% }
 
-  if [[ $mode == manual ]]; then
-    if [[ -z $iface ]]; then
-      target=""; note="manual mode but no interface set; leaving Suricata on ${active:-none}"
-    elif iface_usable "$iface"; then
-      target=$iface; note="manual: $iface is up"
+  if [[ $mode == all ]]; then
+    local n; for n in $(list_ifaces); do iface_usable "$n" && target+=("$n"); done
+    note=$( ((${#target[@]})) && echo "all: capturing on ${target[*]}" || echo "all: no interface is up; left on ${active:-none}" )
+  elif [[ $mode == manual ]]; then
+    local down=() n
+    for n in "${chosen[@]}"; do if iface_usable "$n"; then target+=("$n"); else down+=("$n"); fi; done
+    if ((${#target[@]})); then
+      note="manual: capturing on ${target[*]}"; ((${#down[@]})) && note+="; waiting on ${down[*]} (down)"
     else
-      target=""; note="manual: $iface is down (prepared); waiting, Suricata left on ${active:-none}"
+      note="manual: chosen NIC(s) ${chosen[*]:-none} down; waiting, left on ${active:-none}"
     fi
   else
-    target=$(pick_auto)
-    if [[ -z $target ]]; then
-      note="auto: no interface is up; leaving Suricata on ${active:-none}"
-    else
-      note="auto: best up interface is $target"
+    local best; best=$(pick_auto)
+    [[ -n $best ]] && target=("$best")
+    note=$( [[ -n $best ]] && echo "auto: best up interface is $best" || echo "auto: no interface is up; left on ${active:-none}" )
+  fi
+
+  if ((${#target[@]})); then
+    local tset cset
+    tset=$(printf '%s\n' "${target[@]}" | sort | tr '\n' ' ')
+    cset=$(printf '%s\n' $active | sort | tr '\n' ' ')
+    if [[ $tset != "$cset" ]] || ! systemctl is-active --quiet suricata; then
+      if apply_ifaces "${target[@]}"; then active="${target[*]}"; note="switched to ${target[*]}"; fi
     fi
   fi
 
-  if [[ -n $target && $target != "$active" ]]; then
-    if apply_iface "$target"; then active=$target; note="switched to $target"; fi
-  elif [[ -n $target ]]; then
-    # Correct binding, but make sure the service is actually running.
-    systemctl is-active --quiet suricata || apply_iface "$target" || true
-  fi
-
-  write_state "$mode" "$iface" "$recheck" "$target" "$active" "$note"
+  local resolved_csv; resolved_csv=$(IFS=,; echo "${target[*]}")
+  local active_csv; active_csv=$(echo "$active" | tr ' ' ',')
+  write_state "$mode" "$csv" "$recheck" "$resolved_csv" "$active_csv" "$note"
   echo "$note"
 }
 
@@ -232,22 +250,25 @@ case $cmd in
     else echo '{"status":"unknown","note":"no state yet; the adapter daemon may not be running"}'; fi
     ;;
   apply)
-    need_root "apply ${2:-}"
-    [[ -n ${2:-} ]] || die "usage: $0 apply <iface>"
-    apply_iface "$2"
+    need_root "apply ${*:2}"
+    shift; [[ $# -ge 1 ]] || die "usage: $0 apply <iface...>"
+    apply_ifaces "$@"
     ;;
   set)
     need_root "set ${2:-} ${3:-}"
     sel=${2:-} ; recheck=${3:-}
-    [[ -n $sel ]] || die "usage: $0 set <auto|iface> [recheck_seconds]"
-    IFS=$'\t' read -r cmode ciface crecheck < <(read_cfg)
+    [[ -n $sel ]] || die "usage: $0 set <auto|all|iface[,iface...]> [recheck_seconds]"
+    IFS='|' read -r _m _c crecheck < <(read_cfg)
     [[ -n $recheck ]] || recheck=$crecheck
-    if [[ $sel == auto ]]; then
-      write_cfg auto "" "$recheck"
-    else
-      [[ -e /sys/class/net/$sel ]] || die "no such interface '$sel'"
-      write_cfg manual "$sel" "$recheck"
-    fi
+    case $sel in
+      auto) write_cfg auto "" "$recheck" ;;
+      all)  write_cfg all  "" "$recheck" ;;
+      *)
+        csv=${sel//[[:space:]]/}
+        IFS=',' read -ra picks <<< "$csv"
+        for p in "${picks[@]}"; do [[ -e /sys/class/net/$p ]] || die "no such interface '$p'"; done
+        write_cfg manual "$csv" "$recheck" ;;
+    esac
     once
     ;;
   *) die "unknown subcommand '$cmd' (once|daemon|set|status|apply)" ;;

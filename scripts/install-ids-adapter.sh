@@ -17,8 +17,11 @@ manager="$repo_dir/scripts/ids-adapter-manager.sh"
 [[ -f $manager ]] || { echo "Missing $manager" >&2; exit 2; }
 chmod +x "$manager"
 
-config=/etc/network-probe/ids-adapter.json
-install -d -m 0755 /etc/network-probe 2>/dev/null || mkdir -p /etc/network-probe
+# Config lives in the dashboard's state dir so the website can also write it
+# (the manager reads /var/lib/network-probe/ids-adapter.json). The dashboard
+# account owns the dir; the config file stays world-readable (no secrets).
+config=/var/lib/network-probe/ids-adapter.json
+install -d -m 0755 /var/lib/network-probe 2>/dev/null || mkdir -p /var/lib/network-probe
 
 # Seed config only if absent, so a re-run keeps the operator's saved choice.
 # Default: auto (follow the best up NIC), recheck every 60s.
@@ -26,7 +29,7 @@ if [[ ! -f $config ]]; then
   cat > "$config" <<'JSON'
 {
   "mode": "auto",
-  "interface": "",
+  "interfaces": [],
   "recheck_seconds": 60
 }
 JSON
@@ -34,6 +37,15 @@ JSON
   echo "Seeded $config (mode=auto, recheck=60s)."
 else
   echo "Keeping existing $config."
+fi
+
+# Hand the config to the dashboard service account (if present) so the website
+# can edit the IDS adapter directly - the root daemon re-reads it every cycle
+# and enacts the change. No secrets here, so it stays world-readable.
+dash_user=$(systemctl show network-probe-dashboard -p User --value 2>/dev/null || true)
+if [[ -n ${dash_user:-} ]] && id "$dash_user" >/dev/null 2>&1; then
+  chown "$dash_user":"$dash_user" "$config" 2>/dev/null \
+    && echo "Config owned by '$dash_user' (dashboard-editable)."
 fi
 
 unit=/etc/systemd/system/network-probe-ids-adapter.service
@@ -69,5 +81,6 @@ echo "IDS adapter manager installed and running."
 "$manager" status 2>/dev/null | sed 's/^/  /' || true
 echo
 echo "Change the adapter from the desktop (Select IDS Capture Adapter) or with:"
-echo "  sudo $manager set auto            # follow the best up NIC"
-echo "  sudo $manager set <iface> [secs]  # pin one NIC, recheck every <secs>"
+echo "  sudo $manager set auto                    # follow the best up NIC"
+echo "  sudo $manager set all                     # capture on every up NIC"
+echo "  sudo $manager set <if1>,<if2> [secs]      # pin a set of NICs, recheck every <secs>"

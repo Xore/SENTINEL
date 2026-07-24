@@ -85,13 +85,14 @@ def _capture_adapter() -> dict:
     try:
         with open(IDS_ADAPTER_STATE, encoding="utf-8") as fh:
             state = json.load(fh)
-        for src, dst in (("active_interface", "interface"), ("mode", "mode"),
-                         ("recheck_seconds", "recheck_seconds"),
-                         ("configured_interface", "configured_interface")):
-            if state.get(src) not in (None, ""):
-                info[dst] = state[src]
-        if isinstance(state.get("interfaces"), list):
-            info["interfaces"] = state["interfaces"]
+        for key in ("mode", "recheck_seconds", "note",
+                    "active_interfaces", "configured_interfaces", "interfaces"):
+            if state.get(key) not in (None, "", []):
+                info[key] = state[key]
+        # Convenience: a single "interface" string for the common one-NIC case.
+        active = state.get("active_interfaces") or []
+        if isinstance(active, list) and active:
+            info["interface"] = active[0] if len(active) == 1 else ", ".join(active)
     except (OSError, ValueError):
         pass
     if "interface" not in info:
