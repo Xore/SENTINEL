@@ -172,7 +172,7 @@ jobs:
           echo "name=rc-${DATE}-${SHORT}" >> $GITHUB_OUTPUT
 
       - name: Download Go binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: go-binaries
           path: dist/
