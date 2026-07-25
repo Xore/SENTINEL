@@ -1,7 +1,0 @@
-{
-  "version": "0.2.0",
-  "files": {
-    "linux/amd64": "collector-linux-amd64",
-    "windows/amd64": "collector-windows-amd64.exe"
-  }
-}
