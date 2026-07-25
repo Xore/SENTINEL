@@ -3,6 +3,12 @@
 > Companion to `docs/gap-analysis-collector-vs-standalone.md`. Use this as a working checklist before implementing each roadmap phase. Each section lists: what to read, what to measure/prototype locally, and the exit criteria that show the topic is ready to implement.
 >
 > **Update (2026-07-25):** Dedicated deep-research documents now exist for three of the topics below — `docs/mdp-adaptive-scheduling-theory.md` (§4), `docs/segment-health-arp-dhcp-theory.md` (§7), and `docs/ot-protocol-safety-theory.md` (§3). Where a topic has a completed theory doc, the "read" step is satisfied; the empirical/data-driven validation steps in this guide remain the blocking work before implementation.
+>
+> **Update (2026-07-25, later):** Research backlog topics 9, 11, and 12 checked/closed out, and three new backlog topics added — see §8 below.
+> - **Topic 9 (SNMP sysUpTime regression)** → now covered by new `docs/snmp-sysuptime-regression-theory.md`.
+> - **Topic 11 (MDP finite-state approximation)** → found to already be substantially covered by the existing `docs/mdp-adaptive-scheduling-theory.md` Part 2 ("Deriving the Finite-State Scheduler From Theory"); no new document was needed, this backlog item should be marked ✅ rather than "Next".
+> - **Topic 12 (Hotelling T² multivariate detection)** → now covered by new `docs/hotelling-t2-multivariate-detection.md`.
+> - **New topics added:** adaptive thresholding logic (cross-cutting — see note in §8.1), fault-tree analysis for multi-hop paths (new `docs/fault-tree-multihop-paths.md`), and high-cardinality metric storage (new `docs/high-cardinality-storage.md`).
 
 ## How to Use This Guide
 
@@ -37,6 +43,7 @@ Goal: implement well-specified checks that exist in `SUGGESTIONS.md` §6.3-6.10 
 **Step 2.1 — Read the primary standards**
 - RFC 7799 ("Active and Passive Metrics and Methods") for the terminology used throughout the roadmap.
 - RFC 1213 (SNMPv2-MIB) for the exact OID semantics being read (`sysDescr`, `sysUpTime`, `ifOperStatus`).
+- For `sysUpTime` specifically, also read `docs/snmp-sysuptime-regression-theory.md` before implementing reboot-detection logic — it documents the 32-bit rollover pitfall (~497 days) and the correct disambiguation using `snmpEngineTime`/`hrSystemUptime`, which RFC 1213 alone does not warn about.
 
 **Step 2.2 — Cross-check platform differences**
 - Build a small matrix (already started in `SUGGESTIONS.md` §8) and validate it against actual target OSes in the deployment fleet: Raspberry Pi OS (Debian-based), Ubuntu/Debian VPS, Windows Server.
@@ -48,8 +55,9 @@ Goal: implement well-specified checks that exist in `SUGGESTIONS.md` §6.3-6.10 
 **Step 2.4 — Prototype TLS/SNMP against real infra**
 - Test TLS cert expiry check against the user's existing Traefik reverse-proxy endpoints.
 - Test SNMP v2c/v3 GET against any existing managed switch/router in the network, using the same credential model already implemented in `monitor/snmp_probe.py`.
+- Implement the `sysUpTime` regression classifier per `docs/snmp-sysuptime-regression-theory.md` §2.3's decision table, not a naive "counter decreased = reboot" check.
 
-**Exit criteria:** each check (routes, WAN, OS health, TLS, SNMP) runs cleanly against at least one real Raspberry Pi and one real Windows Server target with no crashes or false positives over a 24-hour soak test.
+**Exit criteria:** each check (routes, WAN, OS health, TLS, SNMP) runs cleanly against at least one real Raspberry Pi and one real Windows Server target with no crashes or false positives over a 24-hour soak test. SNMP reboot detection specifically must be validated to not false-positive near the 497-day rollover boundary (may require simulating a rollover in a test harness rather than waiting 497 days).
 
 ---
 
@@ -84,7 +92,7 @@ Goal: implement read-only OT polling without violating IEC 62443 safety constrai
 
 Goal: replace fixed-interval polling with the finite-state scheduler, validated against real failure data rather than assumed thresholds.
 
-> **Reading step now satisfied by `docs/mdp-adaptive-scheduling-theory.md`** — it covers Zabala et al. (2023) in depth, corrects the scope of that paper's applicability (single-processor capture/analysis contention, not literally multi-target reachability scheduling), and adds the more directly relevant probe-scheduling literature (Cohen et al. 2013; Mahmoody et al. 2015). It also specifies (§2.2) that the STABLE→SUSPECT transition should be a CUSUM alarm reusing `docs/anomaly-detection-theory.md`'s parameters rather than an independent ad hoc threshold. Steps 4.2-4.4 below remain the required empirical validation.
+> **Reading step now satisfied by `docs/mdp-adaptive-scheduling-theory.md`** — it covers Zabala et al. (2023) in depth, corrects the scope of that paper's applicability (single-processor capture/analysis contention, not literally multi-target reachability scheduling), and adds the more directly relevant probe-scheduling literature (Cohen et al. 2013; Mahmoody et al. 2015). It also specifies (§2.2) that the STABLE→SUSPECT transition should be a CUSUM alarm reusing `docs/anomaly-detection-theory.md`'s parameters rather than an independent ad hoc threshold. **Its Part 2 ("Deriving the Finite-State Scheduler From Theory") is also the answer to backlog topic 11 ("MDP finite-state approximation") — no separate document was needed for that backlog item.** Steps 4.2-4.4 below remain the required empirical validation.
 
 **Step 4.1 — Read the core paper**
 - Zabala, L. et al. "Optimality of a Network Monitoring Agent and Validation in a Real Environment." Mathematics 11(3):610, 2023 (mdpi.com/2227-7390/11/3/610). Focus on how they validate the MDP model against a real environment, not just simulation.
@@ -163,14 +171,44 @@ Goal: derive a real threshold instead of the placeholder "> N ARP replies per mi
 
 ---
 
+## 8. Cross-Cutting / Recently Added Backlog Topics
+
+These three topics were added to the research backlog alongside the closeout of topics 9, 11, and 12, and cut across multiple phases above rather than belonging to a single one.
+
+### 8.1 Adaptive Thresholding Logic for Network Metrics
+
+This is deliberately **not** a new standalone theory document, because the project already has the two building blocks it needs, spread across existing docs:
+- Univariate adaptive thresholds (CUSUM ARL tables, EWMA parameters, MAD-based per-metric sigma) → `docs/anomaly-detection-theory.md`.
+- Multivariate/cross-metric adaptive thresholds (Hotelling T² with per-temporal-cluster hysteresis thresholds) → new `docs/hotelling-t2-multivariate-detection.md` §2.3.
+- State-transition adaptive thresholds for the scheduler itself → `docs/mdp-adaptive-scheduling-theory.md` §2.2.
+
+**Remaining work is integration, not new research:** write a short design note (when Phase 4 implementation begins) that shows all three existing threshold mechanisms sharing one debounce/hysteresis implementation rather than three parallel ad hoc ones, per the cross-references already added in §2.3 of the new Hotelling doc and §2.2 of the MDP doc.
+
+### 8.2 Fault-Tree Analysis for Multi-Hop Network Paths
+
+Covered in full by new `docs/fault-tree-multihop-paths.md`. Read this before designing the RCA pipeline's per-hop root-cause ranking logic (`docs/rca-causal-inference.md`) — the fault tree's minimal cut sets are meant to be consumed as candidate hypotheses by that pipeline, not implemented as a separate, disconnected feature.
+
+**Exit criteria:** the project's actual path topology has been enumerated against the AND/OR/PAND gate taxonomy in `docs/fault-tree-multihop-paths.md` §2.2 before any fault-tree logic is coded, and the WireGuard primary/fallback relationship is modeled as a dynamic (PAND) tree rather than a static OR gate.
+
+### 8.3 Optimizing Data Storage Structures for High-Cardinality Metrics
+
+Covered in full by new `docs/high-cardinality-storage.md`, with a concrete priority order for this project (downsampling first, series-identity normalization second, unbounded-field exclusion third, everything else deferred until scale justifies it).
+
+**Exit criteria:** downsampling tiers and series-identity normalization (§2.1/§2.4 of the new doc) are implemented in the standalone monitor's SQLite schema *before* per-hop (`mtr`) and per-OID (SNMP) collector-parity features are added — adding those features first, on the current unnormalized schema, would multiply cardinality before the mitigation exists.
+
+---
+
 ## Summary Table: Research Gate per Phase
 
 | Phase | Research required before coding? | Primary reading | Theory doc status | Data-driven validation needed |
 |---|---|---|---|---|
 | 0 — Parity port | No | `collector/ROADMAP.md` Phase 0 | N/A | Compare against standalone SQLite data |
-| 1 — Routes/WAN/OS/TLS/SNMP | Light | RFC 7799, RFC 1213 | N/A (light) | Platform matrix soak test |
+| 1 — Routes/WAN/OS/TLS/SNMP | Light | RFC 7799, RFC 1213 | Light, plus **Complete** for sysUpTime specifically — `docs/snmp-sysuptime-regression-theory.md` | Platform matrix soak test; rollover-boundary test for SNMP reboot detection |
 | OT protocols | Yes — safety gate | IEC 62443-3-3, Ollila 2024, RITICS/NCSC, NIST SP 800-82 | **Complete** — `docs/ot-protocol-safety-theory.md` | Simulator tests + controls-owner sign-off + real device connection-limit check |
-| 4 — MDP scheduler | Yes | Zabala et al. 2023; Cohen et al. 2013; Mahmoody et al. 2015 | **Complete** — `docs/mdp-adaptive-scheduling-theory.md` | 30+ days of own outage data; CUSUM-transition backtest |
+| 4 — MDP scheduler | Yes | Zabala et al. 2023; Cohen et al. 2013; Mahmoody et al. 2015 | **Complete** (incl. finite-state approximation) — `docs/mdp-adaptive-scheduling-theory.md` | 30+ days of own outage data; CUSUM-transition backtest |
 | 5 — Probe budget allocation | Yes | Amjad et al. 2021 | Not yet written | Small-N simulation |
 | 2 — eBPF passive RTT | Yes | Sundberg 2024 | Not yet written (map-level notes only in `docs/ebpf-map-best-practices.md`) | Raspberry Pi kernel/capability test |
 | 3 — ARP-rate thresholds | Yes | Brügge & Simon 2024; DS-ARP; Tripathi & Hubballi | **Complete** — `docs/segment-health-arp-dhcp-theory.md` | 7+ days of own ARP baseline |
+| Cross-cutting — multivariate detection | Yes | Melnikov et al. 2025 (SICAMS) | **Complete** — `docs/hotelling-t2-multivariate-detection.md` | Empirical normality check per metric; 30-day backtest shared with Phase 4 |
+| Cross-cutting — path fault modeling | Yes | NRC Fault Tree Handbook; Ahmed et al. 2016 | **Complete** — `docs/fault-tree-multihop-paths.md` | Topology enumeration against real deployment |
+| Cross-cutting — metric storage scaling | Yes | Netdata Academy 2026; InfoQ 2026 | **Complete** — `docs/high-cardinality-storage.md` | None (design-only until scale requires benchmarking) |
