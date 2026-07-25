@@ -830,3 +830,37 @@ def get_collector_samples(collector_id: str, stream: str, limit: int = 200) -> l
         payload.setdefault("ts", r["ts"])
         out.append(payload)
     return out
+
+
+def get_collector_neighbours(max_age: float = 3600.0) -> list[dict]:
+    """Latest neighbour (ARP/`ip neigh`) sighting each *enabled* collector pushed,
+    deduped to one row per (collector_id, ip). Feeds the network map so a remote
+    collector's discovered devices appear as collector-tagged nodes. Rows:
+    ``{collector_id, ip, mac, state, ts}``. Revoked/disabled collectors are
+    excluded so their stale observations drop off the map."""
+    cutoff = time.time() - max_age
+    try:
+        with _lock, _connect() as db:
+            rows = db.execute(
+                "SELECT s.collector_id, s.ts, s.payload FROM collector_samples s "
+                "JOIN collectors c ON c.collector_id = s.collector_id "
+                "WHERE s.stream = 'neighbours' AND c.enabled = 1 AND s.ts >= ? "
+                "ORDER BY s.ts ASC", (cutoff,)).fetchall()
+    except sqlite3.Error:
+        return []
+    latest: dict[tuple, dict] = {}
+    for r in rows:
+        try:
+            p = json.loads(r["payload"] or "{}")
+        except ValueError:
+            continue
+        ip = (p.get("ip") or "").strip()
+        if not ip:
+            continue
+        # ORDER BY ts ASC means the last write for a key wins = the newest sighting.
+        latest[(r["collector_id"], ip)] = {
+            "collector_id": r["collector_id"], "ip": ip,
+            "mac": (p.get("mac") or "").strip().lower(),
+            "state": p.get("state") or "", "ts": r["ts"],
+        }
+    return list(latest.values())

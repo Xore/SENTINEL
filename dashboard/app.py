@@ -2605,7 +2605,7 @@ def set_multinode():
 _KIND_RANK = {
     "unknown": 0, "host": 1, "hop": 1, "target": 2, "neighbour": 2,
     "ap": 3, "printer": 3, "phone": 3, "server": 3, "workstation": 3, "iot": 3,
-    "router": 4, "switch": 4, "wan-gateway": 5, "firewall": 5,
+    "router": 4, "switch": 4, "wan-gateway": 5, "firewall": 5, "collector": 5,
     "self": 6, "internet": 6, "subnet": 6,
 }
 
@@ -2857,6 +2857,39 @@ def network_map():
              detail={"band": ap.get("band"), "channel": ap.get("channel"),
                      "signal": ap.get("signal"), "security": ap.get("security"), "bssid": bssid})
         edge("self", nid, layer="l1", media="wireless", confidence="observed", signal=ap.get("signal"))
+
+    # --- remote collector observations (#36): weave each enabled collector's
+    # pushed neighbour list in as collector-tagged nodes, rooted at a node for
+    # the collector itself, so the scoped view can narrow to one collector.
+    # A device already seen locally keeps its `local` tag (local sighting wins);
+    # purely-remote devices carry the observing collector's id. ---------------
+    try:
+        remote_neigh = history.get_collector_neighbours()
+    except Exception:
+        remote_neigh = []
+    collector_names: dict[str, str] = {}
+    try:
+        for c in history.list_collectors():
+            collector_names[c["collector_id"]] = c.get("name") or c["collector_id"]
+    except Exception:
+        pass
+    seen_collectors: set[str] = set()
+    for obs in remote_neigh:
+        cid = obs["collector_id"]
+        cnode = "collector:" + cid
+        if cid not in seen_collectors:
+            node(cnode, label=collector_names.get(cid, cid), kind="collector",
+                 status="up", collector=cid, detail={"collector_id": cid})
+            seen_collectors.add(cid)
+        ip = obs["ip"]
+        existed = ip in nodes
+        n = node(ip, label=ip, ips=[ip], macs=[obs["mac"]] if obs["mac"] else [],
+                 subnet=_map_subnet_of(ip, own_subnets),
+                 status=status_for(ip, obs.get("ts")),
+                 detail={"neigh_state": obs["state"], "observed_by": cid})
+        if not existed:  # local sighting wins; only tag purely-remote nodes
+            n["collector"] = cid
+        edge(cnode, ip, layer="l3", media="wired", confidence="inferred", via="collector " + cid)
 
     # --- enrich monitored nodes + finalise subnet counts --------------------
     for ip, st in monitor_status.items():

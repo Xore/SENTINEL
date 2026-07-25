@@ -289,6 +289,32 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(g["scope"], "all")
         self.assertIn("local", g["collectors"])  # local node always observes something
 
+    def test_map_weaves_and_scopes_remote_collector_neighbours(self):
+        self._accept_external(True)
+        body = self.c.post("/api/collectors", json={"name": "edge-1"}).get_json()
+        cid, key = body["collector_id"], body["key"]
+        # collector pushes a neighbour it discovered on its own segment
+        self.assertEqual(self.c.post("/api/ingest/samples",
+            json={"stream": "neighbours",
+                  "rows": [{"ip": "10.9.9.9", "mac": "de:ad:be:ef:00:01", "state": "REACHABLE"}]},
+            headers={"X-Ingest-Key": key}).status_code, 200)
+
+        g = self.c.get("/api/map").get_json()
+        self.assertIn(cid, g["collectors"])
+        dev = self._node(g, "10.9.9.9")
+        self.assertIsNotNone(dev, "remote-discovered device should appear on the union map")
+        self.assertEqual(dev["collector"], cid)
+        self.assertIsNotNone(self._node(g, "collector:" + cid))
+
+        # scope to this collector -> its device survives, and a local-only node does not
+        scoped = self.c.get(f"/api/map?collector={cid}").get_json()
+        ids = {n["id"] for n in scoped["nodes"]}
+        self.assertIn("10.9.9.9", ids)
+        self.assertIn("self", ids)  # anchor
+        # scope to a different collector -> the edge-1 device is gone
+        other = self.c.get("/api/map?collector=col-nope").get_json()
+        self.assertNotIn("10.9.9.9", {n["id"] for n in other["nodes"]})
+
     def test_map_scope_to_unknown_collector_keeps_only_anchors(self):
         appmod.history.get_hosts = lambda limit=500: [
             {"address": "192.168.50.80", "mac": "", "vendor": "Dell", "name": "",

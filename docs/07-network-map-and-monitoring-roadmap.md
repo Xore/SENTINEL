@@ -144,12 +144,21 @@ requested and gated.
 
 The map is **per-collector aware from the start**: `/api/map` tags every node with
 the collector that observed it (`local` on the standalone box). Task #36's scoped
-view builds on that — `GET /api/map?collector=<id>` narrows the graph to one
-collector's observations (the shared `self`/`internet` anchors always survive so a
-scoped map is never rootless), and the payload carries `scope` + the `collectors`
-list so the map toolbar can offer an "all collectors / <id>" selector with no
-second round-trip. Union (`all`) is the default. This mirrors Auvik's
-site/collector structure (see
+view builds on that:
+
+- Each enabled collector's pushed `neighbours` stream is woven into `/api/map` as
+  collector-tagged device nodes, rooted at a `collector:<id>` node (kind
+  `collector`). A device already seen locally keeps its `local` tag (local sighting
+  wins); purely-remote devices carry the observing collector's id. Revoked
+  collectors' observations drop off (the read JOINs `collectors.enabled = 1`).
+- `GET /api/map?collector=<id>` narrows the graph to one collector's observations
+  (the shared `self`/`internet` anchors always survive so a scoped map is never
+  rootless; edges into dropped nodes are pruned).
+- The payload carries `scope` + the `collectors` list so the map toolbar offers an
+  "all collectors / <id>" selector with no second round-trip. Union (`all`) is the
+  default.
+
+This mirrors Auvik's site/collector structure (see
 [06-auvik-feature-reference.md](06-auvik-feature-reference.md) → Auvik Collectors).
 
 ## Task index
