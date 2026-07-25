@@ -1,15 +1,16 @@
 # Machine Learning — Baseline Learning & Anomaly Detection (v2)
 ## analyseLaptop · Academic Design Document
 
-> **Date:** 2026-07-25  
-> **Scope:** Full ML pipeline for learning normal network behaviour and detecting anomalies after a supervised learning phase. Covers data storage strategy, model selection, training lifecycle, concept drift handling, and integration with the existing aggregator + dashboard.  
+> **Date:** 2026-07-25 (revised against ARCHITECTURE-V2.md)  
+> **Scope:** Full ML pipeline for learning normal network behaviour and detecting anomalies after a learning phase. Covers data storage strategy, model selection, training lifecycle, concept drift handling, and integration with the v2 service architecture.  
+> **Architecture basis:** `docs/architecture/ARCHITECTURE-V2.md` — services are `backend/analyse/` (Python), `backend/ingest/` (Go), `backend/api/` (Go/Gin), storage is VictoriaMetrics + PostgreSQL, frontend is SvelteKit. **No Flask dashboard. No `monitor/` aggregator.**  
 > **Academic basis:** Cited throughout — all design decisions are grounded in peer-reviewed literature.
 
 ---
 
 ## 1. Problem Statement
 
-The analyseLaptop system collects multivariate time-series data from collectors: RTT, packet loss %, interface counters, WireGuard handshake ages, SNMP OIDs, Modbus register values, OS health metrics, and WiFi frame counters. The existing `monitor/` pipeline applies **static thresholds** (CUSUM + EWMA, Phase 3) and a **finite-state MDP** (Phase 5) to detect anomalies.
+The analyseLaptop v2 system collects multivariate time-series data from collectors via OTLP/gRPC: RTT, packet loss %, interface counters, WireGuard handshake ages, SNMP OIDs, Modbus register values, OS health metrics, and WiFi frame counters. These are stored in **VictoriaMetrics** (time-series) and **PostgreSQL** (events, anomalies, RCA results). The `backend/analyse/` service applies **static thresholds** (CUSUM + EWMA, Phase 3) and a **finite-state MDP** (Phase 5) to detect anomalies.
 
 **The gap:** Static thresholds and fixed control limits do not adapt to:
 - Diurnal and weekly traffic cycles (office hours vs. nights)
@@ -17,12 +18,12 @@ The analyseLaptop system collects multivariate time-series data from collectors:
 - Hardware aging (gradual RTT drift on aging Raspberry Pi storage)
 - Legitimate network reconfigurations (new VLAN, new collector deployment)
 
-**The v2 ML goal:** Replace or supplement static thresholds with a learned model of normal behaviour that:
-1. Requires **no labelled attack data** to train (unsupervised — the system has no attack examples)
-2. Learns from a configurable **learning phase** (default: 7 days) before alerting
+**The v2 ML goal:** Extend `backend/analyse/` with a learned model of normal behaviour that:
+1. Requires **no labelled attack data** to train (unsupervised — the system has no attack examples at training time)
+2. Learns from a configurable **learning phase** (default: 7 days) before raising ML alerts
 3. Produces a **continuous anomaly score** rather than binary on/off
 4. **Adapts** to legitimate long-term changes (concept drift) without manual reconfiguration
-5. Runs on the same Raspberry Pi / low-power VPS hardware as the existing aggregator
+5. Runs within the `backend/analyse/` Python process — no new service required
 
 ---
 
@@ -35,103 +36,130 @@ The literature converges on three model families for unsupervised time-series an
 | Model | How it detects anomalies | Strengths | Weaknesses | Key reference |
 |---|---|---|---|---|
 | **Statistical (Welford + control limits)** | Point deviates > k·σ from running mean | Zero training cost, interpretable, online | Assumes normality, misses structural patterns | Shewhart (1931), CUSUM (Page, 1954) |
-| **LSTM Autoencoder (LSTM-AE)** | Reconstruction error on sequence > threshold | Captures temporal dependencies, unsupervised | Requires GPU for large inputs; fixed-size window | Maleki et al. (2021, *Applied Soft Computing* 112:107763) [web:23][web:31] |
-| **Variational Autoencoder (VAE)** | KL-divergence + reconstruction error → anomaly score | Probabilistic; threshold derived from p-value not heuristic | More complex to train and tune | Kingma & Welling (2019, *FnTML* 12(4)); UNSW-NB15 eval 2025 [web:47] |
-| **Isolation Forest (streaming)** | Path length in random trees | Handles high-dim, no training convergence required | Poor on temporal structure | Liu et al. (2008, ICDM) |
-| **Half-Space Trees (streaming)** | Online density estimation in random subspaces | True online learning, O(1) per sample | Weaker on temporal patterns | Tan et al. (2011, IJCAI) |
+| **LSTM Autoencoder (LSTM-AE)** | Reconstruction error on sequence > threshold | Captures temporal dependencies, unsupervised | Fixed-size window; training cost | Maleki et al. (2021, *Applied Soft Computing* 112:107763) |
+| **Variational Autoencoder (VAE)** | KL-divergence + reconstruction error → anomaly score | Probabilistic; threshold from p-value, not heuristic | More complex to train and tune | Kingma & Welling (2019, *FnTML* 12(4)); UNSW-NB15 eval 2025 |
+| **Isolation Forest (streaming)** | Path length in random trees | High-dimensional, no convergence required | Poor on temporal structure | Liu et al. (2008, ICDM) |
+| **Half-Space Trees (streaming)** | Online density estimation in random subspaces | True online, O(1) per sample | Weaker on temporal patterns | Tan et al. (2011, IJCAI) |
 
-**Design decision for v2:** Use a **two-tier approach**:
-- **Tier 1 (online, always active):** Welford running statistics per metric stream → control limits → fast alerting, no training phase. This is the existing CUSUM/EWMA from Phase 3, kept as the first-line detector.
+**Design decision for v2:** Use a **two-tier approach**, both running inside `backend/analyse/`:
+
+- **Tier 1 (online, always active):** Welford running statistics per metric stream → CUSUM/EWMA control limits → fast alerting, no training phase. This is the existing Phase 3 detector, unchanged.
 - **Tier 2 (offline-trained, post-learning-phase):** LSTM Autoencoder per collector × metric group → reconstruction error → anomaly score. Activates after the learning phase completes.
 
-The Maleki et al. (2021) LSTM-AE with statistical data-filtering was specifically designed for this use case: it uses a sliding window for online operation, requires only normal data to train, and achieves linear time and constant space complexity [web:23]. The CNN-BiLSTM-AE variant (Elsayed et al., 2025) achieved 98.1% accuracy on the InSDN dataset with a purely unsupervised training strategy [web:28].
+The Maleki et al. (2021) LSTM-AE with statistical data-filtering was designed for exactly this use case: sliding window online operation, requires only normal data to train, linear time and constant space complexity. The CNN-BiLSTM-AE variant (Elsayed et al., 2025) achieved 98.1% accuracy on the InSDN dataset with a purely unsupervised training strategy.
 
 ### 2.2 Learning Phase Duration
 
-The learning phase must capture the full periodicity of the system's normal behaviour. For network monitoring:
+The learning phase must capture the full periodicity of the system’s normal behaviour:
 
 - **Minimum:** 7 days (captures the weekly office/weekend cycle)
 - **Recommended:** 14 days (two full weekly cycles reduces variance in the baseline)
 - **OT environments:** 28 days (captures production schedule cycles: shift patterns, maintenance windows)
 
-Academic basis: The FLAME framework (Mavromatis et al., 2024) used 12 months of training data for a federated IoT anomaly detector [web:55]. For lightweight edge deployments, the stabilisation criterion from FLAME is adopted: training is considered complete when `σ_validation_loss < σ_training_loss × (1 - β)` where β = 0.05 (5% tolerance).
+Academic basis: The FLAME framework (Mavromatis et al., 2024) used 12 months of training data for a federated IoT anomaly detector. For lightweight edge deployments, the stabilisation criterion from FLAME is adopted: training is considered complete when `σ_validation_loss < σ_training_loss × (1 - β)` where β = 0.05 (5% tolerance).
 
 ### 2.3 Concept Drift
 
-Network behaviour changes legitimately over time (new devices, reconfigurations, seasonal changes). Without drift adaptation, the model raises false positives on all legitimate changes. This is a critical practical problem.
+Network behaviour changes legitimately over time (new devices, reconfigurations, seasonal changes). Without drift adaptation, the model raises false positives on all legitimate changes.
 
-**Drift taxonomy** (Frontiers in AI, 2024 survey [web:54]):
-- **Abrupt drift:** New router deployed, instant change in RTT baseline → should trigger model retrain
+**Drift taxonomy** (Frontiers in AI, 2024 survey):
+- **Abrupt drift:** New router deployed, instant change in RTT baseline → triggers model retrain
 - **Gradual drift:** Slow hardware aging → model should adapt continuously
-- **Recurring drift:** Daily/weekly cycles → model should already capture this from training
+- **Recurring drift:** Daily/weekly cycles → model captures this from training
 
 **Chosen approach:** ADWIN (ADaptive WINdowing, Bifet & Gavaldà, 2007) as the drift detector.
 
-Rationale from the 2024 ICT4S controlled experiment across 420 combinations of 7 drift detectors × 5 datasets × 6 base classifiers [web:44]: ADWIN is classified as a **balanced detector** — low-to-medium energy consumption with good accuracy for both abrupt and gradual drift, making it the best fit for this resource-constrained deployment. Page-Hinkley and DDM were found to have "very poor accuracy" and are unsuitable [web:44].
+Rationale from the 2024 ICT4S controlled experiment across 420 combinations of 7 drift detectors × 5 datasets × 6 base classifiers: ADWIN is classified as a **balanced detector** — low-to-medium energy consumption with good accuracy for both abrupt and gradual drift. Page-Hinkley and DDM were found to have “very poor accuracy” and are unsuitable.
 
 ADWIN maintains an adaptive sliding window and fires when the mean of the old sub-window diverges significantly from the mean of the new sub-window. When ADWIN fires on a metric stream, it signals that the baseline has shifted and the LSTM-AE for that metric group should be retrained.
 
 ### 2.4 Threshold Derivation
 
-A critical practical problem: how to set the reconstruction error threshold that separates normal from anomalous?
-
-The VAE approach (UNSW-NB15 study, 2025 [web:47]) uses the **KL-divergence** as a probabilistic threshold — anomaly score = reconstruction loss + KL divergence, compared against the p-value at 5% significance from the validation set.
-
-For the simpler LSTM-AE, the threshold is derived from the **validation set reconstruction error distribution** during training:
+For the LSTM-AE, the threshold is derived from the **validation set reconstruction error distribution** during training:
 ```
 threshold = μ_validation_error + k × σ_validation_error
 ```
 where k is configurable:
 - k=2.0 → ~95th percentile (more sensitive, more false positives)
 - k=3.0 → ~99.7th percentile (recommended default)
-- k=4.0 → more conservative (use for OT environments where false alerts cause operational disruption)
+- k=4.0 → more conservative (OT environments where false alerts cause operational disruption)
 
-This is consistent with the Shewhart 3σ control limit used in the existing Phase 3 CUSUM/EWMA pipeline, ensuring the ML tier is **calibrated consistently** with the statistical tier.
+This is consistent with the Shewhart 3σ control limit used in the existing Tier 1 CUSUM/EWMA pipeline, ensuring both tiers are **calibrated consistently**.
 
 ---
 
 ## 3. Data Storage Strategy
 
-### 3.1 What to Store for ML Training
+### 3.1 Where ML Data Lives in the v2 Architecture
 
-The ML training pipeline needs different data than the operational time-series store:
+All operational data in v2 is stored in VictoriaMetrics (time-series) and PostgreSQL (events/config). The ML pipeline adds a third storage layer: a **model store** on the local filesystem of the `backend/analyse/` container, and two new PostgreSQL tables.
 
-| Data type | Format | Retention | Storage location |
+| Data type | Format | Retention | Where |
 |---|---|---|---|
-| **Raw metric stream** (per collector × metric, 30s resolution) | Float32 + timestamp | 28 days (learning window + buffer) | Hot store (Gorilla-compressed, existing Phase 10) |
-| **Feature vectors** (normalised, windowed, ready for training) | Float32 numpy array, `.npy` | 28 days | `ml/features/<collector_id>/<metric_group>.npy` |
-| **Trained model weights** | ONNX + PyTorch `.pt` | Indefinite (versioned) | `ml/models/<collector_id>/<metric_group>/<version>/` |
+| **Raw metric stream** (30s resolution) | Float32 + timestamp | VM retention (90d default) | **VictoriaMetrics** — queried by `backend/analyse/` via MetricsQL HTTP API |
+| **ML training buffer** (windowed, normalised) | Float32 numpy `.npy` | 28 days (learning window + buffer) | `backend/analyse/` container volume: `ml/features/<collector_id>/<group>.npy` |
+| **Trained model weights** | ONNX + PyTorch `.pt` | Indefinite (versioned) | `backend/analyse/` container volume: `ml/models/<collector_id>/<group>/<version>/` |
 | **Training metadata** | JSON | Indefinite | `ml/models/.../meta.json` |
-| **Validation error distribution** | JSON (μ, σ, percentile table) | Per model version | `ml/models/.../threshold.json` |
-| **ADWIN state** | JSON (window state per metric) | Rolling (overwrite) | `ml/drift/<collector_id>/<metric>.json` |
-| **Anomaly score stream** | Float32 + timestamp | 90 days | Cold store (existing Phase 10) |
+| **Threshold parameters** | JSON (μ, σ, percentile table) | Per model version | `ml/models/.../threshold.json` |
+| **ADWIN state** | Serialised Python object | Rolling (overwrite on retrain) | `ml/drift/<collector_id>/<metric>.pkl` |
+| **ML state per collector × group** | Row | Indefinite | **PostgreSQL** `ml_model_state` table |
+| **Anomaly score stream** | MetricsQL labels + float value | 90 days | **VictoriaMetrics** (written by `backend/analyse/` via Prometheus remote-write) |
+| **ML anomaly events** | Row (linked to `anomalies` table) | Indefinite | **PostgreSQL** `anomalies` table (existing schema, new `detector=ml_tier2` column value) |
 
-**Storage budget estimate** (per collector, 7-day learning phase):
-- 50 metrics × 20,160 samples (30s × 7 days) × 4 bytes = ~4 MB raw
-- Feature matrix (128-step windows, stride 1): ~20 MB numpy
-- LSTM-AE weights (2-layer, hidden_dim=64): ~500 KB per metric group
+**No new storage service is needed.** The `backend/analyse/` container volume stores models; VictoriaMetrics and PostgreSQL store everything operational. This is consistent with the v2 architecture constraint of no additional services below 500 collectors.
 
-Total per collector: **< 30 MB**. Negligible even on a Raspberry Pi 4 (8 GB SD card).
+### 3.2 New PostgreSQL Tables
 
-### 3.2 Feature Engineering
+```sql
+-- ML state per collector × metric group
+CREATE TABLE ml_model_state (
+    collector_id   TEXT        NOT NULL REFERENCES collectors(id),
+    metric_group   TEXT        NOT NULL,
+    state          TEXT        NOT NULL CHECK (state IN ('ACCUMULATING','TRAINING','ACTIVE','RETRAINING')),
+    active_version TEXT,                     -- e.g. 'v003'
+    learning_days  INT         NOT NULL DEFAULT 7,
+    k_sigma        FLOAT       NOT NULL DEFAULT 3.0,
+    data_start_ts  TIMESTAMPTZ,
+    clean_windows  INT         DEFAULT 0,
+    total_windows  INT         DEFAULT 0,
+    last_trained_at TIMESTAMPTZ,
+    last_retrain_trigger TEXT, -- 'adwin_drift' | 'manual' | 'initial'
+    PRIMARY KEY (collector_id, metric_group)
+);
 
-Raw metric streams are preprocessed before training. This preprocessing is **identical** at training time and inference time (critical: preprocessing pipeline is serialised alongside the model).
+-- ADWIN drift events log
+CREATE TABLE ml_drift_events (
+    id             BIGSERIAL   PRIMARY KEY,
+    collector_id   TEXT        NOT NULL REFERENCES collectors(id),
+    metric_group   TEXT        NOT NULL,
+    metric_key     TEXT        NOT NULL,
+    detected_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    adwin_delta    FLOAT       NOT NULL,
+    triggered_retrain BOOLEAN  DEFAULT FALSE
+);
+```
+
+These tables are read by the `backend/api/` (Go/Gin) service and exposed at `GET /api/v1/ml/state` and `GET /api/v1/ml/drift-events` for the SvelteKit frontend.
+
+### 3.3 Feature Engineering
+
+Raw metrics are queried from VictoriaMetrics via MetricsQL HTTP API inside `backend/analyse/`. The preprocessing pipeline is **identical at training time and inference time** — the scaler parameters are serialised to `preprocessing.json` alongside the model weights.
 
 **Per metric stream:**
 
 1. **Detrending:** Subtract 1-period (24h) rolling mean → removes diurnal cycle from residuals. Without this, the model wastes capacity learning the daily pattern instead of anomaly structure.
 
-2. **Normalisation:** Min-max scaling to [0, 1] using training-set min/max. Scaler parameters serialised to `preprocessing.json` alongside model weights.
+2. **Normalisation:** Min-max scaling to [0, 1] using training-set min/max. Scaler parameters serialised to `preprocessing.json`.
 
-3. **Time-of-day & day-of-week features:** Append `sin(2π·h/24)`, `cos(2π·h/24)`, `sin(2π·d/7)`, `cos(2π·d/7)` as additional input dimensions. This allows the model to learn that RTT at 3:00 AM is legitimately different from RTT at 14:00 on a Tuesday. Academic basis: cyclical encoding of time features is standard in time-series ML and prevents the model from treating time as a linear feature (Brownlee, 2017; widely used in network ML literature).
+3. **Cyclical time features:** Append `sin(2π·h/24)`, `cos(2π·h/24)`, `sin(2π·d/7)`, `cos(2π·d/7)` as additional input dimensions. This allows the model to learn that RTT at 3:00 AM is legitimately different from RTT at 14:00 on a Tuesday. Standard cyclical time encoding (Brownlee, 2017; used across network ML literature).
 
-4. **Windowing:** Sliding windows of length W=128 (default), stride S=1 for training (stride=W for inference). At 30s resolution, W=128 is 64 minutes — sufficient to capture short-term temporal dependencies like a WireGuard tunnel that slowly loses keepalive before dropping.
+4. **Windowing:** Sliding windows of length W=128 (default), stride S=1 for training (stride=W for inference). At 30s resolution, W=128 is 64 minutes — sufficient to capture temporal dependencies like a WireGuard tunnel slowly losing keepalive before dropping.
 
-5. **Data contamination filter:** Before training, filter out windows where Tier 1 (CUSUM/EWMA) had already flagged an anomaly. This addresses the **data contamination problem** identified by Khoury et al. (2024, arXiv:2407.08838): if attack-period data accidentally enters the training set, the model learns anomalies as normal [web:15]. By using Tier 1 flags as a contamination mask, training data is kept clean without requiring labels.
+5. **Data contamination filter:** Before training, filter out windows where Tier 1 (CUSUM/EWMA) had already flagged an anomaly in the PostgreSQL `anomalies` table. This addresses the **data contamination problem** (Khoury et al., 2024, arXiv:2407.08838): if attack-period data accidentally enters the training set, the model learns anomalies as normal. By using Tier 1 flags from PostgreSQL as a contamination mask, training data is kept clean without requiring labels.
 
-**Metric groupings** (trained as separate LSTM-AEs to keep input dimensionality manageable):
+**Metric groupings** (separate LSTM-AE per group keeps input dimensionality manageable):
 
-| Group | Metrics included | Input dim |
+| Group | Metrics (MetricsQL label selectors) | Input dim |
 |---|---|---|
 | `network_latency` | RTT p50, p95, p99; loss % per target | 4–8 |
 | `network_throughput` | RX bytes/s, TX bytes/s, errors/s, drops/s per interface | 4–12 |
@@ -160,62 +188,68 @@ Decoder:
   LSTM(hidden_dim=64, num_layers=2, dropout=0.1) → (batch, W, 64)
   Linear(64 → input_dim) → (batch, W, input_dim)
 
-Loss: MSE(input, reconstruction)
-
+Loss:      MSE(input, reconstruction)
 Optimiser: Adam, lr=1e-3, weight_decay=1e-5
-Batch size: 64
-Epochs: 50 (early stop: patience=5, monitor val_loss)
+Batch:     64
+Epochs:    50 (early stop: patience=5, monitor val_loss)
 ```
 
-This architecture follows Maleki et al. (2021) [web:23][web:31] which proved that the LSTM-AE with statistical data-filtering outperforms standalone LSTM, LSTM-AE, and AE baselines. The 2-layer encoder/decoder with dropout=0.1 is the configuration that achieved the best reconstruction accuracy with the lowest overfitting in their ablation study.
-
-**Hidden dim = 64 rationale:** The bottleneck forces the encoder to learn a compressed representation of normal behaviour. Too large (>128) → model memorises noise; too small (<16) → insufficient capacity to model 64-minute temporal windows. 64 is the empirically validated sweet spot for time-series of this length (also used in the LSTM-AE survey by Choi et al., 2021, cited 95 times).
+Architecture follows Maleki et al. (2021), whose 2-layer encoder/decoder with dropout=0.1 outperforms standalone LSTM, LSTM-AE, and vanilla AE baselines. **Hidden dim=64 rationale:** too large (>128) → model memorises noise; too small (<16) → insufficient capacity to model 64-minute windows. 64 is the empirically validated sweet spot (Choi et al., 2021, cited 95 times).
 
 ### 4.2 Training & Validation Split
 
-Training data from the learning phase is split:
 - **70% train** (first 4.9 days of a 7-day learning window)
 - **30% validation** (last 2.1 days)
 
-The validation set is used for:
-1. Early stopping criterion
-2. Threshold derivation (μ + k·σ of validation reconstruction errors)
-3. Contamination check: if validation loss < 80% of training loss, potential overfit → extend learning phase by 3 days
+The validation set is used for: (1) early stopping, (2) threshold derivation (μ + k·σ of validation reconstruction errors), (3) contamination check — if `val_loss < 0.8 × train_loss`, potential overfit → extend learning phase by 3 days.
 
 ### 4.3 Inference & Anomaly Score
 
-At inference time (every 30s, after each sample push):
+Inference runs inside `backend/analyse/` on the 60s batch cycle (same cadence as CUSUM/EWMA). For each collector × metric group with an ACTIVE model:
 
 ```python
-# Pseudocode — actual implementation in monitor/ml_inference.py
+# backend/analyse/ml/inference.py
 
-def compute_anomaly_score(window: np.ndarray, model, scaler, threshold_params) -> AnomalyResult:
-    # 1. Preprocess (same pipeline as training)
-    x = scaler.transform(window)
-    x = append_time_features(x, window_timestamps)
+import onnxruntime as ort
+import numpy as np
+import scipy.stats
 
-    # 2. Forward pass
-    x_hat = model(x.unsqueeze(0))  # (1, W, input_dim)
+def compute_anomaly_score(
+    window: np.ndarray,          # shape (W, input_dim)
+    session: ort.InferenceSession,
+    scaler_params: dict,
+    threshold_params: dict
+) -> dict:
+    # 1. Preprocess (identical to training pipeline)
+    x = min_max_scale(window, scaler_params)
+    x = append_cyclic_time_features(x, window_timestamps)
 
-    # 3. Reconstruction error per time step
+    # 2. ONNX inference (CPU provider — no PyTorch at runtime)
+    x_hat = session.run(None, {"input": x[np.newaxis]})[0][0]  # (W, input_dim)
+
+    # 3. Reconstruction error per time step, recency-weighted
     errors = np.mean((x - x_hat) ** 2, axis=-1)  # (W,)
-
-    # 4. Focus on most recent steps (recency-weighted)
-    weights = np.exp(np.linspace(-1, 0, W))  # exponential recency weighting
+    weights = np.exp(np.linspace(-1, 0, len(errors)))
     score = float(np.dot(errors, weights) / weights.sum())
 
-    # 5. Normalise to anomaly score in [0, 1]
-    z = (score - threshold_params['mu']) / threshold_params['sigma']
-    anomaly_score = float(scipy.stats.norm.cdf(z))  # probability of being anomalous
+    # 4. Normalise to [0, 1] anomaly probability
+    z = (score - threshold_params["mu"]) / threshold_params["sigma"]
+    anomaly_score = float(scipy.stats.norm.cdf(z))
 
-    # 6. Threshold comparison
-    alert = anomaly_score > threshold_params['alert_percentile']  # default: 0.997 (3σ)
+    # 5. Per-dimension breakdown for RCA
+    dim_errors = np.mean((x - x_hat) ** 2, axis=0)  # (input_dim,) → RCA signal
 
-    return AnomalyResult(score=anomaly_score, alert=alert, reconstruction_error=score,
-                         metric_group=..., collector_id=..., ts=...)
+    return {
+        "anomaly_score": anomaly_score,
+        "alert": anomaly_score > threshold_params["alert_percentile"],
+        "reconstruction_error": score,
+        "dim_errors": dim_errors.tolist(),  # per-metric breakdown
+    }
 ```
 
-**Recency weighting:** Anomalies at the end of the 128-step window (most recent data) are weighted more heavily than anomalies at the start. This reduces latency from detection to alert.
+**ONNX Runtime rationale:** Inference uses ONNX Runtime (CPU provider). PyTorch (~2 GB) is a training-only dependency; ONNX Runtime is ~20 MB. The `backend/analyse/` production container does not require PyTorch installed at runtime — only during the training job, which runs as a subprocess.
+
+**Recency weighting:** Anomalies at the end of the 128-step window (most recent) are weighted more heavily than older steps. Reduces detection latency.
 
 ---
 
@@ -223,7 +257,7 @@ def compute_anomaly_score(window: np.ndarray, model, scaler, threshold_params) -
 
 ### 5.1 State Machine
 
-Each collector × metric group has an ML state:
+Per collector × metric group, persisted in the PostgreSQL `ml_model_state` table:
 
 ```
 ACCUMULATING → TRAINING → ACTIVE → RETRAINING
@@ -233,53 +267,45 @@ ACCUMULATING → TRAINING → ACTIVE → RETRAINING
 
 | State | Condition | Tier 1 alerts | Tier 2 alerts |
 |---|---|---|---|
-| `ACCUMULATING` | < `learning_days` of clean data collected | ✅ Active | ❌ Suppressed |
-| `TRAINING` | Training job running (async, < 10 min on Pi 4) | ✅ Active | ❌ Suppressed |
-| `ACTIVE` | Model trained, threshold derived | ✅ Active | ✅ Active |
-| `RETRAINING` | ADWIN fired; new model training | ✅ Active | ⚠️ Score from old model (marked stale) |
+| `ACCUMULATING` | `clean_windows / total_windows` below `learning_days` target | ✅ Active | ❌ Suppressed |
+| `TRAINING` | Async training subprocess running | ✅ Active | ❌ Suppressed |
+| `ACTIVE` | Model trained, threshold derived, ONNX session loaded | ✅ Active | ✅ Active |
+| `RETRAINING` | ADWIN drift confirmed; new training subprocess running | ✅ Active | ⚠️ Score from old model (flagged stale in PostgreSQL) |
 
-The dashboard (Module E: System Config → ML tab) shows the state per collector × metric group with:
-- Current state badge
-- Days accumulated / days required
-- Training progress bar (during TRAINING)
-- Last model version + training timestamp
-- ADWIN drift event log (when and on which metric drift was detected)
+State transitions are written to `ml_model_state` by `backend/analyse/`. The `backend/api/` (Go/Gin) service reads this table and exposes it at `GET /api/v1/ml/state` for the SvelteKit frontend. State changes are also published via **PostgreSQL LISTEN/NOTIFY** on channel `ml_state_channel` — the same mechanism used for anomaly push to WebSocket clients (per ARCHITECTURE-V2.md section 5).
 
 ### 5.2 Contamination-Safe Data Collection
 
-During `ACCUMULATING`, the data logger writes to `ml/features/<id>/<group>/raw_buffer.npy` but **masks out** any time windows where:
-- Tier 1 CUSUM/EWMA fired an anomaly flag
-- Collector reported a heartbeat gap > 2× poll interval (data missing → unreliable window)
-- A manual "maintenance window" was declared by the operator (from dashboard System Config)
+During `ACCUMULATING`, the `backend/analyse/` ML module queries VictoriaMetrics for the last `learning_days` of data and **masks out** windows where:
+- PostgreSQL `anomalies` table has a Tier 1 event overlapping the window
+- VictoriaMetrics returns `NaN` or has a gap > 2× poll interval (collector offline)
+- Operator declared a maintenance window via `POST /api/v1/maintenance` (stored in PostgreSQL `maintenance_windows` table)
 
-If the unmasked clean data drops below 80% of the learning window, the accumulation period is automatically extended. This directly implements the contamination mitigation strategy from Khoury et al. (2024) [web:15].
+If clean data falls below 80% of the learning window, accumulation is extended. Implements the contamination mitigation from Khoury et al. (2024): LSTM autoencoders degrade significantly above 5% contamination; the mask targets <5%.
 
 ### 5.3 Training Job
 
-Training runs as a background Python process (subprocess, not blocking the Flask dashboard). Triggered when:
-- `ACCUMULATING` → clean data ≥ `learning_days` requirement
-- `RETRAINING` → ADWIN drift confirmed on ≥ 2 metrics in same group (single-metric ADWIN fires can be noise)
+Training runs as a **Python subprocess** spawned by `backend/analyse/`, not blocking the main analysis loop. Triggered when:
+- `ACCUMULATING` → `clean_windows` ≥ `learning_days` × (samples/day)
+- `RETRAINING` → ADWIN drift confirmed on ≥ 2 metrics in the same group
 
-Training job writes to:
+Training artefacts written to the `backend/analyse/` container volume:
 ```
 ml/models/<collector_id>/<metric_group>/<version>/
-  ├── model.onnx          # ONNX export for runtime inference (no PyTorch dep at inference time)
-  ├── model.pt            # PyTorch checkpoint (for retraining / fine-tuning)
-  ├── preprocessing.json  # Scaler params, feature engineering config
+  ├── model.onnx          # ONNX export — used by production inference loop
+  ├── model.pt            # PyTorch checkpoint — used for fine-tuning only
+  ├── preprocessing.json  # Scaler params + feature config
   ├── threshold.json      # μ, σ, percentile table of validation reconstruction errors
   └── meta.json           # Training timestamp, dataset stats, epoch count, val_loss
 ```
 
-**ONNX export rationale:** Inference uses ONNX Runtime (CPU provider). This avoids a PyTorch dependency at inference time (significant: PyTorch is ~2 GB; ONNX Runtime is ~20 MB). Raspberry Pi 4 can run ONNX Runtime inference at 30s intervals with < 5% CPU overhead for a 64-dim, 128-step LSTM-AE.
+On completion, the subprocess updates `ml_model_state` in PostgreSQL and writes `NOTIFY ml_state_channel` — the API service picks this up and pushes the state change to all open WebSocket sessions in the SvelteKit frontend.
 
 ### 5.4 Model Versioning
 
-Each training run produces a new version directory `v001`, `v002`, etc. The **active version** is a symlink:
-```
-ml/models/<id>/<group>/active → v003/
-```
+Each training run produces a new version directory `v001`, `v002`, etc. The active version is recorded in `ml_model_state.active_version`. Last 5 versions are retained by default (configurable); older versions are deleted by a cleanup job in `backend/analyse/`.
 
-Version history is retained (configurable, default: last 5 versions). This enables rollback if a new model produces excessive false positives after a retrain.
+Rollback: operator calls `POST /api/v1/ml/rollback` → API service writes new `active_version` to PostgreSQL → `backend/analyse/` picks up the change on its next cycle and loads the previous ONNX session.
 
 ---
 
@@ -287,104 +313,110 @@ Version history is retained (configurable, default: last 5 versions). This enabl
 
 ### 6.1 ADWIN Integration
 
-ADWIN runs **per metric stream** in the aggregator's inference loop. It monitors the **raw reconstruction error** (before the anomaly scoring sigmoid) because drift manifests as a sustained shift in reconstruction error, not necessarily as anomaly alerts.
+ADWIN runs **per metric stream** inside `backend/analyse/`, monitoring the **raw reconstruction error** stream (before anomaly score sigmoid). Drift manifests as a sustained shift in reconstruction error before it becomes visible as anomaly alerts.
 
 ```python
-# monitor/drift_detector.py
+# backend/analyse/ml/drift_detector.py
 
-from river.drift import ADWIN  # river library — pure Python, O(log n) per update
+from river.drift import ADWIN
 
 class DriftMonitor:
     def __init__(self, delta: float = 0.002):
-        # delta: ADWIN significance level. 0.002 = Bifet & Gavaldà recommended default
+        # delta=0.002: Bifet & Gavaldà (2007) recommended default;
+        # validated as best accuracy/energy tradeoff in ICT4S 2024 across 420 combinations.
         self.detectors: dict[str, ADWIN] = {}
 
     def update(self, metric_key: str, reconstruction_error: float) -> bool:
         if metric_key not in self.detectors:
             self.detectors[metric_key] = ADWIN(delta=self.delta)
-        detector = self.detectors[metric_key]
-        detector.update(reconstruction_error)
-        return detector.drift_detected  # True = drift confirmed
+        self.detectors[metric_key].update(reconstruction_error)
+        if self.detectors[metric_key].drift_detected:
+            # Write to PostgreSQL ml_drift_events
+            return True
+        return False
 ```
 
-**ADWIN delta = 0.002** is the default from the original Bifet & Gavaldà (2007) paper. The 2024 ICT4S study [web:44] confirmed that ADWIN with default parameters achieves the best accuracy/energy tradeoff across 420 test configurations.
+`river` is a pure-Python streaming ML library; it has no C++ build requirements and runs on ARM (Raspberry Pi, Pi 4). ADWIN’s time complexity is O(log n) per update.
 
 ### 6.2 Drift Response Policy
 
 | Drift event | Response | Rationale |
 |---|---|---|
-| Single metric ADWIN fires | Log to drift trail; no retrain | Noisy single-metric events are common; insufficient evidence |
-| ≥ 2 metrics in same group drift within 10 min | Trigger RETRAINING on that group | Correlated shift = structural change, not noise |
-| All metric groups drift simultaneously | Log as "topology event"; page operator | Likely a major network reconfiguration — operator should declare maintenance window |
-| OT Modbus register group drifts | Alert operator; **do not auto-retrain** | OT baseline changes require human validation (IEC 62443 change management) |
-
-**OT-specific rule rationale:** IEC 62443 section 3-3 requires change management approval for modifications to monitoring baselines in OT environments. Auto-retraining on OT metrics without operator approval could mask a genuine attack that coincides with legitimate production changes.
+| Single metric ADWIN fires | Write to `ml_drift_events`; no retrain | Single-metric fires are common noise |
+| ≥ 2 metrics in same group drift within 10 min | Trigger RETRAINING on that group | Correlated shift = structural change |
+| All metric groups drift simultaneously | Write topology-event to PostgreSQL `events`; notify operator via alert | Likely major network reconfiguration — operator should declare maintenance window |
+| OT Modbus register group drifts | Alert operator; **do not auto-retrain** | IEC 62443 requires human approval for OT baseline changes |
 
 ### 6.3 Fine-Tuning vs. Full Retrain
 
-When RETRAINING is triggered, the job uses **fine-tuning** (warm start from the previous model checkpoint, reduced learning rate 1e-4, 20 epochs) rather than a full retrain from scratch if:
-- < 30% of metrics in the group drifted (partial adaptation)
-- The drift was gradual (ADWIN window was long when it fired)
+**Fine-tuning** (warm start from `.pt` checkpoint, lr=1e-4, 20 epochs) when:
+- < 30% of group metrics drifted
+- ADWIN window was long when it fired (gradual drift)
 
-Full retrain from scratch if:
-- ≥ 30% of metrics drifted (structural change)
-- The drift was abrupt (ADWIN window was short when it fired)
-- The operator explicitly requests a full retrain from the dashboard
+**Full retrain from scratch** when:
+- ≥ 30% of group metrics drifted
+- ADWIN window was short when it fired (abrupt drift)
+- Operator explicitly requests via `POST /api/v1/ml/retrain`
 
 ---
 
-## 7. Anomaly Score Integration with Existing Pipeline
+## 7. Anomaly Score Integration with the v2 Pipeline
 
 ### 7.1 Score Fusion (Tier 1 + Tier 2)
 
-The two-tier approach produces two independent anomaly signals per sample. They are fused using a **weighted OR** rule:
+Both tiers run inside `backend/analyse/`. Fused result is written to PostgreSQL `anomalies` table with a `detector` column that distinguishes the source:
 
 ```python
-def fused_alert(tier1_alert: bool, tier2_score: float, tier2_threshold: float,
-                tier1_weight: float = 0.4, tier2_weight: float = 0.6) -> FusedResult:
+# backend/analyse/ml/fusion.py
+
+def fused_alert(
+    tier1_alert: bool,
+    tier2_score: float,
+    tier2_threshold: float
+) -> dict:
     tier2_alert = tier2_score > tier2_threshold
 
-    # High-confidence: both tiers agree
     if tier1_alert and tier2_alert:
-        confidence = 0.95
-        verdict = "HIGH_CONFIDENCE_ANOMALY"
-
-    # Tier 2 only (ML detects structural anomaly, no hard threshold breach)
-    elif not tier1_alert and tier2_alert:
-        confidence = tier2_score
-        verdict = "ML_STRUCTURAL_ANOMALY"
-
-    # Tier 1 only (spike that fits model but breaches static threshold)
+        confidence, verdict = 0.95, "HIGH_CONFIDENCE_ANOMALY"
+    elif tier2_alert and not tier1_alert:
+        confidence, verdict = tier2_score, "ML_STRUCTURAL_ANOMALY"
     elif tier1_alert and not tier2_alert:
-        confidence = 0.65
-        verdict = "THRESHOLD_BREACH"
-
+        confidence, verdict = 0.65, "THRESHOLD_BREACH"
     else:
-        confidence = tier2_score
-        verdict = "NORMAL"
+        confidence, verdict = tier2_score, "NORMAL"
 
-    return FusedResult(alert=(confidence > 0.6), confidence=confidence, verdict=verdict)
+    return {
+        "alert": confidence > 0.6,
+        "confidence": confidence,
+        "verdict": verdict,
+        "detector": "tier1+tier2" if (tier1_alert and tier2_alert)
+                    else "tier2" if tier2_alert
+                    else "tier1"
+    }
 ```
 
-This maps directly to the existing confidence thresholds in `dashboard/alerts.py`:
-- confidence > 0.8 → auto-alert via all channels
-- confidence 0.6–0.8 → flagged in dashboard only
+The `confidence` field maps to the alert routing thresholds already defined in the v2 architecture:
+- confidence > 0.8 → auto-alert via all configured channels (written to PostgreSQL `alerts` table → `backend/api/` dispatches webhook/SMTP)
+- confidence 0.6–0.8 → anomaly visible in SvelteKit dashboard only
 - confidence < 0.6 → raw symptom, no notification
+
+This confidence-gating logic lives entirely in `backend/analyse/`. The `backend/api/` (Go/Gin) service reads the `anomalies` and `alerts` tables and dispatches notifications — it does not implement scoring logic.
 
 ### 7.2 RCA Enhancement
 
-The LSTM-AE reconstruction error is **per-dimension** (per metric within the group). The dimension with the highest reconstruction error at anomaly time is surfaced as the "primary contributing metric" in the RCA panel:
+The LSTM-AE reconstruction error is **per-dimension** (per metric within the group). The `dim_errors` array from inference is written to the PostgreSQL `anomalies.payload_json` column and surfaced in the RCA panel by the SvelteKit frontend via `GET /api/v1/rca`:
 
 ```json
 {
   "anomaly_id": "...",
   "verdict": "ML_STRUCTURAL_ANOMALY",
   "confidence": 0.87,
+  "detector": "tier2",
   "metric_group": "network_latency",
   "primary_metric": "rtt_p95_target_plc_main",
   "reconstruction_errors": {
     "rtt_p50": 0.003,
-    "rtt_p95": 0.041,   ← highest → primary contributor
+    "rtt_p95": 0.041,
     "rtt_p99": 0.018,
     "loss_pct": 0.002
   },
@@ -393,106 +425,142 @@ The LSTM-AE reconstruction error is **per-dimension** (per metric within the gro
 }
 ```
 
-This enhances the existing Naive Bayes RCA (Phase 4) with a per-dimension signal that identifies *which* metric is most anomalous, improving the precision of the "most probable cause" verdict.
+The dimension with the highest reconstruction error is the **primary contributing metric**, enhancing the existing causal DAG RCA engine (Phase 4) with a per-metric signal that identifies *which* stream caused the anomaly.
+
+### 7.3 Anomaly Score as VictoriaMetrics Metric
+
+The continuous anomaly score (not just the binary alert) is written back to VictoriaMetrics by `backend/analyse/` via Prometheus remote-write:
+
+```
+analyselaptop_ml_anomaly_score{collector_id="homelab-pi4", metric_group="network_latency"} 0.87
+analyselaptop_ml_model_state{collector_id="homelab-pi4", metric_group="network_latency", state="ACTIVE"} 1
+```
+
+This allows the SvelteKit frontend to plot anomaly score time-series directly from VictoriaMetrics (same as any other metric), using the existing `GET /api/v1/collectors/:id/metrics` endpoint — no new API endpoint needed for charts.
 
 ---
 
 ## 8. Implementation Plan
 
-### 8.1 New Files
+### 8.1 New Files in `backend/analyse/`
 
 ```
-monitor/
+backend/analyse/
 ├── ml/
 │   ├── __init__.py
-│   ├── feature_engineering.py    # Detrending, normalisation, windowing, time features
-│   ├── lstm_ae.py                 # LSTM Autoencoder model (PyTorch)
-│   ├── training_job.py            # Training entrypoint (subprocess target)
+│   ├── feature_engineering.py    # Detrending, normalisation, windowing, cyclical time features
+│   ├── lstm_ae.py                 # LSTM Autoencoder model (PyTorch — training only)
+│   ├── training_job.py            # Training subprocess entrypoint; reads VM, writes ONNX
 │   ├── inference.py               # ONNX Runtime inference, anomaly scoring
-│   ├── drift_detector.py          # ADWIN per-metric drift monitoring
-│   ├── model_registry.py          # Version management, symlink management
-│   └── contamination_filter.py    # Mask Tier 1 flagged windows from training data
+│   ├── drift_detector.py          # ADWIN per-metric drift monitoring (river library)
+│   ├── model_registry.py          # Version management, active symlink, cleanup
+│   ├── contamination_filter.py    # Query PG anomalies table; build clean-window mask
+│   └── fusion.py                  # Tier 1 + Tier 2 score fusion
 │
-├── ml_state.py                    # State machine: ACCUMULATING/TRAINING/ACTIVE/RETRAINING
-└── ml_config.py                   # Config schema: learning_days, k_sigma, adwin_delta, etc.
+├── ml_state.py                    # State machine driver; reads/writes ml_model_state via psycopg3
+├── ml_config.py                   # Config schema: learning_days, k_sigma, adwin_delta, ot_manual_only
+└── main.py                        # Existing analysis loop — extend to call ml_state.tick() each cycle
 ```
 
-### 8.2 New Dependencies
+### 8.2 New `backend/api/` Endpoints (Go/Gin)
 
 ```
-# requirements-ml.txt (separate from dashboard/requirements.txt — optional install)
-torch==2.3.*                    # Training only (not needed at inference time)
-onnx==1.16.*                    # Model export
-onnxruntime==1.18.*             # Inference (CPU, no torch required)
-river==0.21.*                   # ADWIN drift detector (pure Python, no C++ build)
-numpy==1.26.*                   # Already present
-scipy==1.13.*                   # CDF for anomaly score normalisation
+GET  /api/v1/ml/state                    — all collector × group states from ml_model_state table
+GET  /api/v1/ml/state/:collector_id      — states for one collector
+GET  /api/v1/ml/drift-events             — recent ADWIN drift events (paginated)
+POST /api/v1/ml/retrain                  — trigger full retrain { collector_id, metric_group }
+POST /api/v1/ml/rollback                 — roll back to previous model version
+PATCH /api/v1/ml/config/:collector_id    — update learning_days, k_sigma, ot_manual_only
+GET  /api/v1/ml/model/:id/meta           — training stats + validation loss curve for a version
 ```
 
-**PyTorch is a training-only dependency.** The aggregator runtime only needs `onnxruntime` + `river` + `numpy`. This keeps the deployment footprint manageable on Raspberry Pi (no CUDA, no 2 GB PyTorch install at runtime).
+All endpoints read from PostgreSQL via pgx. The `retrain` and `rollback` endpoints write a command row to a `ml_commands` table; `backend/analyse/` polls this table each cycle and acts on pending commands. This avoids any synchronous RPC from the API service into the analysis service (consistent with ARCHITECTURE-V2.md Rule 3: *API reads storage only*).
 
-### 8.3 Dashboard ML Tab (Module E Extension)
+### 8.3 SvelteKit ML Dashboard View
 
-New tab in System Config → **Machine Learning**:
+New route: `/ml` in the SvelteKit `frontend/`.
 
-**Per-collector × metric group table:**
+**Fleet ML status table** (polling `GET /api/v1/ml/state` + WebSocket live updates via `ml_state_channel` NOTIFY):
 
-| Collector | Metric Group | ML State | Data Accumulated | Model Version | Last Retrain | Drift Events | Actions |
+| Collector | Metric Group | ML State | Data Accumulated | Model Version | Last Retrain | Drift Events (7d) | Actions |
 |---|---|---|---|---|---|---|---|
 | homelab-pi4 | network_latency | 🟢 ACTIVE | 14d | v003 | 3 days ago | 1 | [Retrain] [Rollback] |
 | homelab-pi4 | os_health | 🟡 ACCUMULATING | 4d / 7d | — | — | — | [Skip to train] |
-| remote-pi3 | ot_modbus | 🔵 ACTIVE (OT) | 28d | v001 | 28 days ago | 0 | [Retrain (manual)] |
+| remote-pi3 | ot_modbus | 🔵 ACTIVE (OT-locked) | 28d | v001 | 28 days ago | 0 | [Retrain — manual only] |
 
-**Controls:**
-- **[Retrain]:** Force full retrain from scratch using current clean buffer
-- **[Rollback]:** Point `active` symlink to the previous model version
-- **[Skip to train]:** Override `learning_days` minimum (with warning: *"Training on fewer than 7 days may produce high false positive rates"*)
-- **Learning days** slider: 7 / 14 / 28 days (per collector)
-- **k σ threshold** slider: 2.0 / 3.0 / 4.0 (per metric group; OT groups default 4.0)
-- **ADWIN delta** input: default 0.002 (lower = more sensitive to drift)
-- **OT retrain mode** toggle: manual-only vs. auto (default: manual-only for OT groups)
+**Controls per row:**
+- **[Retrain]:** calls `POST /api/v1/ml/retrain`
+- **[Rollback]:** calls `POST /api/v1/ml/rollback`
+- **[Skip to train]:** patches `learning_days` override with inline warning
 
-**Learning phase progress:** For `ACCUMULATING` state, show a progress bar and estimated completion time. Show the contamination filter statistics: "3,240 / 20,160 windows masked (16%) — due to 4 Tier 1 events".
+**Accumulation progress bar:** For `ACCUMULATING` state, show `clean_windows / total_target_windows` with contamination mask stats: “3,240 / 20,160 windows masked (16%) — due to 4 Tier 1 events.”
 
-**Anomaly score stream chart:** For `ACTIVE` models, show the last 24h of anomaly scores as a line chart with the alert threshold overlaid. This lets the operator visually validate that the model is behaving correctly before trusting its output.
+**Anomaly score chart:** For `ACTIVE` models, query VictoriaMetrics via `GET /api/v1/collectors/:id/metrics?metric=analyselaptop_ml_anomaly_score` and render a Chart.js time-series with the alert threshold overlaid (last 24h by default).
 
-**Model inspection:** Click any model version → show:
+**Model detail modal:** Click a model version row → `GET /api/v1/ml/model/:id/meta` → render:
 - Training dataset stats (n samples, contamination %, feature means/stddevs)
-- Validation loss curve (train vs. val, epoch by epoch)
-- Validation reconstruction error distribution (histogram with threshold line)
-- Sample anomaly scores over last 24h with hover-over details
+- Validation loss curve (train vs. val by epoch)
+- Validation reconstruction error histogram with threshold line
+- ADWIN drift event timeline for this collector × group
+
+**Global ML config** (per collector, editable):
+- Learning days slider: 7 / 14 / 28
+- kσ threshold: 2.0 / 3.0 / 4.0
+- ADWIN delta: text input, default 0.002
+- OT retrain mode: toggle manual-only vs. auto (default: manual-only for Modbus/SNMP groups)
 
 ---
 
-## 9. Data Contamination & Robustness
+## 9. New Python Dependencies (`backend/analyse/requirements.txt`)
 
-The most critical practical failure mode for unsupervised anomaly detection is **contaminated training data** — if an ongoing slow attack occurs during the learning phase, the model learns the attack as normal.
+```
+# Already present (NumPy, scikit-learn, networkx, psycopg3, httpx for VM queries)
 
-The 2024 deep learning study on data contamination (Khoury et al., arXiv:2407.08838 [web:15]) evaluated contamination rates from 1% to 20% across multiple DL models. Key finding: LSTM autoencoders show significant performance degradation above 5% contamination. Below 5%, performance degrades gracefully.
+# ML additions
+torch==2.3.*          # Training only (not imported at inference time)
+onnx==1.16.*          # Model export
+onnxruntime==1.18.*   # Inference — CPU provider, no CUDA, ~20 MB
+river==0.21.*         # ADWIN drift detector — pure Python, O(log n), ARM-compatible
+scipy==1.13.*         # CDF for anomaly score normalisation
+```
 
-**Mitigations implemented in this design:**
+**Container split:** The `backend/analyse/` Docker image has two variants:
+- `analyse-runtime`: does NOT install `torch` (default production image, ~1.2 GB smaller)
+- `analyse-train`: installs `torch` (used only for the training subprocess; spawned on-demand via `docker exec` or a sidecar container with shared volume)
 
-1. **Tier 1 contamination mask** (Section 5.2): CUSUM/EWMA flags mask training windows. Expected to remove the majority of attack-period data even from an ongoing slow attack.
-
-2. **Statistical outlier removal during feature engineering:** Welford running statistics are maintained during accumulation. Any sample > 4σ from the running mean is excluded from the training buffer regardless of Tier 1 state.
-
-3. **Validation loss sanity check:** If `val_loss / train_loss > 1.5` (overfitting) or `val_loss < 0.5 × train_loss` (potential contamination causing model to learn anomalies), training is rejected and the learning phase is extended.
-
-4. **Operator review gate (optional):** A config flag `require_operator_approval_before_activation` (default: `false`; recommended `true` for OT environments) holds the model in `TRAINING_COMPLETE` state and shows a review summary in the dashboard before the model becomes active.
+This keeps the always-running analysis container lean while still supporting on-node training without a separate training server.
 
 ---
 
-## 10. Academic References
+## 10. Data Contamination & Robustness
+
+The most critical failure mode for unsupervised anomaly detection is **contaminated training data** — if a slow attack occurs during the learning phase, the model learns the attack as normal.
+
+Khoury et al. (2024) evaluated contamination rates from 1% to 20% across DL models: LSTM autoencoders degrade significantly above 5% contamination; below 5%, degradation is graceful.
+
+**Mitigations:**
+
+1. **PostgreSQL anomaly mask** (Section 5.2): Tier 1 CUSUM/EWMA events from the `anomalies` table mask training windows. Expected to keep contamination below 5% even during a slow, ongoing attack.
+
+2. **Welford outlier removal:** Any VictoriaMetrics sample > 4σ from the running mean (computed by the existing CUSUM path) is excluded from the training buffer.
+
+3. **Validation loss sanity check:** If `val_loss / train_loss > 1.5` (overfit) or `val_loss < 0.5 × train_loss` (contamination) → training rejected; learning phase extended by 3 days; event written to PostgreSQL.
+
+4. **Operator review gate (optional):** Config flag `require_operator_approval_before_activation` (default: `false`; recommended `true` for OT environments) → model enters `TRAINING_COMPLETE` state, visible in SvelteKit `/ml` view; operator calls `POST /api/v1/ml/activate` to promote it to `ACTIVE`.
+
+---
+
+## 11. Academic References
 
 | Reference | What it grounds |
 |---|---|
-| Maleki et al. (2021). Unsupervised anomaly detection with LSTM autoencoders using statistical data-filtering. *Applied Soft Computing* 112:107763. | LSTM-AE architecture, sliding window online operation, contamination filtering approach |
-| Khoury et al. (2024). Deep Learning for Network Anomaly Detection under Data Contamination. arXiv:2407.08838. | Contamination problem and mitigation; 5% threshold |
-| Bifet & Gavaldà (2007). Learning from Time-Changing Data with Adaptive Windowing. *SIAM ICDM*. | ADWIN algorithm, delta=0.002 default |
-| Mavromatis et al. (2024). FLAME: Adaptive and Reactive Concept Drift Mitigation for Federated Learning. arXiv:2410.01386. | ADWIN vs. KSWIN vs. PHT comparison; stabilisation criterion |
-| IEEE ICT4S (2024). How to Sustainably Monitor ML-Enabled Systems? | ADWIN as balanced detector across 420 combinations |
+| Maleki et al. (2021). Unsupervised anomaly detection with LSTM autoencoders using statistical data-filtering. *Applied Soft Computing* 112:107763. | LSTM-AE architecture choice; sliding window; contamination filtering |
+| Khoury et al. (2024). Deep Learning for Network Anomaly Detection under Data Contamination. arXiv:2407.08838. | Contamination problem; 5% degradation threshold; mask strategy |
+| Bifet & Gavaldà (2007). Learning from Time-Changing Data with Adaptive Windowing. *SIAM ICDM*. | ADWIN algorithm; delta=0.002 default |
+| Mavromatis et al. (2024). FLAME: Adaptive and Reactive Concept Drift Mitigation. arXiv:2410.01386. | ADWIN vs. KSWIN vs. PHT comparison; stabilisation criterion |
+| IEEE ICT4S (2024). How to Sustainably Monitor ML-Enabled Systems? | ADWIN as best balanced drift detector across 420 combinations |
 | Kingma & Welling (2019). An Introduction to Variational Autoencoders. *FnTML* 12(4). | VAE probabilistic threshold alternative |
-| Zabala et al. (2023). MDP-based network monitoring agent. *Mathematics* 11(3):610. | Integration point: MDP scheduler can use ML anomaly score as observation |
-| Elsayed et al. (2025). CNN-BiLSTM-AE unsupervised IDS. UNSW-NB15 benchmark. | 98.1% accuracy, purely unsupervised training validation |
+| Zabala et al. (2023). MDP-based network monitoring agent. *Mathematics* 11(3):610. | Integration: MDP scheduler can consume ML anomaly score as observation |
+| Elsayed et al. (2025). CNN-BiLSTM-AE unsupervised IDS on UNSW-NB15. | 98.1% accuracy, purely unsupervised training validation |
 | IEC 62443-3-3 (2013). System security requirements and security levels. | OT manual retrain approval requirement |
-| Choi et al. (2021). LSTM-Based Autoencoder Survey. *Electronics* 10(13):1598. | hidden_dim=64 sweet spot for time-series |
+| Choi et al. (2021). LSTM-Based Autoencoder Survey. *Electronics* 10(13):1598. | hidden_dim=64 sweet spot for time-series of this window length |
