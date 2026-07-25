@@ -40,6 +40,9 @@ This document defines exactly what the collector binary must become for v2, what
 | PKI leaf cert auto-enrollment + renewal | — | ❌ Missing |
 | Check-plan consumer (PostgreSQL-backed) | `main.go` (partial) | ⚠️ Partial — fetches via HTTP, needs OTLP plan channel |
 | `collector_heartbeat_total` counter | — | ❌ Missing — needed by vmalert fleet rules |
+| **WiFi health (signal, APs, quality)** | — | ❌ Missing — added to v2 scope |
+| **mtr hop-level route tracing** | — | ❌ Missing — added to v2 scope |
+| **Broadcast/multicast top-talker snapshot** | — | ❌ Missing — added to v2 scope |
 
 ---
 
@@ -219,7 +222,7 @@ This eliminates the `node_exporter` binary dependency entirely on Linux nodes (W
 
 On **Windows** the same metrics come from `Get-CimInstance Win32_OperatingSystem` + `Get-PSDrive`.
 
-**Result:** The hub no longer needs `node_exporter` installed on each collector node. The `COLLECTOR-FLEET-MONITORING.md` Ansible role for `node_exporter` remains as a fallback option but is no longer the primary path.
+**Result:** The hub no longer needs `node_exporter` installed on each collector node.
 
 ### 6.2 All active checks — bundled in `checks.go` and new files
 
@@ -242,6 +245,9 @@ On **Windows** the same metrics come from `Get-CimInstance Win32_OperatingSystem
 | Listening port snapshot | `os_ports.go` | ❌ | ✅ — P1 |
 | systemd unit state | `os_health_linux.go` | ❌ | ✅ — P1 |
 | Docker container status | `os_processes.go` | ❌ | ✅ — P2 |
+| **WiFi health + AP inventory** | **`net_wifi_linux.go` / `net_wifi_windows.go`** | ❌ | **✅ — P1** |
+| **mtr hop-level route tracing** | **`net_mtr.go`** | ❌ | **✅ — P1 (on-demand, DEGRADED trigger)** |
+| **Broadcast/multicast top-talker snapshot** | **`net_bcast.go`** | ❌ | **✅ — P2 (Linux, gopacket AF_PACKET)** |
 
 ### 6.3 PKI lifecycle — bundled
 
@@ -273,8 +279,6 @@ func computeHealthScore(state *agentState) float64 {
     return max(0.0, score)
 }
 ```
-
-This means the backend never has to infer health from absence of data — the collector self-reports.
 
 ---
 
@@ -319,6 +323,10 @@ collector/
 ├── net_routes.go            # route table, default GW RTT                (new)
 ├── net_wan.go               # public IP, WAN latency (1.1.1.1, 8.8.8.8) (new)
 ├── net_wireguard.go         # wgctrl peer health, handshake age          (new)
+├── net_wifi_linux.go        # iw dev scan + link quality, AP inventory   (new)
+├── net_wifi_windows.go      # netsh wlan show networks/interfaces        (new)
+├── net_mtr.go               # mtr-style raw ICMP TTL hop tracing         (new)
+├── net_bcast.go             # broadcast/multicast top-talker (gopacket)  (new, Linux)
 │
 ├── os_health.go             # interface + platform dispatch              (new)
 ├── os_health_linux.go       # /proc/stat, /proc/meminfo, /proc/uptime   (new)
@@ -360,10 +368,7 @@ require (
     go.opentelemetry.io/otel/sdk/metric                           v1.28.0
     google.golang.org/grpc                                        v1.65.0
 
-    // mTLS / TLS helpers (stdlib covers most; grpc needs credentials)
-    google.golang.org/grpc/credentials                            // part of grpc module
-
-    // ICMP raw sockets (loss %, jitter)
+    // ICMP raw sockets (loss %, jitter, mtr hop-tracing)
     golang.org/x/net                                              v0.28.0
 
     // SNMP
@@ -378,15 +383,18 @@ require (
     // eBPF (Linux only — build-tagged, excluded from other platforms)
     github.com/cilium/ebpf                                        v0.16.0
 
-    // Gorilla local store (no external dep — implement with stdlib compress/zlib)
-    // SQLite cold buffer — pure Go driver (no cgo dependency)
+    // Gorilla local store — SQLite cold buffer, pure Go driver
     modernc.org/sqlite                                            v1.32.0
+
+    // Broadcast/multicast top-talker packet capture (Linux AF_PACKET, build-tagged)
+    // See: docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md for implementation notes
+    github.com/google/gopacket                                    v1.1.19
 )
 ```
 
 **Binary size estimate:**
 - v1 (stdlib only): ~6 MB stripped
-- v2 (with OTel SDK + gRPC + gosnmp + go-modbus + wgctrl + sqlite): ~22–26 MB stripped
+- v2 (with OTel SDK + gRPC + gosnmp + go-modbus + wgctrl + sqlite + gopacket): ~28–34 MB stripped
 - Still a single static binary, zero runtime dependencies, cross-compiles normally
 
 **Build tags required:**
@@ -400,12 +408,13 @@ require (
 | `net_routes_windows.go` | `//go:build windows` | `route print` parsing |
 | `net_wireguard.go` | `//go:build linux \|\| windows` | wgctrl supports L+W |
 | `os_processes.go` (systemd) | `//go:build linux` | D-Bus systemd interface |
+| `net_wifi_linux.go` | `//go:build linux` | `iw` CLI + `/proc/net/wireless` |
+| `net_wifi_windows.go` | `//go:build windows` | `netsh wlan` CLI |
+| `net_bcast.go` | `//go:build linux` | AF_PACKET raw socket (gopacket pcapgo) |
 
 ---
 
 ## 9. v2 Config Schema
-
-The v1 config (`aggregator_url`, `ingest_key`, `interval`) is replaced by a richer YAML/JSON config:
 
 ```json
 {
@@ -447,6 +456,32 @@ The v1 config (`aggregator_url`, `ingest_key`, `interval`) is replaced by a rich
     "cpu_interval_s": 15
   },
 
+  "wifi": {
+    "enabled": true,
+    "interfaces": ["wlan0"],
+    "scan_interval_s": 60,
+    "ap_whitelist": [],
+    "signal_warn_dbm": -70,
+    "signal_crit_dbm": -85,
+    "new_ap_alert": true
+  },
+
+  "mtr": {
+    "enabled": true,
+    "max_hops": 30,
+    "probes_per_hop": 3,
+    "timeout_ms": 1000,
+    "only_on_degraded": true
+  },
+
+  "bcast_mcast": {
+    "enabled": true,
+    "interfaces": ["eth0"],
+    "snapshot_interval_s": 300,
+    "top_n": 10,
+    "sample_duration_s": 10
+  },
+
   "check_plan_source": "remote",
 
   "snmp_targets": [],
@@ -465,13 +500,9 @@ The v1 config (`aggregator_url`, `ingest_key`, `interval`) is replaced by a rich
 }
 ```
 
-The config file is versioned (`"version": 2`). A `migrate_config.go` tool auto-converts the v1 JSON config to v2 format on first run.
-
 ---
 
 ## 10. OTLP Metric Naming Convention
-
-All metrics emitted by the v2 collector follow a consistent naming scheme so VictoriaMetrics labels are clean and MetricsQL queries are predictable:
 
 | Metric | Labels | Unit |
 |---|---|---|
@@ -507,6 +538,21 @@ All metrics emitted by the v2 collector follow a consistent naming scheme so Vic
 | `collector_health_score` | `collector_id, site_id` | 0.0–1.0 |
 | `collector_cert_days_left` | `collector_id, site_id` | days |
 | `collector_cycle_duration_ms` | `collector_id, site_id` | ms |
+| **`wifi_signal_dbm`** | `collector_id, site_id, interface, bssid, ssid` | dBm |
+| **`wifi_link_quality_pct`** | `collector_id, site_id, interface, bssid, ssid` | % |
+| **`wifi_noise_dbm`** | `collector_id, site_id, interface, bssid` | dBm |
+| **`wifi_tx_bitrate_mbps`** | `collector_id, site_id, interface` | Mbps |
+| **`wifi_rx_bitrate_mbps`** | `collector_id, site_id, interface` | Mbps |
+| **`wifi_channel`** | `collector_id, site_id, interface, bssid, ssid` | int |
+| **`wifi_ap_count`** | `collector_id, site_id, interface, ssid` | count |
+| **`wifi_new_ap_detected`** | `collector_id, site_id, interface, bssid, ssid` | 0/1 event |
+| **`mtr_hop_rtt_ms`** | `collector_id, site_id, target, hop, hop_ip` | ms |
+| **`mtr_hop_loss_pct`** | `collector_id, site_id, target, hop, hop_ip` | % |
+| **`mtr_hop_count`** | `collector_id, site_id, target` | int |
+| **`bcast_top_talker_pps`** | `collector_id, site_id, interface, src_mac, type` | pkts/s |
+| **`bcast_top_talker_bps`** | `collector_id, site_id, interface, src_mac, type` | bits/s |
+| **`mcast_top_talker_pps`** | `collector_id, site_id, interface, src_mac, dst_ip` | pkts/s |
+| **`bcast_total_pps`** | `collector_id, site_id, interface` | pkts/s |
 
 ---
 
@@ -517,19 +563,20 @@ All rules from `SUGGESTIONS.md` Section 9 apply unchanged. Summary:
 1. **Never write to OT devices.** Only Modbus FC01/FC02/FC03/FC04 permitted. FC05/FC06/FC16 are compile-time absent from `ot_modbus.go`.
 2. **Rate-limit all OT probes.** Maximum 1 request per target per MDP scheduler cycle. The scheduler enforces `min_interval_s: 30` for any target in `modbus_targets` or `snmp_targets`.
 3. **No ARP broadcast on OT VLANs.** ARP table reads are passive (OS-maintained table). The collector never sends ARP requests.
-4. **One collector per zone.** The `site_id` + `zone_id` config fields enforce this at the aggregator level (analysis service rejects cross-zone correlation).
-5. **NTP < 1 s offset.** The NTP check now validates stratum ≤ 3 and offset < 1 s; violations are emitted as high-severity events directly (not deferred to analysis service).
-6. **IEC 62443 rule-based detections** fire at `confidence=1.0` regardless of ML model state (see ARCHITECTURE-V2-EXTENDED.md Section 7):
+4. **One collector per zone.** The `site_id` + `zone_id` config fields enforce this at the aggregator level.
+5. **NTP < 1 s offset.** The NTP check now validates stratum ≤ 3 and offset < 1 s; violations are emitted as high-severity events directly.
+6. **WiFi scanning on OT networks:** `iw dev scan` sends probe request frames — this is **active RF traffic**. On OT/ICS networks, WiFi scanning MUST be disabled (`wifi.enabled: false`) or restricted to passive scan mode (`iw dev wlan0 scan passive`). The config enforces `scan_mode: passive` whenever the `zone_id` is an OT zone.
+7. **Broadcast/multicast capture on OT VLANs:** `bcast_mcast` uses AF_PACKET in read-only mode — fully passive, zero injected traffic. Safe for OT networks.
+8. **IEC 62443 rule-based detections** fire at `confidence=1.0` regardless of ML model state:
    - Modbus FC write observed in passive eBPF TCP flow → alert immediately
    - New MAC on OT VLAN (ARP table) → alert immediately
    - `probe_snmp_sysuptime_s` drops >80% from previous value → alert immediately
    - `probe_wg_handshake_age_s` > `max_handshake_age_s` → alert
+   - **`wifi_new_ap_detected` on OT VLAN** → alert immediately (rogue AP IoC)
 
 ---
 
 ## 12. Migration from v1 to v2
-
-The v1 and v2 collectors are separate binaries. Migration is node-by-node:
 
 | Step | Action | Rollback |
 |---|---|---|
@@ -538,8 +585,6 @@ The v1 and v2 collectors are separate binaries. Migration is node-by-node:
 | M3 | Migrate config: run `collector-v2 --migrate-config /etc/network-probe/collector.json` → writes `collector-v2.json` | Delete v2 config |
 | M4 | Roll out to all nodes 5 at a time. Monitor `collector_health_score` in fleet table. | v1 self-update fallback |
 | M5 | Retire v1 aggregator HTTP endpoints once all nodes are on v2 OTLP | — |
-
-Self-update path: v1's HMAC-authenticated self-update (`update_secret`) is used to push the v2 binary to all v1 nodes. v2's first run detects the v1 config and triggers `--migrate-config` automatically before starting.
 
 ---
 
@@ -550,19 +595,196 @@ Self-update path: v1's HMAC-authenticated self-update (`update_secret`) is used 
 | **C1** | Transport layer: `transport/otlp.go`, PKI enrollment/renewal, `go.mod` update, config migration tool | 3 | backend/ingest v2 running |
 | **C2** | Gorilla hot/cold store (`compress/`) + SQLite cold buffer + replay-on-reconnect | 2 | C1 |
 | **C3** | OS health bundle: CPU/mem/disk/uptime/load (`os_health_*.go`) — eliminates node_exporter | 2 | C1 |
-| **C4** | Network checks: ICMP loss%, interface counters, route table, WAN, WireGuard | 2 | C1 |
+| **C4** | Network checks: ICMP loss%, interface counters, route table, WAN, WireGuard, **WiFi health**, **mtr hop-tracing** | 3 | C1 |
 | **C5** | SNMP v2c/v3 (`ot_snmp.go`) + Modbus TC FC01/FC03 (`ot_modbus.go`) | 2 | C1 |
 | **C6** | MDP scheduler (`scheduler/`) + priority_hints consumer | 2 | C2, C3, C4 |
 | **C7** | eBPF passive RTT (`ebpf/`) — Linux only, bpf2go toolchain | 3 | C1, C6 |
 | **C8** | Health score gauge + cert expiry gauge + vmalert rule validation | 1 | C1–C6 |
-| **C9** | IEC 62443 rule-based detection hooks (Modbus FC write, sysUpTime drop, new MAC) | 2 | C5, C7 |
+| **C9** | IEC 62443 rule-based detection hooks (Modbus FC write, sysUpTime drop, new MAC, **rogue AP**) | 2 | C5, C7 |
 | **C10** | Full test suite: unit + integration + cross-platform CI (linux/amd64, linux/arm64, windows/amd64) | 2 | C1–C9 |
+| **C11** | **Broadcast/multicast top-talker** (`net_bcast.go`, gopacket AF_PACKET) — Linux only | 2 | C1, C6 — see `docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md` |
 
-**Total: ~21 weeks** for the full v2 collector. C1–C6 (core transport, checks, OS health, network checks, SNMP/Modbus, scheduler) can ship in ~13 weeks as a functional v2.0 that satisfies all non-eBPF requirements.
+**Total: ~25 weeks** for the full v2 collector including C11. C1–C8 (core transport, checks, OS health, network checks including WiFi+mtr, SNMP/Modbus, scheduler, eBPF, health) can ship in ~17 weeks as a functional v2.0.
 
 ---
 
-## 14. Academic Basis for v2 Collector Decisions
+## 14. WiFi Health Module (`net_wifi_linux.go` / `net_wifi_windows.go`)
+
+### What it measures
+
+| Metric | Method (Linux) | Method (Windows) | Priority |
+|---|---|---|---|
+| Signal strength (dBm) | `iw dev wlan0 link` | `netsh wlan show interfaces` | P0 |
+| Link quality (%) | `/proc/net/wireless` (quality/max) | `netsh wlan show interfaces` | P0 |
+| Noise floor (dBm) | `iw dev wlan0 link` | `netsh wlan show interfaces` | P1 |
+| TX/RX bitrate (Mbps) | `iw dev wlan0 link` | `netsh wlan show interfaces` | P1 |
+| Channel + frequency | `iw dev wlan0 link` | `netsh wlan show interfaces` | P1 |
+| Connected BSSID + SSID | `iw dev wlan0 link` | `netsh wlan show interfaces` | P0 |
+| Visible AP inventory (BSSID, SSID, signal, channel) | `iw dev wlan0 scan` or passive scan | `netsh wlan show networks mode=bssid` | P1 |
+| New AP detection (vs whitelist) | Diff against previous scan | Diff against previous scan | P1 |
+| AP disappearance | Diff against previous scan | Diff against previous scan | P2 |
+
+### New AP detection logic
+
+```go
+// net_wifi_linux.go
+type APEntry struct {
+    BSSID   string
+    SSID    string
+    Channel int
+    Signal  int // dBm
+    First   time.Time
+}
+
+func (w *WiFiChecker) scanAndDiff(iface string) ([]APEntry, []APEntry, error) {
+    current, err := scanAPs(iface) // exec iw dev <iface> scan
+    if err != nil { return nil, nil, err }
+
+    var newAPs, goneAPs []APEntry
+    seen := make(map[string]bool)
+    for _, ap := range current {
+        seen[ap.BSSID] = true
+        if _, known := w.knownAPs[ap.BSSID]; !known {
+            newAPs = append(newAPs, ap)
+            w.knownAPs[ap.BSSID] = ap
+        }
+    }
+    for bssid, ap := range w.knownAPs {
+        if !seen[bssid] {
+            goneAPs = append(goneAPs, ap)
+            delete(w.knownAPs, bssid)
+        }
+    }
+    return newAPs, goneAPs, nil
+}
+```
+
+New AP events are emitted as `wifi_new_ap_detected=1` gauge with labels `{bssid, ssid, channel}`. On OT zones this triggers an immediate IEC 62443 alert (rogue AP IoC).
+
+### Signal drop detection
+
+Signal is tracked as a rolling window. A drop > 15 dBm within one scan interval triggers `StateSuspect` in the MDP scheduler for any WiFi-dependent targets on that interface.
+
+### OT safety
+
+`iw scan` transmits probe request frames. On OT networks, the config enforces `scan_mode: passive` which uses `iw dev wlan0 scan passive` — listens for beacons only, zero RF injection.
+
+---
+
+## 15. mtr Hop-Level Route Tracing (`net_mtr.go`)
+
+### Design
+
+mtr combines traceroute and ping: it sends repeated ICMP probes with increasing TTL (1→max_hops) and tracks per-hop loss and RTT distribution. The v2 collector implements this natively using `golang.org/x/net/icmp` raw sockets — no `mtr` or `traceroute` binary required on the collector node.
+
+```go
+// net_mtr.go
+type HopResult struct {
+    Hop     int
+    IP      net.IP
+    RTTs    []time.Duration  // one per probe (probes_per_hop)
+    Loss    float64          // 0.0–100.0
+    RTTMin  time.Duration
+    RTTP50  time.Duration
+    RTTMax  time.Duration
+}
+
+func RunMTR(target string, maxHops, probesPerHop int, timeoutMs int) ([]HopResult, error) {
+    // Uses golang.org/x/net/icmp — requires CAP_NET_RAW or root
+    // For each TTL from 1 to maxHops:
+    //   Send probesPerHop ICMP Echo requests with TTL=n
+    //   Collect ICMP Time Exceeded replies → record hop IP + RTT
+    //   If ICMP Echo Reply received → target reached, stop
+    // Returns: []HopResult one per hop
+}
+```
+
+### Trigger policy
+
+mtr is **not run every cycle** — it is expensive (30 hops × 3 probes = 90 packets per target). Triggers:
+
+1. MDP scheduler transitions a target to `StateDegraded` → run mtr once, emit all hop metrics as a single event batch.
+2. Config `mtr.only_on_degraded: false` → run mtr on every `scan_interval_s` cycle (for continuous hop-level visibility, not recommended for battery/OT nodes).
+3. Manual trigger via backend check-plan with `"mtr_force": true`.
+
+### Metrics emitted
+
+All hop results are pushed as a single OTLP batch tagged with a `trace_id` (UUID) so the backend can reconstruct the full path:
+
+```
+mtr_hop_rtt_ms{collector_id, site_id, target, hop="3", hop_ip="10.0.0.1", trace_id} = 4.2
+mtr_hop_loss_pct{collector_id, site_id, target, hop="3", hop_ip="10.0.0.1", trace_id} = 0.0
+mtr_hop_count{collector_id, site_id, target, trace_id} = 12
+```
+
+### Privilege
+
+Raw ICMP sockets require `CAP_NET_RAW`. If unavailable, the mtr module falls back to `exec("traceroute", ...)` or `exec("tracert", ...)`. The fallback is less accurate (single probe per hop, no loss %) but functional without elevated privileges.
+
+---
+
+## 16. Broadcast/Multicast Top-Talker Snapshot (`net_bcast.go`)
+
+> **Implementation status:** Design only. See research task: `docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md`
+
+### Purpose
+
+Broadcast and multicast storms are a leading cause of OT network degradation and wireless segment saturation. Identifying the **top-N source MACs by broadcast/multicast packet rate** allows the analysis service to flag misbehaving endpoints before the segment becomes congested.
+
+### Approach (Linux — AF_PACKET + gopacket)
+
+```go
+// net_bcast.go  //go:build linux
+
+// Uses github.com/google/gopacket with pcapgo (AF_PACKET, no libpcap binary dep)
+// Requires CAP_NET_RAW
+//
+// Algorithm:
+// 1. Open AF_PACKET socket on configured interface (ETH_P_ALL)
+// 2. Apply BPF kernel filter: dst ether broadcast OR dst ether multicast
+//    → kernel pre-filters, only bcast/mcast frames reach user space
+// 3. Sample for sample_duration_s (default 10s) every snapshot_interval_s (default 300s)
+// 4. Count packets + bytes per src MAC
+// 5. Separate counters for: broadcast (ff:ff:ff:ff:ff:ff dst),
+//    IPv4 multicast (01:00:5e:xx:xx:xx), IPv6 multicast (33:33:xx:xx:xx:xx),
+//    and other (CDP, STP, LLDP)
+// 6. Emit top_n entries by pps as OTLP gauges
+// 7. Close socket — no persistent capture between snapshots
+
+type BcastTalker struct {
+    SrcMAC  net.HardwareAddr
+    Type    string  // "broadcast", "ipv4_mcast", "ipv6_mcast", "other"
+    DstIP   net.IP  // for multicast
+    PktCount uint64
+    ByteCount uint64
+    PPS     float64
+    BPS     float64
+}
+```
+
+### Why gopacket (not Python scapy / tcpdump)
+
+- **Pure Go, no libpcap binary required on collector nodes.** `gopacket/pcapgo` implements AF_PACKET directly — no CGO for the packet capture itself.
+- **Single binary:** the gopacket dependency is compiled in. No need to install `tcpdump`, `tshark`, or Python on the collector.
+- **BPF kernel pre-filter:** the expensive filtering happens in kernel space. User-space Go code only sees broadcast/multicast frames — CPU overhead is minimal even on busy segments.
+- **Cross-platform caveat:** AF_PACKET is Linux-only. Windows equivalent (NDIS raw socket) is much harder; Windows bcast/mcast capture is deferred to a future phase or handled by a Windows-specific gopacket handle type.
+
+### Metrics emitted (per snapshot)
+
+```
+bcast_top_talker_pps{collector_id, site_id, interface, src_mac="aa:bb:cc:dd:ee:ff", type="broadcast"} = 142.3
+bcast_top_talker_bps{collector_id, site_id, interface, src_mac="aa:bb:cc:dd:ee:ff", type="broadcast"} = 91847.2
+mcast_top_talker_pps{collector_id, site_id, interface, src_mac="...", dst_ip="224.0.0.251"} = 12.1
+bcast_total_pps{collector_id, site_id, interface} = 380.5
+```
+
+### OT safety
+
+AF_PACKET in `SOCK_RAW` mode is fully passive — zero packets injected. Safe for OT networks. The BPF kernel filter ensures non-bcast/mcast traffic is never copied to user space, preserving confidentiality of unicast OT traffic.
+
+---
+
+## 17. Academic Basis for v2 Collector Decisions
 
 | Decision | Reference |
 |---|---|
@@ -575,4 +797,7 @@ Self-update path: v1's HMAC-authenticated self-update (`update_secret`) is used 
 | Modbus FC03 read-only polling | Ollila JAMK 2024; IEC 62443-3-3 SR 2.1 |
 | OT safety rules (rate-limit, no-write) | IEC 62443-3-3; RITICS/NCSC ICS-COI 2024 |
 | Go language choice | Zabala 2023 (static binary for edge deployment); wgctrl, cilium/ebpf native Go |
+| **WiFi signal monitoring (dBm, link quality)** | **IEEE 802.11k (neighbor reports); TU Munich NET-2024-04-1 §3 (wireless interference detection via RSSI drop + error counters)** |
+| **mtr hop-level tracing** | **Augustin et al. "Avoiding traceroute anomalies with Paris traceroute" IMC 2006; TU Munich NET-2024-04-1 §5 (hop-level failure localisation)** |
+| **Broadcast/multicast capture (gopacket AF_PACKET)** | **TU Munich NET-2024-04-1 §3 (ARP broadcast storms as wireless congestion cause); RITICS/NCSC ICS-COI 2024 Appendix A (unexpected broadcast as OT IoC); gopacket pcapgo — zero libpcap dependency** |
 | FedAvg gradient sharing (ML context) | McMahan et al. 2017 — new site cold-start 7d→2d |
