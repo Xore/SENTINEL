@@ -1,181 +1,124 @@
 # Infrastructure as Code — Deployment Strategy
 
-> **Date:** 2026-07-25  
-> **Updated:** 2026-07-25 — v2 collector bundles host metrics natively; `node_exporter` removed from collector role.  
-> **Status:** Proposed  
-> **Scope:** Full v2 stack — backend hub (ingest / analyse / api / nginx), storage (VictoriaMetrics + PostgreSQL), frontend (SvelteKit static), and collector fleet (50+ nodes).  
-> This document is the IaC plan. Actual files live under `deploy/`.  
-> **Collector v2 design:** See [`../collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) for the full collector feature set and go.mod.
+> **Date:** 2026-07-25
+> **Updated:** 2026-07-25 — Simplified to Docker Compose + GitHub Actions only. Terraform and Ansible removed.
+> **Status:** Proposed
+> **Scope:** Full v2 stack — backend hub (ingest / analyse / api / nginx / federation-agent), storage (VictoriaMetrics + PostgreSQL), frontend (SvelteKit static), and collector fleet (50+ nodes, each running the Python collector as a Docker container).
+> **Collector v2 design:** See [`../collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) for the full Python collector feature set and `requirements.txt`.
 
 ---
 
 ## 1. Tooling Decision
 
-Three tools cover the full stack cleanly. Each one is scoped to what it does best:
+Two tools cover the entire stack. No additional orchestration layer is needed at this scale.
 
 | Tool | Scope | Why |
 |---|---|---|
-| **Terraform** | Provision server infrastructure (VM, firewall, DNS, TLS cert) | Declarative; state-tracked; idempotent; de facto standard for infra provisioning in 2025–2026 |
-| **Ansible** | Configure OS, install Docker, deploy collector binaries via systemd on edge nodes | Agentless SSH push; ideal for heterogeneous ARM/amd64 edge nodes without Docker; Ansible + systemd is the documented pattern for edge collector deployment |
-| **Docker Compose** | Define and run the backend stack on the hub server | Native dependency graph, healthcheck-aware startup; single-node production is the primary Docker Compose use case |
-| **GitHub Actions** | CI/CD — build images, run tests, push to GHCR, trigger deploys | Already in use; self-hosted runner on the hub server handles the `docker compose pull && up -d` step |
+| **Docker Compose** | Define and run all services — hub backend AND collector nodes | Declarative service graph; healthcheck-aware startup; works identically on amd64 and arm64; single `docker compose up -d` brings everything live |
+| **GitHub Actions** | CI/CD — build images, run tests, push to GHCR, deploy hub, deploy collector fleet via SSH | Self-hosted runner on the hub handles `docker compose pull && up -d`; SSH-based collector deploys keep fleet management inside one pipeline |
 
 **What is explicitly NOT used:**
-- **Kubernetes:** Overkill for a single-hub, 50-collector network probe. k8s adds etcd, CNI, and scheduler complexity with zero benefit at this scale.
-- **Helm:** No Kubernetes, no Helm.
-- **Docker Swarm:** Single-server stack does not need Swarm orchestration. `docker compose` is sufficient and simpler.
-- **Pulumi/CDK:** Team is already familiar with Terraform HCL; no advantage in switching to a general-purpose language IaC tool at this scale.
+- **Terraform:** Hub server is provisioned manually once (or with the cloud provider's web UI). At single-hub scale, Terraform state management adds complexity with no operational benefit.
+- **Ansible:** Collector fleet is managed via SSH + `docker compose` commands invoked directly from GitHub Actions. No agent, no playbook runner, no inventory YAML.
+- **Kubernetes / Helm / Swarm:** Overkill for a single-hub, 50-collector network probe.
 
 ---
 
 ## 2. Repository Layout
 
 ```
-analyse Laptop/
+analyseLaptop/
 ├── deploy/
-│   ├── terraform/                  # Hub server provisioning
-│   │   ├── main.tf
-│   │   ├── variables.tf
-│   │   ├── outputs.tf
-│   │   ├── providers.tf
-│   │   └── modules/
-│   │       ├── server/             # VM / bare-metal server resource
-│   │       ├── firewall/           # Firewall rules: 443, 4317, 22 only
-│   │       └── dns/                # A/AAAA record for the hub
-│   │
-│   ├── ansible/                    # Collector fleet configuration
-│   │   ├── inventory/
-│   │   │   ├── hosts.yml           # Collector host list (generated or manual)
-│   │   │   └── group_vars/
-│   │   │       ├── all.yml         # Common vars: backend URL, PKI endpoint
-│   │   │       ├── linux_arm64.yml
-│   │   │       └── linux_amd64.yml
-│   │   ├── roles/
-│   │   │   ├── collector/          # Install binary, systemd unit, enroll cert
-│   │   │   ├── ebpf_caps/          # Set CAP_BPF + CAP_NET_ADMIN + CAP_PERFMON
-│   │   │   └── firewall/           # UFW: allow only outbound 4317 to hub
-│   │   ├── playbooks/
-│   │   │   ├── deploy-collector.yml
-│   │   │   ├── update-collector.yml
-│   │   │   └── revoke-collector.yml
-│   │   └── ansible.cfg
-│   │
-│   ├── compose/                    # Hub stack
-│   │   ├── docker-compose.yml      # Base (all services)
-│   │   ├── docker-compose.prod.yml # Production overrides (resource limits, log drivers)
-│   │   ├── docker-compose.dev.yml  # Dev overrides (bind mounts, no TLS, ports exposed)
+│   ├── hub/                          # Hub server stack
+│   │   ├── docker-compose.yml        # Base: all hub services
+│   │   ├── docker-compose.prod.yml   # Production overrides (resource limits, log drivers)
+│   │   ├── docker-compose.dev.yml    # Dev overrides (bind mounts, no TLS, ports exposed)
 │   │   ├── nginx/
 │   │   │   ├── nginx.conf
-│   │   │   └── ssl/                # TLS cert/key (provisioned by Terraform / Let's Encrypt)
-│   │   └── .env.example            # All required vars with dummy values — committed
+│   │   │   └── ssl/                  # TLS cert/key (provisioned by bootstrap-hub.sh)
+│   │   ├── postgres/
+│   │   │   └── init.sql              # Schema init on first run
+│   │   └── .env.example              # All required vars with dummy values — committed
+│   │
+│   ├── collector/                    # Collector node stack
+│   │   ├── docker-compose.yml        # Single-service: analyselaptop-collector
+│   │   ├── docker-compose.prod.yml   # Production overrides (capabilities, resource limits)
+│   │   └── .env.example              # BACKEND_URL, COLLECTOR_ID, SITE_ID, SCAN_LEVEL_MAX
 │   │
 │   └── scripts/
-│       ├── bootstrap-hub.sh        # One-time: install Docker, create dirs, set perms
-│       ├── enroll-collector.sh     # Run on each new collector node
-│       └── rotate-secrets.sh       # Rotate PG password + JWT secret in place
+│       ├── bootstrap-hub.sh          # One-time: install Docker, create dirs, write secrets
+│       ├── bootstrap-collector.sh    # One-time per node: install Docker, write .env
+│       └── rotate-secrets.sh         # Rotate PG password + JWT secret in place
 │
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                  # Build + test all services on PR
-│       ├── build-images.yml        # Build + push to GHCR on merge to main
-│       ├── deploy-hub.yml          # Pull new images + docker compose up -d on hub
-│       └── deploy-collector.yml    # Trigger Ansible playbook for collector fleet update
+│       ├── ci.yml                    # Lint, test, build on every PR
+│       ├── build-images.yml          # Build + push all images to GHCR on merge to main
+│       ├── deploy-hub.yml            # Pull new images + rolling restart on hub
+│       └── deploy-collectors.yml     # SSH to each collector node: pull + restart
 │
-└── collector/
-    └── dist/                       # Cross-compiled binaries (linux/arm64, linux/amd64, etc.)
+├── backend/
+│   ├── ingest/                       # Go service
+│   ├── analyse/                      # Python service
+│   ├── api/                          # Go service
+│   └── federation-agent/             # Python service (site-server side)
+│
+└── collector/                        # Python collector package
+    ├── Dockerfile
+    ├── requirements.txt
+    └── src/
 ```
 
 ---
 
-## 3. Terraform — Hub Server Provisioning
+## 3. One-Time Hub Bootstrap
 
-### What it manages
-
-- **Server resource:** VM (Hetzner/DigitalOcean/bare-metal) or physical NUC. Terraform manages the lifecycle: create, resize, destroy.
-- **Firewall:** Only three inbound ports are ever open:
-  - `22/tcp` — SSH, restricted to operator IPs
-  - `443/tcp` — HTTPS (Nginx → SvelteKit frontend + API)
-  - `4317/tcp` — OTLP/gRPC (collector ingest, mTLS-gated)
-  - Everything else: deny inbound by default.
-- **DNS:** A/AAAA record for `monitor.internal` or the operator's domain.
-- **TLS certificate:** ACME / Let's Encrypt via `terraform-provider-acme` for the Nginx cert, OR a self-signed cert for air-gapped deployments (`tls_self_signed_cert` resource).
-
-### State backend
-
-For a single-operator project, Terraform state lives in a local backend committed to a **private** repository (not this one) or in Terraform Cloud free tier. The `.terraform.lock.hcl` is committed; `terraform.tfstate` is NOT committed to this repo.
-
-```hcl
-# deploy/terraform/providers.tf
-terraform {
-  required_version = ">= 1.9"
-  required_providers {
-    hcloud = {
-      source  = "hetznercloud/hcloud"
-      version = "~> 1.48"
-    }
-    tls = {
-      source  = "hashicorp/tls"
-      version = "~> 4.0"
-    }
-    acme = {
-      source  = "vancluever/acme"
-      version = "~> 2.0"
-    }
-  }
-  # Remote state — replace with local {} for air-gapped
-  backend "s3" {
-    bucket = "analyselaptop-tfstate"
-    key    = "hub/terraform.tfstate"
-    region = "eu-central-1"
-    # OR: use Terraform Cloud / HCP Terraform free tier
-  }
-}
-```
-
-```hcl
-# deploy/terraform/modules/firewall/main.tf  (Hetzner example)
-resource "hcloud_firewall" "hub" {
-  name = "analyselaptop-hub"
-
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "22"
-    source_ips = var.operator_ips  # Never 0.0.0.0/0
-  }
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "443"
-    source_ips = ["0.0.0.0/0", "::/0"]  # Management VPN in production
-  }
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "4317"
-    source_ips = var.collector_source_ips  # CIDR blocks containing collectors
-  }
-}
-```
-
-### Terraform workflow
+The hub server requires Docker and a secrets directory. Run once over SSH after provisioning the VM manually:
 
 ```bash
-terraform -chdir=deploy/terraform init
-terraform -chdir=deploy/terraform plan -var-file=prod.tfvars
-terraform -chdir=deploy/terraform apply -var-file=prod.tfvars
+# deploy/scripts/bootstrap-hub.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Install Docker (idempotent)
+if ! command -v docker &>/dev/null; then
+  curl -fsSL https://get.docker.com | sh
+  usermod -aG docker "$USER"
+fi
+
+# Create secrets directory (never inside repo or Docker volume)
+mkdir -p /run/analyselaptop/secrets/pki
+chmod 700 /run/analyselaptop/secrets
+
+# Generate secrets (skip if already exist)
+[ -f /run/analyselaptop/secrets/pg_password ] || \
+  openssl rand -base64 32 > /run/analyselaptop/secrets/pg_password
+[ -f /run/analyselaptop/secrets/jwt_secret ] || \
+  openssl rand -base64 64 > /run/analyselaptop/secrets/jwt_secret
+
+# Generate self-signed TLS cert for Nginx (replace with Let's Encrypt cert in production)
+[ -f /run/analyselaptop/secrets/tls.crt ] || \
+  openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
+    -keyout /run/analyselaptop/secrets/tls.key \
+    -out    /run/analyselaptop/secrets/tls.crt \
+    -subj   "/CN=analyselaptop-hub"
+
+chmod 600 /run/analyselaptop/secrets/*
+chmod 600 /run/analyselaptop/secrets/pki/* 2>/dev/null || true
+
+echo "Bootstrap complete. Copy deploy/hub/.env.example to deploy/hub/.env and fill in values."
 ```
 
-Terraform provisions the server and outputs its IP. The bootstrap script (`deploy/scripts/bootstrap-hub.sh`) is then run once over SSH to install Docker and create the required directories and file permissions.
+> **TLS in production:** Replace the self-signed cert with a Let's Encrypt cert obtained via `certbot certonly --standalone` before first deploy. Copy the resulting `fullchain.pem` and `privkey.pem` to `/run/analyselaptop/secrets/`. Nginx config references these paths.
 
 ---
 
-## 4. Docker Compose — Hub Stack
+## 4. Hub Stack — Docker Compose
 
 ### Base compose file
 
 ```yaml
-# deploy/compose/docker-compose.yml
+# deploy/hub/docker-compose.yml
 services:
 
   victoriametrics:
@@ -216,13 +159,13 @@ services:
     restart: unless-stopped
     secrets: [pg_user, pg_password, pg_db]
     environment:
-      VM_ENDPOINT:    http://victoriametrics:8428
-      PG_HOST:        postgres
-      PKI_DIR:        /run/secrets/pki
+      VM_ENDPOINT: http://victoriametrics:8428
+      PG_HOST:     postgres
+      PKI_DIR:     /run/secrets/pki
     volumes:
       - pki_data:/run/secrets/pki
     ports:
-      - "0.0.0.0:4317:4317"   # OTLP/gRPC — mTLS-gated; collector-facing
+      - "0.0.0.0:4317:4317"   # OTLP/gRPC — mTLS-gated; collector-facing only
     networks: [backend, collector_facing]
     depends_on:
       postgres:        { condition: service_healthy }
@@ -233,8 +176,8 @@ services:
     restart: unless-stopped
     secrets: [pg_user, pg_password, pg_db]
     environment:
-      VM_ENDPOINT: http://victoriametrics:8428
-      PG_HOST:     postgres
+      VM_ENDPOINT:        http://victoriametrics:8428
+      PG_HOST:            postgres
       ANALYSE_INTERVAL_S: "60"
     networks: [backend]
     depends_on:
@@ -253,12 +196,28 @@ services:
       postgres:        { condition: service_healthy }
       victoriametrics: { condition: service_healthy }
 
+  federation-agent:
+    image: ghcr.io/xore/analyselaptop/federation-agent:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    secrets: [pg_user, pg_password, pg_db]
+    environment:
+      VM_ENDPOINT:         http://victoriametrics:8428
+      PG_HOST:             postgres
+      GLOBAL_INGEST_URL:   ${GLOBAL_INGEST_URL:-}       # empty = federation disabled
+      SITE_ID:             ${SITE_ID:-local}
+      FEDERATION_INTERVAL: "60"
+    networks: [backend]
+    depends_on:
+      postgres:        { condition: service_healthy }
+      victoriametrics: { condition: service_healthy }
+
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - /run/analyselaptop/secrets/tls.crt:/etc/nginx/ssl/tls.crt:ro
+      - /run/analyselaptop/secrets/tls.key:/etc/nginx/ssl/tls.key:ro
       - frontend_dist:/usr/share/nginx/html:ro
     ports:
       - "0.0.0.0:443:443"
@@ -272,7 +231,7 @@ volumes:
   frontend_dist:
 
 networks:
-  backend:          # VM + PG + ingest + analyse + api — no external exposure
+  backend:          # VictoriaMetrics, PostgreSQL, ingest, analyse, api, federation-agent
   collector_facing: # ingest port 4317 only
   frontend_facing:  # nginx + api only
 
@@ -292,8 +251,8 @@ secrets:
 ### Production override
 
 ```yaml
-# deploy/compose/docker-compose.prod.yml
-# Apply with: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# deploy/hub/docker-compose.prod.yml
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 services:
   victoriametrics:
     deploy:
@@ -316,9 +275,14 @@ services:
   analyse:
     deploy:
       resources:
-        limits: { memory: 512m }   # scikit-learn PCA can spike
+        limits: { memory: 512m }   # scikit-learn / PyTorch can spike
 
   api:
+    deploy:
+      resources:
+        limits: { memory: 128m }
+
+  federation-agent:
     deploy:
       resources:
         limits: { memory: 128m }
@@ -331,180 +295,133 @@ services:
 
 ### Secrets: file-based, never env vars
 
-Docker Compose file-based secrets mount under `/run/secrets/` — they do not appear in `docker inspect`, in logs, or in crash dumps.
+Docker Compose `secrets:` mounts files under `/run/secrets/` inside each container. They do not appear in `docker inspect`, logs, or crash dumps. Applications read the file content at startup.
 
 ```bash
-# deploy/scripts/bootstrap-hub.sh (excerpt)
-mkdir -p /run/analyselaptop/secrets/pki
-chmod 700 /run/analyselaptop/secrets
+# deploy/scripts/rotate-secrets.sh
+#!/usr/bin/env bash
+set -euo pipefail
+cd /run/analyselaptop/secrets
 
-# Generate and write secrets (first run only — skip if files exist)
-[ -f /run/analyselaptop/secrets/pg_password ] || \
-  openssl rand -base64 32 > /run/analyselaptop/secrets/pg_password
-[ -f /run/analyselaptop/secrets/jwt_secret ] || \
-  openssl rand -base64 64 > /run/analyselaptop/secrets/jwt_secret
+openssl rand -base64 32 > pg_password.new && mv pg_password.new pg_password
+openssl rand -base64 64 > jwt_secret.new  && mv jwt_secret.new  jwt_secret
+chmod 600 pg_password jwt_secret
 
-chmod 600 /run/analyselaptop/secrets/*
+cd "$(git rev-parse --show-toplevel)"
+docker compose -f deploy/hub/docker-compose.yml -f deploy/hub/docker-compose.prod.yml \
+  restart postgres api federation-agent
+echo "Secrets rotated. Re-enroll collectors if PKI CA was also rotated."
 ```
-
-Secret files live in `/run/analyselaptop/secrets/` on the host — outside the repo, outside any Docker volume. They are provisioned once at bootstrap, rotated via `deploy/scripts/rotate-secrets.sh`.
 
 ---
 
-## 5. Ansible — Collector Fleet
+## 5. Collector Nodes — Docker Compose
 
-Collectors are **Go static binaries** (~22–26 MB, v2) managed by systemd. They do not run inside Docker (Docker on a Pi 3B adds ~30 MB RAM overhead for zero benefit; the binary is self-contained).
+Every collector node runs the Python collector as a single Docker container managed by `docker compose`. Docker must be installed on each node (handled by `bootstrap-collector.sh`).
 
-The v2 collector binary bundles all host-metric collection natively (`os_health_linux.go`, `os_health_windows.go`). **`node_exporter` is NOT deployed on collector nodes.** See [`COLLECTOR-FLEET-MONITORING.md`](COLLECTOR-FLEET-MONITORING.md) and [`../collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) Section 6.1.
-
-### Inventory
-
-```yaml
-# deploy/ansible/inventory/hosts.yml
-all:
-  children:
-    collectors:
-      hosts:
-        probe-site-a:
-          ansible_host: 192.168.1.50
-          ansible_user: pi
-          arch: arm64
-          site: site-a
-        probe-site-b:
-          ansible_host: 10.20.1.5
-          ansible_user: ubuntu
-          arch: amd64
-          site: site-b
-        probe-ot-floor1:
-          ansible_host: 10.10.0.20
-          ansible_user: collector
-          arch: arm64
-          site: ot-floor1
-          scan_level_max: 1   # OT node: active L1 only
-```
-
-### Collector role — key tasks
-
-```yaml
-# deploy/ansible/roles/collector/tasks/main.yml
-- name: Create collector user (no login shell)
-  user:
-    name: collector
-    system: true
-    shell: /usr/sbin/nologin
-    home: /var/lib/analyselaptop
-    create_home: true
-
-- name: Create state directory
-  file:
-    path: /var/lib/analyselaptop
-    state: directory
-    owner: collector
-    group: collector
-    mode: '0750'
-
-- name: Deploy collector binary
-  copy:
-    src: "{{ playbook_dir }}/../../collector/dist/collector-linux-{{ arch }}"
-    dest: /usr/local/bin/analyselaptop-collector
-    owner: root
-    group: root
-    mode: '0755'
-  notify: restart collector
-
-- name: Deploy systemd unit
-  template:
-    src: collector.service.j2
-    dest: /etc/systemd/system/analyselaptop-collector.service
-    mode: '0644'
-  notify:
-    - daemon-reload
-    - restart collector
-
-- name: Set eBPF capabilities on binary
-  capabilities:
-    path: /usr/local/bin/analyselaptop-collector
-    capability: "cap_bpf,cap_net_admin,cap_net_raw,cap_perfmon+eip"
-    state: present
-  when: ebpf_enabled | default(true)
-
-- name: Enroll collector PKI cert (first run only)
-  command: /usr/local/bin/analyselaptop-collector --enroll \
-    --backend {{ backend_ingest_url }} \
-    --id {{ inventory_hostname }}
-  args:
-    creates: /var/lib/analyselaptop/pki/collector.crt
-
-# NOTE: No node_exporter tasks.
-# The v2 collector binary emits host metrics (CPU, memory, disk, systemd unit
-# state, interface counters) natively via os_health_linux.go / os_health_windows.go.
-# Deploying node_exporter on collector nodes is not required.
-# See: docs/collector/COLLECTOR-V2-REFACTOR.md Section 6.1
-```
-
-```ini
-# deploy/ansible/roles/collector/templates/collector.service.j2
-[Unit]
-Description=analyseLaptop Collector Agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=collector
-Group=collector
-ExecStart=/usr/local/bin/analyselaptop-collector \
-  --backend-url {{ backend_ingest_url }} \
-  --collector-id {{ inventory_hostname }} \
-  --pki-dir /var/lib/analyselaptop/pki \
-  --scan-level-max {{ scan_level_max | default(2) }} \
-  --data-dir /var/lib/analyselaptop/data
-Restart=on-failure
-RestartSec=10
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/analyselaptop
-PrivateTmp=true
-CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_PERFMON
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### Playbooks
+### One-time node bootstrap
 
 ```bash
-# Initial deploy to all collectors
-ansible-playbook -i inventory/hosts.yml playbooks/deploy-collector.yml
+# deploy/scripts/bootstrap-collector.sh
+# Run once on each new collector node (SSH from operator workstation or CI)
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Rolling update (one at a time, health-check gated)
-ansible-playbook -i inventory/hosts.yml playbooks/update-collector.yml \
-  --serial 1 --extra-vars "image_tag=v2.0.0"
+COLLECTOR_ID="${1:?Usage: bootstrap-collector.sh <collector-id> <backend-url> <site-id>}"
+BACKEND_URL="${2:?}"
+SITE_ID="${3:?}"
 
-# Revoke a collector cert (e.g., decommissioned node)
-ansible-playbook -i inventory/hosts.yml playbooks/revoke-collector.yml \
-  --limit probe-site-a
+# Install Docker (idempotent)
+if ! command -v docker &>/dev/null; then
+  curl -fsSL https://get.docker.com | sh
+  usermod -aG docker "$USER"
+fi
+
+# State + PKI directories
+mkdir -p /var/lib/analyselaptop/pki /var/lib/analyselaptop/data
+chmod 750 /var/lib/analyselaptop
+
+# Write .env for docker compose (collector-specific values)
+cat > /var/lib/analyselaptop/.env <<EOF
+COLLECTOR_ID=${COLLECTOR_ID}
+BACKEND_URL=${BACKEND_URL}
+SITE_ID=${SITE_ID}
+SCAN_LEVEL_MAX=2
+IMAGE_TAG=latest
+EOF
+chmod 600 /var/lib/analyselaptop/.env
+
+echo "Node bootstrap complete. Run deploy-collectors workflow or:"
+echo "  docker compose -f /opt/analyselaptop/docker-compose.yml up -d"
 ```
+
+### Collector compose file
+
+```yaml
+# deploy/collector/docker-compose.yml
+services:
+  collector:
+    image: ghcr.io/xore/analyselaptop/collector:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    network_mode: host        # Required: raw socket access for ICMP, AF_PACKET, Wi-Fi
+    pid: host                 # Required: /proc/<pid> access for process metrics
+    volumes:
+      - /var/lib/analyselaptop:/var/lib/analyselaptop   # state, PKI, data store
+      - /sys/fs/bpf:/sys/fs/bpf                         # eBPF pin filesystem
+      - /sys/kernel/debug:/sys/kernel/debug:ro           # eBPF debug (if needed)
+    environment:
+      COLLECTOR_ID:    ${COLLECTOR_ID}
+      BACKEND_URL:     ${BACKEND_URL}
+      SITE_ID:         ${SITE_ID}
+      SCAN_LEVEL_MAX:  ${SCAN_LEVEL_MAX:-2}
+      PKI_DIR:         /var/lib/analyselaptop/pki
+      DATA_DIR:        /var/lib/analyselaptop/data
+    cap_add:
+      - NET_RAW       # ICMP raw sockets, AF_PACKET (broadcast/multicast capture)
+      - NET_ADMIN     # Wi-Fi interface control, eBPF socket filters
+      - BPF           # eBPF program loading
+      - PERFMON       # eBPF perf events
+      - SYS_PTRACE    # /proc/<pid> access for process metrics
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:9090/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+```
+
+```yaml
+# deploy/collector/docker-compose.prod.yml
+services:
+  collector:
+    deploy:
+      resources:
+        limits:
+          memory: 256m    # Sufficient for Python + scapy + bcc + asyncio loop
+          cpus: "0.5"     # Conservative on Pi 3B / Pi 4
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
+```
+
+> **`network_mode: host`** is required because the collector uses raw sockets (ICMP), AF_PACKET (broadcast capture), and reads `/proc/net/dev` for interface metrics. Bridge networking would block these. The container does **not** expose any inbound ports — all traffic is outbound to `BACKEND_URL:4317`.
 
 ---
 
 ## 6. GitHub Actions — CI/CD Pipelines
 
-### Overview
+### Pipeline overview
 
 ```
 PR opened
-  └─▶ ci.yml          — lint, test, build (no push)
+  └─▶ ci.yml            — lint, test, build check (no push)
 
 Merge to main
-  └─▶ build-images.yml — build all backend images, push to GHCR
-        └─▶ (on success) deploy-hub.yml — self-hosted runner on hub pulls + restarts
-
-Release tag vX.Y.Z
-  └─▶ build-images.yml — same, tagged
-  └─▶ deploy-collector.yml — build collector binaries, update collector/dist/
-        └─▶ (manual trigger) ansible-playbook update-collector.yml
+  └─▶ build-images.yml  — build all images (collector + backend), push to GHCR
+        └─▶ (on success) deploy-hub.yml        — self-hosted runner: pull + rolling restart
+        └─▶ (on success) deploy-collectors.yml — SSH to each node: pull + restart
 ```
 
 ### `ci.yml` — test all services on every PR
@@ -521,10 +438,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: '1.23' }
-      - run: go test ./collector/... -race -count=1
-      - run: go vet ./collector/...
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -r collector/requirements.txt
+      - run: pytest collector/tests/ -v
+      - run: ruff check collector/src/
 
   test-ingest:
     runs-on: ubuntu-latest
@@ -551,15 +469,22 @@ jobs:
       - run: pip install -r backend/analyse/requirements.txt
       - run: pytest backend/analyse/tests/ -v
 
+  test-federation-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -r backend/federation-agent/requirements.txt
+      - run: pytest backend/federation-agent/tests/ -v
+
   build-frontend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
-      - run: npm ci
-        working-directory: frontend
-      - run: npm run build
+      - run: npm ci && npm run build
         working-directory: frontend
 
   secret-scan:
@@ -591,21 +516,28 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [ingest, analyse, api]
+        include:
+          - service: ingest
+            context: backend/ingest
+          - service: analyse
+            context: backend/analyse
+          - service: api
+            context: backend/api
+          - service: federation-agent
+            context: backend/federation-agent
+          - service: collector
+            context: collector
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
-
       - uses: docker/setup-buildx-action@v3
-
       - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -615,35 +547,15 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-
       - uses: docker/build-push-action@v6
         with:
-          context: backend/${{ matrix.service }}
+          context: ${{ matrix.context }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to:   type=gha,mode=max
-          platforms: linux/amd64,linux/arm64
-
-  build-collector:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: '1.23' }
-      - name: Cross-compile collector binaries (v2)
-        run: |
-          # Linux/amd64 and arm64: full build including eBPF-excluded files
-          GOOS=linux  GOARCH=amd64 go build -o collector/dist/collector-linux-amd64  ./collector
-          GOOS=linux  GOARCH=arm64 go build -o collector/dist/collector-linux-arm64  ./collector
-          GOOS=windows GOARCH=amd64 go build -o collector/dist/collector-windows-amd64.exe ./collector
-          # Note: eBPF files (ebpf/*.go) are build-tagged linux+cgo and excluded from Windows
-      - uses: actions/upload-artifact@v4
-        with:
-          name: collector-binaries
-          path: collector/dist/
-          retention-days: 30
+          platforms: linux/amd64,linux/arm64   # arm64 for Raspberry Pi collector nodes
 ```
 
 ### `deploy-hub.yml` — rolling zero-downtime deploy on the hub
@@ -660,38 +572,37 @@ on:
 jobs:
   deploy:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: self-hosted   # Runner on the hub server itself
+    runs-on: self-hosted   # Self-hosted runner on the hub server
     environment: production
     concurrency:
       group: hub-deploy
-      cancel-in-progress: false  # Never cancel a running deploy
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull new images
+      - name: Pull updated images
         run: |
           docker compose \
-            -f deploy/compose/docker-compose.yml \
-            -f deploy/compose/docker-compose.prod.yml \
+            -f deploy/hub/docker-compose.yml \
+            -f deploy/hub/docker-compose.prod.yml \
             pull
         env:
           IMAGE_TAG: ${{ github.sha }}
 
-      - name: Health-check pre-deploy
-        run: curl -sf http://localhost:8428/health  # VictoriaMetrics
+      - name: Pre-deploy health check
+        run: curl -sf http://localhost:8428/health
 
       - name: Rolling restart — ingest
         run: |
           docker compose \
-            -f deploy/compose/docker-compose.yml \
-            -f deploy/compose/docker-compose.prod.yml \
+            -f deploy/hub/docker-compose.yml \
+            -f deploy/hub/docker-compose.prod.yml \
             up -d --no-deps ingest
         env:
           IMAGE_TAG: ${{ github.sha }}
@@ -699,31 +610,125 @@ jobs:
       - name: Wait for ingest healthy
         run: |
           for i in $(seq 1 12); do
-            docker inspect --format='{{.State.Health.Status}}' \
-              $(docker compose ps -q ingest) | grep -q healthy && break
-            echo "Waiting... $i"; sleep 5
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' \
+              "$(docker compose -f deploy/hub/docker-compose.yml ps -q ingest)")
+            [ "$STATUS" = "healthy" ] && break
+            echo "Waiting ($i/12) — status: $STATUS"; sleep 5
           done
 
-      - name: Rolling restart — analyse + api
+      - name: Rolling restart — analyse, api, federation-agent
         run: |
           docker compose \
-            -f deploy/compose/docker-compose.yml \
-            -f deploy/compose/docker-compose.prod.yml \
-            up -d --no-deps analyse api
+            -f deploy/hub/docker-compose.yml \
+            -f deploy/hub/docker-compose.prod.yml \
+            up -d --no-deps analyse api federation-agent
         env:
           IMAGE_TAG: ${{ github.sha }}
 
-      - name: Health-check post-deploy
+      - name: Post-deploy health check
         run: curl -sf https://localhost/api/v1/health --insecure
 
       - name: Prune old images
         run: docker image prune -f --filter "until=48h"
 ```
 
-### Self-hosted runner setup (one-time)
+### `deploy-collectors.yml` — SSH-based collector fleet update
+
+Collector nodes are updated by SSHing directly from GitHub Actions using a deploy key. No Ansible required — the workflow iterates the collector inventory (a JSON file in the repo) and runs `docker compose pull && up -d` on each node.
+
+```yaml
+# .github/workflows/deploy-collectors.yml
+name: Deploy Collectors
+on:
+  workflow_run:
+    workflows: ["Build and Push Images"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      collector_id:
+        description: "Single collector ID to update (leave empty for all)"
+        required: false
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: collector-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.COLLECTOR_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "StrictHostKeyChecking no" >> ~/.ssh/config
+
+      - name: Deploy to collector nodes
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          TARGET_ID: ${{ github.event.inputs.collector_id }}
+        run: |
+          # deploy/collector-inventory.json:
+          # [{"id":"probe-site-a","host":"192.168.1.50","user":"pi","arch":"arm64"}, ...]
+          jq -c '.[]' deploy/collector-inventory.json | while IFS= read -r node; do
+            ID=$(echo "$node" | jq -r '.id')
+            HOST=$(echo "$node" | jq -r '.host')
+            USER=$(echo "$node" | jq -r '.user')
+
+            # Skip if targeting a specific collector
+            [ -n "$TARGET_ID" ] && [ "$ID" != "$TARGET_ID" ] && continue
+
+            echo "=== Deploying to $ID ($HOST) ==="
+            ssh -i ~/.ssh/deploy_key "$USER@$HOST" bash -s <<REMOTE
+              set -euo pipefail
+              cd /opt/analyselaptop
+
+              # Pull new image
+              IMAGE_TAG=${IMAGE_TAG} docker compose \
+                -f /opt/analyselaptop/docker-compose.yml \
+                -f /opt/analyselaptop/docker-compose.prod.yml \
+                pull collector
+
+              # Restart
+              IMAGE_TAG=${IMAGE_TAG} docker compose \
+                -f /opt/analyselaptop/docker-compose.yml \
+                -f /opt/analyselaptop/docker-compose.prod.yml \
+                up -d --no-deps collector
+
+              # Health check (30s timeout)
+              for i in \$(seq 1 6); do
+                STATUS=\$(docker inspect --format='{{.State.Health.Status}}' \
+                  "\$(docker compose ps -q collector)" 2>/dev/null || echo "starting")
+                [ "\$STATUS" = "healthy" ] && echo "  ✓ Healthy" && exit 0
+                echo "  Waiting (\$i/6) — \$STATUS"; sleep 5
+              done
+              echo "  ✗ Health check failed on $ID" >&2; exit 1
+REMOTE
+            echo "=== $ID done ==="
+          done
+```
+
+**`deploy/collector-inventory.json`** — committed to repo, contains only non-sensitive connection info:
+
+```json
+[
+  { "id": "probe-site-a",   "host": "192.168.1.50", "user": "pi",        "arch": "arm64" },
+  { "id": "probe-site-b",   "host": "10.20.1.5",    "user": "ubuntu",    "arch": "amd64" },
+  { "id": "probe-ot-floor1","host": "10.10.0.20",   "user": "collector", "arch": "arm64" }
+]
+```
+
+The `COLLECTOR_SSH_KEY` GitHub secret holds a private Ed25519 key. The corresponding public key is added to `~/.ssh/authorized_keys` on each collector node during bootstrap.
+
+### Self-hosted runner on the hub (one-time setup)
 
 ```bash
-# On the hub server, alongside the stack
+# Run on the hub server — gives GitHub Actions access to docker compose on the hub
 docker run -d \
   --name github-runner \
   --restart unless-stopped \
@@ -743,72 +748,71 @@ The runner mounts the Docker socket (to run `docker compose` commands) and the s
 ## 7. Collector Fleet Update Flow
 
 ```
-GitHub Actions build-images.yml
-  └─▶ Uploads collector binaries as artifact
+GitHub Actions — build-images.yml
+  └─▶ Builds collector:${SHA} image for linux/amd64 + linux/arm64
+  └─▶ Pushes to GHCR
 
-Operator runs (manually or on schedule):
-  ansible-playbook deploy/ansible/playbooks/update-collector.yml \
-    --serial 5 \
-    --extra-vars "collector_version=v2.0.0"
+GitHub Actions — deploy-collectors.yml (auto-triggered on build success)
+  For each node in collector-inventory.json (sequentially):
+    1. SSH to node
+    2. docker compose pull collector          ← pulls new image from GHCR
+    3. docker compose up -d --no-deps collector  ← zero-downtime restart
+    4. Wait up to 30s for healthcheck=healthy
+    5. On failure: exit 1 — subsequent nodes NOT updated (fail-fast)
+    6. On success: proceed to next node
 
-  For each collector (5 at a time):
-    1. Download binary from GitHub Release or artifact
-    2. Copy to /usr/local/bin/analyselaptop-collector (atomic mv)
-    3. systemctl restart analyselaptop-collector
-    4. Wait 10s
-    5. systemctl is-active analyselaptop-collector  → abort on failure
-    6. Check backend sees collector heartbeat within 60s (collector_heartbeat_total)
-    7. Check collector_health_score > 0.8 in VictoriaMetrics
-    8. Proceed to next batch
+Manual single-node update:
+  GitHub Actions → deploy-collectors.yml → workflow_dispatch → collector_id=probe-site-a
 ```
 
-`--serial 5` means at most 5 of 50 collectors are offline simultaneously (10%).
+Sequential (not parallel) updates ensure at most one collector is unavailable at a time. Change to `xargs -P 5` in the shell loop to update 5 nodes in parallel if speed matters more than blast radius.
 
 ---
 
-## 8. Secrets Management Summary
+## 8. Secrets Management
 
 | Secret | Where stored | How injected | Rotation |
 |---|---|---|---|
-| PostgreSQL password | `/run/analyselaptop/secrets/pg_password` on hub | Docker Compose `secrets:` → `/run/secrets/` | `rotate-secrets.sh` + `docker compose restart postgres api` |
-| JWT signing key | `/run/analyselaptop/secrets/jwt_secret` | Docker Compose `secrets:` | `rotate-secrets.sh` + `docker compose restart api` |
-| PKI CA key | `/run/analyselaptop/secrets/pki/ca.key` (mode 0600) | Bind-mounted into ingest at `/run/secrets/pki/` | Generate new CA + re-enroll all collectors |
-| Collector leaf cert | `/var/lib/analyselaptop/pki/` on each collector | `--pki-dir` flag on collector binary | **Auto-renews when `days_remaining < 14`** (v2 `pki/renew.go`) |
+| PostgreSQL password | `/run/analyselaptop/secrets/pg_password` on hub | Docker Compose `secrets:` → `/run/secrets/pg_password` | `rotate-secrets.sh` + restart postgres, api, federation-agent |
+| JWT signing key | `/run/analyselaptop/secrets/jwt_secret` | Docker Compose `secrets:` | `rotate-secrets.sh` + restart api |
+| TLS cert + key | `/run/analyselaptop/secrets/tls.{crt,key}` | Bind-mounted into nginx (read-only) | Replace files + `docker compose restart nginx` |
+| PKI CA key | `/run/analyselaptop/secrets/pki/ca.key` (mode 0600) | Bind-mounted into ingest | Generate new CA + re-enroll all collectors |
+| Collector `.env` | `/var/lib/analyselaptop/.env` on each node (mode 0600) | `docker compose --env-file` | Update file + `docker compose up -d` |
+| Collector PKI leaf cert | `/var/lib/analyselaptop/pki/` on each node | Volume mount into container | Auto-renews when `days_remaining < 14` (collector `pki/renew.py`) |
+| Collector SSH deploy key | GitHub secret `COLLECTOR_SSH_KEY` | `deploy-collectors.yml` ssh-agent | Rotate in GitHub + update `authorized_keys` on nodes |
 | GitHub Runner token | GitHub repo secret `RUNNER_TOKEN` | `docker run -e` at runner start | Regenerate in GitHub settings |
 | GHCR push token | `GITHUB_TOKEN` (automatic) | GitHub Actions env | Auto-rotated per workflow run |
 
 **Rules:**
 - No secrets in `.env` files that touch Git. `.env.example` with dummy values is committed; real `.env` is gitignored.
-- No `environment:` blocks for secrets. All sensitive values via `secrets:` → `/run/secrets/` file reads.
-- Secret files: `chmod 600`, owned by root. Applications read the file at startup.
-- `gitleaks` scan runs on every PR (`ci.yml`).
+- No `environment:` blocks for sensitive values. All secrets via Docker Compose `secrets:` or collector-local files.
+- Secret files: `chmod 600`, owned by root (hub) or collector user (nodes).
+- `gitleaks` scan on every PR catches accidental commits.
 
 ---
 
-## 9. Observability of the IaC Stack Itself
+## 9. Observability of the Stack Itself
 
-| What to monitor | How | Metric source |
+| What to monitor | How | Metric / source |
 |---|---|---|
-| Docker service health | `docker compose ps` + `docker events` | Hub-local |
-| VictoriaMetrics self-metrics | `/metrics` endpoint scraped by VM itself | `vm_app_uptime_seconds`, etc. |
-| PostgreSQL | `pg_stat_activity` via Postgres exporter OR analyse service query | Hub service |
-| **Collector fleet liveness** | `collector_heartbeat_total` stale >5 min → vmalert CollectorSilent | **v2 collector native** |
-| **Collector host health** | `host_cpu_usage_pct`, `host_mem_available_bytes`, `host_disk_free_bytes` | **v2 collector native** (no node_exporter) |
-| **Collector systemd unit state** | `host_systemd_unit_active{unit="analyselaptop-collector.service"}` | **v2 collector native** (no node_exporter) |
-| **Collector health score** | `collector_health_score < 0.6` → vmalert CollectorHealthDegraded | **v2 collector native** |
-| Certificate expiry | `collector_cert_days_left < 14` → vmalert CollectorCertExpiringSoon | **v2 collector native** |
-| GitHub Actions run status | GitHub's native notifications + optional webhook to the alert system | GitHub |
-
-> **node_exporter is not in this table.** All metrics previously sourced from `node_exporter` on collector nodes are now emitted by the v2 collector binary itself. See [`COLLECTOR-FLEET-MONITORING.md`](COLLECTOR-FLEET-MONITORING.md) for the full metric mapping.
+| Hub Docker service health | `docker compose ps` + healthcheck status in VM | `analyselaptop_service_up{service}` |
+| VictoriaMetrics self-metrics | `/metrics` scraped by VM itself | `vm_app_uptime_seconds`, disk usage |
+| PostgreSQL | `pg_stat_activity` via analyse service | Hub-internal |
+| **Collector fleet liveness** | `collector_heartbeat_total` stale >5 min → vmalert `CollectorSilent` | **Python collector native** |
+| **Collector host health** | `host_cpu_usage_pct`, `host_mem_available_bytes`, `host_disk_free_bytes` | **Python collector native** |
+| **Collector container state** | `docker inspect` health status via deploy workflow | `healthy` / `unhealthy` |
+| **Collector health score** | `collector_health_score < 0.6` → vmalert `CollectorHealthDegraded` | **Python collector native** |
+| Certificate expiry | `collector_cert_days_left < 14` → vmalert `CollectorCertExpiringSoon` | **Python collector native** |
+| GitHub Actions run status | GitHub notifications + optional webhook to alert system | GitHub |
 
 ---
 
-## 10. Open IaC Questions
+## 10. Open Questions
 
 | # | Question | Decision point |
 |---|---|---|
-| Q1 | Terraform cloud provider: Hetzner vs DigitalOcean vs bare-metal NUC | Operator environment; Terraform abstracts this — change the provider block, not the modules |
-| Q2 | Ansible inventory source: static YAML vs dynamic (PG `collectors` table) | Dynamic inventory script reading PG `collectors` table would auto-register new nodes — worth building at >20 collectors |
-| Q3 | Collector update: GitHub Releases binary download vs Ansible `copy` from CI artifact | GitHub Releases preferred for auditability; artifact download requires GH_TOKEN on each collector |
-| Q4 | Air-gapped deployments: replace GHCR pull with local registry mirror | Straightforward: change `image:` to point at local registry; Terraform can provision a local registry container |
-| Q5 | v1 → v2 collector migration window | During migration (phases M1–M4), v1 nodes still need `node_exporter` for fleet monitoring. See `COLLECTOR-V2-REFACTOR.md` Section 12 for the migration plan. Remove `node_exporter` Ansible tasks after phase M5. |
+| Q1 | Collector node Docker install: `get.docker.com` vs distro package | Distro package preferred for long-term stability on Pi OS / Ubuntu; `get.docker.com` is faster for one-offs |
+| Q2 | Collector inventory source: static JSON vs dynamic (PG `collectors` table) | Dynamic inventory (query PG via API) would auto-register new nodes — worth implementing at >20 collectors |
+| Q3 | Air-gapped deployments | Replace GHCR pull with a local Docker registry mirror (`registry:2` container on hub); change `image:` to point at `hub-ip:5000/analyselaptop/collector` |
+| Q4 | TLS for Nginx | Self-signed cert in bootstrap is fine for internal/OT deployments; replace with Let's Encrypt (`certbot`) for public-facing hubs |
+| Q5 | v1 → v2 migration | v1 nodes run standalone Python or binary outside Docker; migrate by running `bootstrap-collector.sh` and enrolling the node in the new PKI. No node_exporter removal needed (v2 collector container bundles all host metrics). |
