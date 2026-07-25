@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Reconciler applier: IPv4 settings of a NetworkManager connection, via nmcli.
+#
+# Driven by scripts/reconciler.py. The dashboard writes the desired IPv4 config;
+# this script snapshots the connection's current IPv4 settings, applies the new
+# ones, and validates that the device comes back connected. If anything fails -
+# or the operator does not confirm a `confirm`-flagged change in time - the
+# daemon calls `rollback` and the previous settings (and your connection) return.
+#
+#   network apply    <desired.json> <snapshot_dir>
+#   network rollback <snapshot_dir>
+#   network report
+#
+# Desired payload:
+#   { "interface": "wlp2s0",
+#     "method": "auto" | "manual",
+#     "address": "192.168.50.32",   # manual only
+#     "prefix": 24,                 # manual only
+#     "gateway": "192.168.50.1",    # manual only (optional)
+#     "dns": ["192.168.50.1","1.1.1.1"] }   # optional
+set -euo pipefail
+
+cmd=${1:-}
+command -v nmcli >/dev/null || { echo "nmcli not found (NetworkManager required)" >&2; exit 3; }
+
+# --- helpers -----------------------------------------------------------------
+# The active connection profile name bound to a device.
+conn_for_iface() {
+  local iface=$1
+  nmcli -t -g GENERAL.CONNECTION device show "$iface" 2>/dev/null | head -n1
+}
+
+# Snapshot a connection's IPv4 settings into <dir>.
+snapshot_conn() {
+  local conn=$1 dir=$2
+  printf '%s\n' "$conn" > "$dir/conn.name"
+  nmcli -t -f ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns \
+    connection show "$conn" > "$dir/ipv4.kv" 2>/dev/null || true
+}
+
+# Read one "ipv4.key:value" line from a snapshot kv file.
+kv_get() { sed -n "s/^$2://p" "$1" | head -n1; }
+
+# Bring a connection back up and confirm the device is connected.
+reactivate_and_check() {
+  local conn=$1 iface=$2
+  nmcli connection up "$conn" >/dev/null 2>&1 || true
+  # Give NM a moment, then require the device to be in the connected state.
+  local i state
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    state=$(nmcli -t -g GENERAL.STATE device show "$iface" 2>/dev/null | head -n1 || true)
+    case "$state" in
+      *100*connected*|*"(connected)"*) return 0 ;;
+    esac
+    # nmcli GENERAL.STATE is like "100 (connected)"
+    [[ "$state" == 100* ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# --- report ------------------------------------------------------------------
+if [[ $cmd == report ]]; then
+  # Best-effort snapshot of every managed device's IPv4 for the dashboard.
+  out=$(nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null || true)
+  python3 - "$out" <<'PY' 2>/dev/null || echo '{}'
+import json, sys
+rows = []
+for line in (sys.argv[1] if len(sys.argv) > 1 else "").splitlines():
+    parts = line.split(":")
+    if len(parts) >= 4:
+        rows.append({"device": parts[0], "type": parts[1],
+                     "state": parts[2], "connection": parts[3]})
+print(json.dumps({"devices": rows}))
+PY
+  exit 0
+fi
+
+# --- apply -------------------------------------------------------------------
+if [[ $cmd == apply ]]; then
+  desired=${2:?desired.json required}; snap=${3:?snapshot_dir required}
+  [[ -f $desired ]] || { echo "no desired file $desired" >&2; exit 2; }
+
+  # Parse the desired payload with python3 (already a dependency here).
+  read -r iface method address prefix gateway dns < <(python3 - "$desired" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])).get("payload", {})
+iface = str(d.get("interface", "")).strip()
+method = str(d.get("method", "auto")).strip().lower()
+address = str(d.get("address", "")).strip()
+prefix = str(d.get("prefix", "")).strip()
+gateway = str(d.get("gateway", "")).strip()
+dns = ",".join(str(x).strip() for x in (d.get("dns") or []) if str(x).strip())
+print(iface or "-", method or "auto", address or "-", prefix or "-",
+      gateway or "-", dns or "-")
+PY
+)
+  [[ $iface != "-" ]] || { echo "interface is required" >&2; exit 2; }
+  [[ $method == auto || $method == manual ]] || { echo "method must be auto|manual" >&2; exit 2; }
+
+  conn=$(conn_for_iface "$iface")
+  [[ -n $conn ]] || { echo "no active NM connection on $iface" >&2; exit 2; }
+
+  # Snapshot BEFORE touching anything, so rollback can restore it.
+  snapshot_conn "$conn" "$snap"
+
+  if [[ $method == manual ]]; then
+    [[ $address != "-" && $prefix != "-" ]] || { echo "manual needs address and prefix" >&2; exit 2; }
+    nmcli connection modify "$conn" \
+      ipv4.method manual \
+      ipv4.addresses "$address/$prefix" >/dev/null
+    if [[ $gateway != "-" ]]; then
+      nmcli connection modify "$conn" ipv4.gateway "$gateway" >/dev/null
+    else
+      nmcli connection modify "$conn" ipv4.gateway "" >/dev/null
+    fi
+  else
+    nmcli connection modify "$conn" \
+      ipv4.method auto ipv4.addresses "" ipv4.gateway "" >/dev/null
+  fi
+
+  if [[ $dns != "-" ]]; then
+    nmcli connection modify "$conn" ipv4.ignore-auto-dns yes ipv4.dns "$dns" >/dev/null
+  else
+    nmcli connection modify "$conn" ipv4.ignore-auto-dns no ipv4.dns "" >/dev/null
+  fi
+
+  # Enact + validate. If the device does not come back connected, fail so the
+  # daemon rolls us back immediately (don't wait for the confirm timer).
+  if ! reactivate_and_check "$conn" "$iface"; then
+    echo "device $iface did not return to connected after apply" >&2
+    exit 1
+  fi
+  echo "applied $method on $conn ($iface)"
+  exit 0
+fi
+
+# --- rollback ----------------------------------------------------------------
+if [[ $cmd == rollback ]]; then
+  snap=${2:?snapshot_dir required}
+  [[ -f $snap/conn.name ]] || { echo "no snapshot to roll back to" >&2; exit 0; }
+  conn=$(cat "$snap/conn.name")
+  kv=$snap/ipv4.kv
+
+  method=$(kv_get "$kv" ipv4.method); method=${method:-auto}
+  addresses=$(kv_get "$kv" ipv4.addresses)
+  gateway=$(kv_get "$kv" ipv4.gateway)
+  dns=$(kv_get "$kv" ipv4.dns)
+
+  nmcli connection modify "$conn" ipv4.method "$method" >/dev/null 2>&1 || true
+  nmcli connection modify "$conn" ipv4.addresses "${addresses//;/,}" >/dev/null 2>&1 || true
+  nmcli connection modify "$conn" ipv4.gateway "${gateway}" >/dev/null 2>&1 || true
+  nmcli connection modify "$conn" ipv4.dns "${dns//;/,}" >/dev/null 2>&1 || true
+
+  # Find the device this connection binds to, so we can re-check it.
+  iface=$(nmcli -t -g connection.interface-name connection show "$conn" 2>/dev/null | head -n1)
+  [[ -n $iface ]] && reactivate_and_check "$conn" "$iface" || nmcli connection up "$conn" >/dev/null 2>&1 || true
+  echo "rolled back $conn to method=$method"
+  exit 0
+fi
+
+echo "usage: network {apply <desired.json> <snapshot_dir>|rollback <snapshot_dir>|report}" >&2
+exit 2

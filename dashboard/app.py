@@ -27,12 +27,14 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import services
     from dashboard import monitor_config
     from dashboard import ids_adapter
+    from dashboard import reconcile
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
     import services
     import monitor_config
     import ids_adapter
+    import reconcile
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # let us import the monitor/* helpers as a namespace pkg
@@ -880,6 +882,122 @@ def valid_ip(value: str) -> str:
         return str(ipaddress.ip_address(value.strip()))
     except ValueError:
         return ""
+
+
+# --- network settings (via the privileged reconciler) --------------------------
+# The IPv4 config of a NIC is a privileged, lock-yourself-out-able change, so the
+# web process never runs nmcli. It writes desired state through dashboard.reconcile
+# for the root reconciler (scripts/reconciler.py + scripts/reconcile.d/network) to
+# enact, ALWAYS with confirm=True so an unconfirmed change auto-rolls-back.
+NETWORK_RESOURCE = "network"
+
+
+def _network_ifaces() -> list[dict]:
+    """NICs the operator may reconfigure, with their current addresses so the UI
+    can pre-fill (loopback aside)."""
+    out = []
+    for i in interfaces():
+        if i["name"] == "lo":
+            continue
+        out.append({
+            "name": i["name"],
+            "up": str(i.get("state", "")).lower() == "up",
+            "wired": i["name"].startswith(("en", "eth")),
+            "addresses": i.get("addresses", ""),
+        })
+    return out
+
+
+def _validate_network(payload: dict, valid_names: set[str]) -> tuple[dict, list[str]]:
+    """Turn a request body into a clean nmcli payload. Rejects addresses that are
+    not real IPs and interfaces that are not on this host."""
+    errors: list[str] = []
+    iface = str(payload.get("interface", "")).strip()
+    if iface not in valid_names:
+        errors.append(f"unknown interface '{iface}'")
+    method = str(payload.get("method", "auto")).strip().lower()
+    if method not in {"auto", "manual"}:
+        errors.append("method must be 'auto' or 'manual'")
+        method = "auto"
+
+    clean: dict = {"interface": iface, "method": method}
+    if method == "manual":
+        addr = valid_ip(str(payload.get("address", "")))
+        if not addr:
+            errors.append("manual mode needs a valid IPv4/IPv6 address")
+        try:
+            prefix = int(payload.get("prefix", 24))
+            if not 1 <= prefix <= 128:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append("prefix must be 1..128")
+            prefix = 24
+        clean["address"] = addr
+        clean["prefix"] = prefix
+        gw = str(payload.get("gateway", "")).strip()
+        if gw:
+            gwn = valid_ip(gw)
+            if not gwn:
+                errors.append("gateway is not a valid IP")
+            else:
+                clean["gateway"] = gwn
+
+    dns = payload.get("dns", [])
+    if isinstance(dns, str):
+        dns = [x for x in re.split(r"[,\s]+", dns) if x]
+    clean_dns = []
+    for d in dns if isinstance(dns, list) else []:
+        dn = valid_ip(str(d))
+        if dn:
+            clean_dns.append(dn)
+        elif str(d).strip():
+            errors.append(f"DNS '{d}' is not a valid IP")
+    if clean_dns:
+        clean["dns"] = clean_dns
+    return clean, errors
+
+
+@app.get("/api/network")
+def get_network():
+    """Current desired network state + the reconciler's result + the NIC list.
+    `awaiting_confirm`/`seconds_left` drive the 'Keep this change' countdown."""
+    snap = reconcile.snapshot(NETWORK_RESOURCE)
+    snap["interfaces"] = _network_ifaces()
+    snap["desired_dir"] = str(reconcile.DESIRED_DIR)
+    return jsonify(snap)
+
+
+@app.post("/api/network")
+def post_network():
+    """Request an IPv4 change. Always armed with auto-rollback: if the operator
+    does not confirm before the grace deadline, the reconciler reverts it."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(error="expected a JSON object"), 400
+    clean, errors = _validate_network(payload, {i["name"] for i in _network_ifaces()})
+    if errors:
+        return jsonify(error="validation failed", details=errors), 400
+    try:
+        grace = int(payload.get("grace_seconds", reconcile.DEFAULT_GRACE))
+    except (TypeError, ValueError):
+        grace = reconcile.DEFAULT_GRACE
+    try:
+        reconcile.submit(NETWORK_RESOURCE, clean, confirm=True, grace_seconds=grace)
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"could not queue network change: {exc}"), 500
+    return jsonify(reconcile.snapshot(NETWORK_RESOURCE))
+
+
+@app.post("/api/network/confirm")
+def confirm_network():
+    """Keep the currently-applied change (cancel the pending auto-rollback)."""
+    try:
+        reconcile.confirm(NETWORK_RESOURCE)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except OSError as exc:
+        return jsonify(error=f"could not confirm: {exc}"), 500
+    return jsonify(reconcile.snapshot(NETWORK_RESOURCE))
 
 
 @app.get("/api/settings")

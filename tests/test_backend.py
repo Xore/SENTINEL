@@ -39,10 +39,17 @@ os.environ.update({
     "PROBE_MONITOR_CONFIG": str(_TMP / "monitor-config.json"),
     "PROBE_COLLECTOR_DIST": str(_DIST),
     "PROBE_AUTH_TOKEN_FILE": str(_TMP / "no-such-token"),  # -> auth disabled
+    "PROBE_RECONCILE_DESIRED_DIR": str(_TMP / "reconcile-desired"),
+    "PROBE_RECONCILE_STATE_DIR": str(_TMP / "reconcile-state"),
 })
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dashboard import app as appmod  # noqa: E402
+
+# reconcile caches its dirs at import; pin them to ours regardless of the order
+# test modules got imported in (test_reconciler uses a different temp tree).
+appmod.reconcile.DESIRED_DIR = Path(os.environ["PROBE_RECONCILE_DESIRED_DIR"])
+appmod.reconcile.STATE_DIR = Path(os.environ["PROBE_RECONCILE_STATE_DIR"])
 
 
 def sign(secret: str, version: str, os_arch: str, sha256hex: str) -> str:
@@ -196,6 +203,54 @@ class BackendTest(unittest.TestCase):
     def test_spectrum_empty(self):
         from monitor.wifi_survey import spectrum
         self.assertEqual(spectrum([])["bands"], [])
+
+    # --- network settings via the reconciler -----------------------------------
+    def _fake_nics(self):
+        # interfaces() reads /sys/class/net (empty off-Linux), so give the
+        # validator a real-looking NIC to accept.
+        appmod._network_ifaces = lambda: [
+            {"name": "wlp2s0", "up": True, "wired": False, "addresses": "192.168.50.32/24"},
+        ]
+
+    def test_network_default_state(self):
+        r = self.c.get("/api/network").get_json()
+        self.assertEqual(r["state"]["status"], "none")
+        self.assertFalse(r["awaiting_confirm"])
+
+    def test_network_rejects_unknown_iface(self):
+        self._fake_nics()
+        r = self.c.post("/api/network", json={"interface": "eth9", "method": "auto"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_network_manual_requires_valid_address(self):
+        self._fake_nics()
+        r = self.c.post("/api/network",
+                        json={"interface": "wlp2s0", "method": "manual",
+                              "address": "not-an-ip", "prefix": 24})
+        self.assertEqual(r.status_code, 400)
+
+    def test_network_submit_is_confirm_armed(self):
+        self._fake_nics()
+        r = self.c.post("/api/network",
+                        json={"interface": "wlp2s0", "method": "auto"})
+        self.assertEqual(r.status_code, 200)
+        # The written desired doc must always arm auto-rollback.
+        desired = appmod.reconcile.get_desired("network")
+        self.assertTrue(desired["confirm"])
+        self.assertEqual(desired["payload"]["method"], "auto")
+        self.assertGreaterEqual(desired["revision"], 1)
+
+    def test_network_confirm_sets_confirmed_revision(self):
+        self._fake_nics()
+        self.c.post("/api/network",
+                    json={"interface": "wlp2s0", "method": "manual",
+                          "address": "192.168.50.40", "prefix": 24,
+                          "gateway": "192.168.50.1", "dns": "1.1.1.1, 8.8.8.8"})
+        desired = appmod.reconcile.get_desired("network")
+        self.assertEqual(desired["payload"]["dns"], ["1.1.1.1", "8.8.8.8"])
+        r = self.c.post("/api/network/confirm").get_json()
+        self.assertEqual(appmod.reconcile.get_desired("network")["confirmed_revision"],
+                         desired["revision"])
 
     # --- map assembler smoke ---------------------------------------------------
     def test_map_returns_graph_with_self(self):

@@ -220,6 +220,26 @@
         <p class="hint">Enable an interface for capture / monitor / health jobs. Interfaces without an IP are eligible by default; enabling one that carries an IP (e.g. the management link) lets you capture on it too — you will be sniffing your own management traffic, so use it deliberately. USB adapters are detected automatically.</p>
         <div id="ifaceSettings" class="table-wrap"></div>
       </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">NETWORK · IPv4</p><h2>Interface addressing</h2></div><button onclick="loadNetwork()">Refresh</button></div>
+        <p class="hint"><strong>Safety net:</strong> every change is applied with an <strong>auto-rollback timer</strong>. The new settings go live immediately; if you don't press <em>Keep this change</em> before the countdown ends, the box reverts to its previous addressing on its own. That means you can safely re-address the very link you're connected over — if it locks you out, it comes back by itself. A root reconciler enacts the change; the dashboard never runs <code>nmcli</code>.</p>
+        <div class="form-row">
+          <label class="inline">Interface <select id="netIface" aria-label="Network interface"></select></label>
+          <label class="inline">Method
+            <select id="netMethod" onchange="netMethodToggle()"><option value="auto">automatic (DHCP)</option><option value="manual">manual (static)</option></select>
+          </label>
+        </div>
+        <div id="netManual" class="genform" style="display:none">
+          <div class="form-row"><input id="netAddress" placeholder="address (e.g. 192.168.50.32)" aria-label="IPv4 address"><input id="netPrefix" type="number" min="1" max="128" value="24" style="max-width:6rem" aria-label="prefix length"><input id="netGateway" placeholder="gateway (optional)" aria-label="gateway"></div>
+          <div class="form-row"><input id="netDns" placeholder="DNS servers, comma-separated (optional)" aria-label="DNS servers"></div>
+        </div>
+        <div class="form-row">
+          <label class="inline">Confirm within <input id="netGrace" type="number" min="10" max="3600" value="120" style="max-width:6rem"> s</label>
+          <button class="primary" onclick="applyNetwork()">Apply (with auto-rollback)</button>
+          <span id="netStatus" class="hint"></span>
+        </div>
+        <div id="netPending" class="hint"></div>
+        <div id="netLive" class="hint"></div>
+      </div>
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">CREDENTIALS</p><h2>SNMP</h2></div></div>
         <p class="hint">Stored on the probe only (owner-readable). Leave a secret field blank to keep the current value.</p>
         <div class="form-row"><label class="inline">Version <select id="snmpVer" onchange="snmpVerToggle()"><option value="2c">v2c</option><option value="3">v3</option></select></label></div>
