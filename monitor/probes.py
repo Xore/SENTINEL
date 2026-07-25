@@ -177,6 +177,10 @@ def run_probe(host: str, port: int, spec: ProbeSpec, timeout: float = 5.0) -> tu
         if spec.tls:
             tls_started = time.monotonic()
             context = ssl.create_default_context()
+            if hasattr(ssl, "TLSVersion"):
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
+            else:
+                context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
             sock = context.wrap_socket(sock, server_hostname=host)
