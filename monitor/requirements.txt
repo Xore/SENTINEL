@@ -2,4 +2,4 @@
 # Pin to minimum versions known to work; bump as needed.
 requests>=2.34.2
 pysnmp>=6.1.0
-scapy>=2.5.0
+scapy>=2.7.0
