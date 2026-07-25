@@ -33,5 +33,13 @@ else
 fi
 
 echo
+echo "== Shell (setup.sh) tests =="
+if [[ -f tests/test_setup_sh.sh ]]; then
+  bash tests/test_setup_sh.sh || rc=1
+else
+  echo "SKIP: tests/test_setup_sh.sh not found" >&2
+fi
+
+echo
 if [[ $rc -eq 0 ]]; then echo "ALL TESTS PASSED"; else echo "TESTS FAILED"; fi
 exit $rc

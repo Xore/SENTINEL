@@ -40,6 +40,13 @@ Packet retention, not the tools, usually determines storage: average traffic in 
 
 ## Install sequence
 
+> **In a hurry?** [`scripts/setup.sh`](scripts/setup.sh) is a unified, menu-driven
+> installer that runs the component scripts below in the right order. Preview a
+> node with `./scripts/setup.sh --standalone --dry-run`, then apply it with
+> `sudo ./scripts/setup.sh --standalone --apply`. Full guide:
+> [docs/00-setup.md](docs/00-setup.md). The numbered steps below remain the
+> reference for what each component does and the safety context around it.
+
 1. Read [docs/01-design-and-safety.md](docs/01-design-and-safety.md) and obtain written authorization and network scope.
 2. Install **Ubuntu Desktop 24.04 LTS** (GUI needed to join Wi-Fi via NetworkManager) with full-disk encryption. Do not use the Malcolm appliance ISO unless every internal disk may be erased; its installer can partition all non-removable storage without confirmation.
 3. Patch Ubuntu, create a non-root administrator, and enable Secure Boot if supported. The management NIC takes its address from DHCP (this build: `10.0.255.7`); a static reservation on the switch/router is fine. Do not configure an address, route, DNS, or gateway on the capture NIC.

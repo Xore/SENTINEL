@@ -1,0 +1,120 @@
+# Unified setup
+
+The front door for installing the Network Probe. One orchestrator,
+[`scripts/setup.sh`](../scripts/setup.sh), drives every component installer in the
+right order. It changes nothing itself — it previews a plan and then runs the real
+per-component scripts (each with its own `--apply`), so you can always see exactly
+what will happen first.
+
+> Target OS is **Ubuntu 24.04 LTS**. Most components install a systemd service under
+> a shared unprivileged `probe-dashboard` account with state in
+> `/var/lib/network-probe` and config in `/etc/network-probe`.
+
+## Node roles
+
+| Role | What it is | Components |
+|---|---|---|
+| **standalone** | A self-sufficient node: full dashboard + backend + local collection. Also the **aggregator** that remote collectors push to. | base tools, dashboard, outage monitor, reconciler, LLDP neighbours |
+| **full** | Standalone plus the passive traffic-analysis add-ons. | standalone + Suricata IDS, IDS adapter, ntopng |
+| **collector** | A slim push-only node: collection workers that push to a remote aggregator. No local dashboard. | collector push-agent |
+
+See [[../ROADMAP.md]] and the multi-node design in
+[07-network-map-and-monitoring-roadmap.md](07-network-map-and-monitoring-roadmap.md).
+
+## Quick start
+
+Preview a standalone node (safe, no root, nothing applied):
+
+```bash
+./scripts/setup.sh --standalone --dry-run
+```
+
+Apply it for real (components need root):
+
+```bash
+sudo ./scripts/setup.sh --standalone --apply
+```
+
+Pick components à la carte, or use the interactive menu:
+
+```bash
+sudo ./scripts/setup.sh --component dashboard --component ids --apply
+sudo ./scripts/setup.sh            # interactive menu
+```
+
+List everything available:
+
+```bash
+./scripts/setup.sh --list
+```
+
+### LAN exposure & login
+
+By default the dashboard binds to loopback with auth disabled (local desktop use).
+To expose it on the LAN and require a login, set `PROBE_EXPOSE=lan` for the
+dashboard install:
+
+```bash
+sudo PROBE_EXPOSE=lan ./scripts/setup.sh --component dashboard --apply
+```
+
+It binds the default-route interface's IPv4 address on port 8088 and turns on the
+username/password login (default **admin / admin** — change it under
+**Settings → Account** immediately; the salted hash lives in
+`/var/lib/network-probe/dashboard-auth.json`). HTTP only: use it on trusted
+management networks, never port-forward to the internet. See
+[[dashboard-auth-plan]] for the auth model.
+
+## Enrolling a collector
+
+A collector is a separate machine that pushes to a standalone aggregator.
+
+1. On the **aggregator**: open **Collectors → Enroll collector**. Copy the ingest
+   key shown **once**, and make sure *accept external collectors* is enabled.
+2. On the **collector machine**, run setup with the aggregator URL and that key:
+
+```bash
+sudo AGGREGATOR_URL=http://<aggregator-ip>:8088 INGEST_KEY=<key-from-enroll> \
+     ./scripts/setup.sh --collector --apply
+```
+
+The collector pings the aggregator every few cycles and pushes its interfaces,
+neighbours and the operator-configured checks. Its discovered devices then appear
+on the aggregator's **Network Map**, tagged to that collector — narrow the map to
+one collector with the toolbar's *all collectors / <id>* selector. Revoke or rotate
+a collector's key any time from **Collectors** (revoking drops its data from the
+map). See [[network-map]] and [[analyse-laptop-deploy]].
+
+## Components
+
+| id | Installer | Notes |
+|---|---|---|
+| `lightweight` | [install-lightweight.sh](../scripts/install-lightweight.sh) | base packages & CLI tools (see [02-install-lightweight.md](02-install-lightweight.md)) |
+| `dashboard` | [install-dashboard-service.sh](../scripts/install-dashboard-service.sh) | the web dashboard + API systemd service |
+| `monitor` | [install-outage-monitor.sh](../scripts/install-outage-monitor.sh) | continuous reachability monitor (shares the dashboard user/venv) |
+| `reconciler` | [install-reconciler.sh](../scripts/install-reconciler.sh) | privileged reconciler for safe, auto-rolling-back network changes |
+| `neighbours` | [install-neighbors.sh](../scripts/install-neighbors.sh) | lldpd for LLDP/CDP neighbour discovery (receive-only) |
+| `ids` | [install-ids.sh](../scripts/install-ids.sh) | Suricata passive IDS (AF_PACKET, never inline) |
+| `ids-adapter` | [install-ids-adapter.sh](../scripts/install-ids-adapter.sh) | auto-follows a usable capture NIC for the IDS |
+| `ntopng` | [install-ntopng.sh](../scripts/install-ntopng.sh) | passive flow analyser with its own web UI |
+| `desktop` | [install-desktop-launcher.sh](../scripts/install-desktop-launcher.sh) | double-click launchers — **run as your normal desktop user** |
+| `collector` | [install-collector.sh](../scripts/install-collector.sh) | slim push-agent (needs `AGGREGATOR_URL` + `INGEST_KEY`) |
+
+`setup.sh` runs selected components in the order above (dependencies first — e.g.
+the dashboard before the monitor). Every underlying installer is idempotent and
+safe to re-run. When `setup.sh` runs the `desktop` launchers under `sudo`, it
+installs them for `$SUDO_USER`, not root.
+
+## Verifying
+
+After applying, sanity-check the box and the running services:
+
+```bash
+./scripts/preflight.sh        # environment/tooling checks
+./scripts/verify-probe.sh     # service + endpoint checks
+./scripts/run-tests.sh        # Go + Python + setup.sh test suite (for developers)
+```
+
+Operational guidance (captures, Wi-Fi, day-to-day) lives in
+[03-capture-and-wifi.md](03-capture-and-wifi.md) and
+[04-operations.md](04-operations.md).
