@@ -65,6 +65,25 @@ username/password login (default **admin / admin** — change it under
 management networks, never port-forward to the internet. See
 [[dashboard-auth-plan]] for the auth model.
 
+### Split frontend / backend (optional)
+
+By default one process serves both the API and the UI on port 8088. Set
+`PROBE_SPLIT=1` for the dashboard install to run them as two systemd units: the
+**backend** (API + all collection) on loopback `127.0.0.1:8090`, and a thin
+**frontend proxy** (`dashboard.frontend`) on the public bind `:8088` that serves
+the static shell and reverse-proxies `/api` to the backend.
+
+```bash
+sudo PROBE_EXPOSE=lan PROBE_SPLIT=1 ./scripts/setup.sh --component dashboard --apply
+```
+
+Auth is unchanged — the backend session login is the single source of truth in
+both modes; the proxy adds no auth of its own, it just forwards the `np_session`
+cookie. If the backend restarts, the shell keeps rendering and API calls return
+`502 {"backend":false}` so the UI can show an offline banner instead of going
+blank. Re-running the installer without `PROBE_SPLIT=1` collapses back to the
+single-process unit (and removes the backend unit).
+
 ## Enrolling a collector
 
 A collector is a separate machine that pushes to a standalone aggregator.

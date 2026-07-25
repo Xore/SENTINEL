@@ -49,9 +49,116 @@ python3 -m venv "$venv_dir"
 "$venv_dir/bin/pip" install -r "$repo_dir/dashboard/requirements.txt"
 find "$repo_dir/scripts" -maxdepth 1 -type f -name '*.sh' -exec chmod 0755 {} +
 
-unit_tmp=$(mktemp)
-trap 'rm -f -- "$unit_tmp"' EXIT
-cat > "$unit_tmp" <<EOF
+# Deployment topology: single-process by default (one systemd unit serving both
+# the API and the UI on port 8088). PROBE_SPLIT=1 runs the frontend/backend split
+# (#35): a backend unit on loopback:8090 (the API + all collection, carrying the
+# auth env) and a thin frontend proxy on the public bind:8088 (dashboard.frontend)
+# that serves the static shell locally and reverse-proxies /api to the backend.
+# Auth is delegated to the backend session login in BOTH modes — the frontend adds
+# no auth layer, it just forwards the np_session cookie.
+split_mode=0
+[[ ${PROBE_SPLIT:-} == 1 ]] && split_mode=1
+backend_port=8090
+
+# The backend [Service] env is identical in both modes; only the bind differs.
+backend_env() {
+  local bind=$1
+  cat <<EOF
+Environment=PROBE_BIND=$bind
+Environment=PROBE_PORT=$backend_port
+Environment=PROBE_AUTH_FILE=$auth_file
+Environment=PROBE_AUTH_DISABLED=$auth_disabled
+Environment=PROBE_CAPTURE_DIR=$state_dir/captures
+Environment=PROBE_SNAPSHOT_DIR=$state_dir/snapshots
+Environment=PROBE_TARGET_FILE=$config_dir/targets.csv
+Environment=PROBE_SETTINGS_FILE=$state_dir/settings.json
+EOF
+}
+
+# Shared hardening block (same for every unit we write).
+hardening() {
+  cat <<EOF
+# NoNewPrivileges must stay off: capture jobs spawn dumpcap, which gains
+# CAP_NET_RAW/CAP_NET_ADMIN through file capabilities (wireshark group).
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=$repo_dir $config_dir
+ReadWritePaths=$state_dir
+EOF
+}
+
+units_dir=/etc/systemd/system
+tmp_files=()
+cleanup() { [[ ${#tmp_files[@]} -gt 0 ]] && rm -f -- "${tmp_files[@]}"; }
+trap cleanup EXIT
+
+if [[ $split_mode -eq 1 ]]; then
+  # --- Backend: API + collection on loopback:8090 (never exposed directly) ---
+  be_tmp=$(mktemp); tmp_files+=("$be_tmp")
+  cat > "$be_tmp" <<EOF
+[Unit]
+Description=Fieldline Network Probe Backend (API)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=$service_user
+Group=$service_user
+SupplementaryGroups=wireshark
+WorkingDirectory=$repo_dir
+$(backend_env 127.0.0.1)
+ExecStart=$venv_dir/bin/waitress-serve --listen=127.0.0.1:$backend_port dashboard.app:app
+Restart=on-failure
+RestartSec=3
+$(hardening)
+[Install]
+WantedBy=multi-user.target
+EOF
+  install -o root -g root -m 0644 "$be_tmp" "$units_dir/network-probe-backend.service"
+
+  # --- Frontend: static shell + reverse proxy on the public bind:8088 ---
+  fe_tmp=$(mktemp); tmp_files+=("$fe_tmp")
+  cat > "$fe_tmp" <<EOF
+[Unit]
+Description=Fieldline Network Probe Dashboard (frontend proxy)
+After=network-online.target network-probe-backend.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=$service_user
+Group=$service_user
+WorkingDirectory=$repo_dir
+Environment=PROBE_BIND=$bind_address
+Environment=PROBE_FRONTEND_PORT=8088
+Environment=PROBE_BACKEND_URL=http://127.0.0.1:$backend_port
+ExecStart=$venv_dir/bin/waitress-serve --listen=$bind_address:8088 dashboard.frontend:app
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=$repo_dir
+ReadWritePaths=$state_dir
+[Install]
+WantedBy=multi-user.target
+EOF
+  install -o root -g root -m 0644 "$fe_tmp" "$units_dir/network-probe-dashboard.service"
+
+  systemctl daemon-reload
+  systemctl enable network-probe-backend.service network-probe-dashboard.service
+  systemctl restart network-probe-backend.service
+  systemctl restart network-probe-dashboard.service
+  sleep 2
+  systemctl --no-pager --full status network-probe-backend.service || true
+  systemctl --no-pager --full status network-probe-dashboard.service || true
+  echo "Split mode: backend on 127.0.0.1:$backend_port, frontend proxy on http://$bind_address:8088"
+else
+  # --- Single process: API + UI in one unit on port 8088 ---
+  unit_tmp=$(mktemp); tmp_files+=("$unit_tmp")
+  cat > "$unit_tmp" <<EOF
 [Unit]
 Description=Fieldline Network Probe Dashboard
 After=network-online.target
@@ -73,24 +180,24 @@ Environment=PROBE_SETTINGS_FILE=$state_dir/settings.json
 ExecStart=$venv_dir/bin/waitress-serve --listen=$bind_address:8088 dashboard.app:app
 Restart=on-failure
 RestartSec=3
-# NoNewPrivileges must stay off: capture jobs spawn dumpcap, which gains
-# CAP_NET_RAW/CAP_NET_ADMIN through file capabilities (wireshark group).
-NoNewPrivileges=false
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadOnlyPaths=$repo_dir $config_dir
-ReadWritePaths=$state_dir
+$(hardening)
 [Install]
 WantedBy=multi-user.target
 EOF
-install -o root -g root -m 0644 "$unit_tmp" /etc/systemd/system/network-probe-dashboard.service
-systemctl daemon-reload
-systemctl enable network-probe-dashboard.service
-systemctl restart network-probe-dashboard.service
-sleep 2
-systemctl --no-pager --full status network-probe-dashboard.service || true
-echo "Dashboard installed at http://$bind_address:8088"
+  install -o root -g root -m 0644 "$unit_tmp" "$units_dir/network-probe-dashboard.service"
+  # Split mode may have been installed previously; make single-mode authoritative.
+  if systemctl list-unit-files network-probe-backend.service >/dev/null 2>&1 \
+     && [[ -e $units_dir/network-probe-backend.service ]]; then
+    systemctl disable --now network-probe-backend.service 2>/dev/null || true
+    rm -f "$units_dir/network-probe-backend.service"
+  fi
+  systemctl daemon-reload
+  systemctl enable network-probe-dashboard.service
+  systemctl restart network-probe-dashboard.service
+  sleep 2
+  systemctl --no-pager --full status network-probe-dashboard.service || true
+  echo "Dashboard installed at http://$bind_address:8088"
+fi
 if [[ $auth_disabled == 0 ]]; then
   echo "LAN exposure is active: sign in with the default credentials admin / admin,"
   echo "then change the password under Settings -> Account. Credentials hash lives in $auth_file."

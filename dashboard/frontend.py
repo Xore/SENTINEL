@@ -7,6 +7,13 @@ keeps serving the shell even when the backend is down or restarting — API call
 then return 502 and the UI shows a "backend offline" banner instead of the whole
 dashboard being unreachable.
 
+Auth is DELEGATED to the backend: it is the single source of truth for the
+username/password session login (see app.py require_session). The proxy adds no
+auth layer of its own — it forwards the request `Cookie` header inbound and the
+backend's `Set-Cookie` outbound, so the np_session cookie flows through
+transparently. The static shell is always served unauthenticated (like any SPA)
+so the login modal can render; every /api call is governed by the backend.
+
 Run under waitress:  waitress-serve --listen=<addr>:8088 dashboard.frontend:app
 The backend runs on PROBE_BACKEND_URL (default http://127.0.0.1:8090).
 """
@@ -22,36 +29,16 @@ from flask import Flask, Response, render_template, request, send_from_directory
 ROOT = Path(__file__).resolve().parent
 BACKEND_URL = os.environ.get("PROBE_BACKEND_URL", "http://127.0.0.1:8090").rstrip("/")
 PROXY_TIMEOUT = float(os.environ.get("PROBE_PROXY_TIMEOUT", "60"))
-AUTH_TOKEN_FILE = Path(os.environ.get("PROBE_AUTH_TOKEN_FILE", "/etc/network-probe/dashboard-token"))
 
-# Hop-by-hop headers must not be forwarded (RFC 7230 §6.1).
+# Hop-by-hop headers must not be forwarded (RFC 7230 §6.1). Note: `set-cookie`
+# and `cookie` are deliberately NOT here — they must pass through both ways so
+# the backend's session login governs auth across the proxy.
 HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "content-length", "host",
 }
 
 app = Flask(__name__, static_folder=str(ROOT / "static"), template_folder=str(ROOT / "templates"))
-
-
-def auth_token() -> str:
-    """Shared token with the backend. Non-empty = HTTP Basic auth required."""
-    try:
-        return AUTH_TOKEN_FILE.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-
-
-@app.before_request
-def require_token():
-    token = auth_token()
-    if not token or request.path == "/healthz":
-        return None
-    supplied = request.authorization
-    if supplied and supplied.password == token:
-        return None
-    return app.response_class(
-        "Authentication required.\n", 401, {"WWW-Authenticate": 'Basic realm="network-probe"'}
-    )
 
 
 # --- Static SPA, served locally so it survives the backend being down ---
