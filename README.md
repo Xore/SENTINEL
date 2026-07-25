@@ -218,6 +218,36 @@ Two inventory features answer "what is the probe connected to?":
 Both surface a management IP that, like every IP in discovery and the alert
 feed, is click-to-trace (`tracepath`) from the dashboard.
 
+## Collector (Go, cross-platform)
+
+The `collector/` directory contains a lightweight **Go-based active-check agent** designed to run on any host (Linux, Windows, macOS) and report results to the probe's dashboard API. It complements the passive `monitor/` stack by providing structured, scheduled active telemetry from remote endpoints or from the probe itself in standalone mode.
+
+Current checks (`collector/checks.go`):
+
+- **ICMP ping** — binary reachability and RTT via raw sockets (Linux: `ping_linux.go`, Windows: `ping_windows.go`; privilege re-exec handled by `reexec_unix.go` / `reexec_windows.go`)
+- **DNS resolution** — query time per resolver
+- **HTTP/HTTPS** — connect, TLS handshake, and response timing with status-code validation
+- **TCP connect** — port reachability with configurable timeout
+- **NTP** — chrony/NTP offset check
+- **Port scan (allow-listed)** — bounded port health checks
+
+The collector is scheduled on a fixed 30 s tick (`collector/main.go`). Results are written to the dashboard API or local SQLite store. A test suite covering all check types lives in `collector/collector_test.go`. Pre-built binaries land in `collector/dist/` via the CI release workflow.
+
+> **Roadmap note:** the collector is the target for feature-parity with the Python `monitor/` stack (RTT distributions, Wi-Fi link quality, interface error counters, route/hop tracing, adaptive MDP scheduling, SNMP GET, and Prometheus export). See [ROADMAP.md](ROADMAP.md) for the prioritised backlog.
+
+To build from source:
+
+```bash
+cd collector
+go build -o collector-linux-amd64 ./...
+```
+
+To run in standalone mode (no dashboard required):
+
+```bash
+./collector-linux-amd64 --standalone --config config/collector.example.yaml
+```
+
 ## What this detects
 
 - Suricata signature alerts (installed via `scripts/install-ids.sh`, surfaced in the Security tab)
@@ -259,6 +289,11 @@ It cannot see traffic that does not cross the monitored link, encrypted applicat
 - `scripts/wifi-monitor-capture.sh` — operator sudo tool: monitor-mode 802.11 mgmt-frame capture and summary
 - `scripts/install-outage-monitor.sh` — systemd service for the outage monitor
 - `config/monitor-{targets,services,ports}.example.csv`, `config/traffic-gen-allow.example.csv` — seed configs for the monitor and generator
+- `collector/main.go` — Go active-check agent: ping, DNS, HTTP/S, TCP, NTP, port checks; scheduled 30 s tick; outputs to dashboard API or local SQLite
+- `collector/checks.go` — check implementations (ICMP, DNS, HTTP, TCP, NTP, port)
+- `collector/collector_test.go` — unit and integration tests for all check types
+- `collector/dist/` — pre-built binaries (linux/amd64, windows/amd64) from CI
+- `tests/` — Python integration and regression tests for the monitor and dashboard stack (pytest ≥ 8.4)
 
 For a standalone evidence capture, run:
 
@@ -275,4 +310,4 @@ Passive capture is the default. Do not run generic vulnerability scanners, unaut
 
 ## Sources
 
-Research was refreshed 2026-07-22. Primary references are collected in [docs/05-research-and-decisions.md](docs/05-research-and-decisions.md).
+Research was refreshed 2026-07-25. Primary references are collected in [docs/05-research-and-decisions.md](docs/05-research-and-decisions.md).
