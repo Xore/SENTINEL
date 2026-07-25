@@ -35,6 +35,7 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import config_validation
     from dashboard import dangerous
     from dashboard import trends
+    from dashboard import alerts
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
@@ -48,6 +49,7 @@ except ImportError:  # run from inside the dashboard directory
     import config_validation
     import dangerous
     import trends
+    import alerts
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # let us import the monitor/* helpers as a namespace pkg
@@ -2369,6 +2371,137 @@ def monitor_dns():
     return jsonify(result)
 
 
+# --- Sustained-state alerting (task #53) -------------------------------------
+# Watches the task #50 trend verdicts + open outage events and notifies once per
+# transition. The evaluator is pure (dashboard/alerts.py); everything below
+# gathers signals from the read-only monitor DB and dispatches to the operator's
+# configured webhook/email channels.
+_alert_lock = threading.Lock()
+
+
+def _gather_alert_signals(alerting_cfg: dict) -> list[dict]:
+    """Build the current signal list from the monitor DB. Only signals the
+    operator enabled are included; a missing DB yields no signals (never an
+    alert). Read-only: never launches a probe."""
+    want = alerting_cfg.get("signals") or {}
+    window = max(5, min(int(alerting_cfg.get("window_minutes", 60)), 14 * 1440))
+    since = time.time() - window * 60
+    bucket = max(60.0, window * 60 / 600)
+    db = monitor_db()
+    if db is None:
+        return []
+    signals: list[dict] = []
+    try:
+        if want.get("tcp_retransmit", True):
+            rows = db.execute(
+                "SELECT ts, in_segs, out_segs, retrans_segs, out_rsts, attempt_fails, "
+                "estab_resets, tcp_syn_retrans, tcp_lost_retransmit "
+                "FROM tcp_samples WHERE ts >= ? ORDER BY ts", (since,),
+            ).fetchall()
+            v = trends.tcp_trend([dict(r) for r in rows], bucket_s=bucket)["verdict"]
+            signals.append({"id": "tcp_retransmit", "title": "TCP retransmission",
+                            "state": v["state"],
+                            "value": f"{(v.get('latest') or 0) * 100:.2f}%",
+                            "summary": "retransmitted/sent segment ratio"})
+        if want.get("dns_failure", True):
+            rows = db.execute(
+                "SELECT ts, ok FROM service_samples WHERE kind = 'dns' AND ts >= ? ORDER BY ts",
+                (since,),
+            ).fetchall()
+            v = trends.dns_trend([dict(r) for r in rows], bucket_s=bucket)["verdict"]
+            signals.append({"id": "dns_failure", "title": "DNS failures",
+                            "state": v["state"],
+                            "value": f"{v.get('latest') or 0:.1f}%",
+                            "summary": "DNS probe failure rate"})
+        if want.get("outage", True):
+            row = db.execute(
+                "SELECT id, started, failed_targets FROM events "
+                "WHERE ended IS NULL ORDER BY started DESC LIMIT 1"
+            ).fetchone()
+            if row is not None:
+                signals.append({"id": "outage", "title": "Outage event",
+                                "state": "degraded", "value": "open",
+                                "summary": f"targets down: {row['failed_targets'] or '?'}"})
+            else:
+                signals.append({"id": "outage", "title": "Outage event",
+                                "state": "stable", "value": "clear",
+                                "summary": "no open outage"})
+    finally:
+        db.close()
+    return signals
+
+
+def _alert_evaluate_once() -> dict:
+    """One evaluation cycle: gather signals, cross them against persisted edge
+    state, dispatch any transitions, persist. Serialized so the poller and a
+    manual trigger never race. Returns a small summary."""
+    cfg = settings_store.load().get("alerting", {})
+    if not cfg.get("enabled"):
+        return {"enabled": False, "events": 0}
+    with _alert_lock:
+        signals = _gather_alert_signals(cfg)
+        state = alerts.load_state()
+        events, new_signals = alerts.evaluate(
+            signals, state.get("signals", {}), min_state=cfg.get("min_state", "rising"))
+        for event in events:
+            event["delivery"] = alerts.dispatch(event, cfg)
+            state.setdefault("history", []).append(event)
+        state["signals"] = new_signals
+        state["last_run"] = time.time()
+        alerts.save_state(state)
+    return {"enabled": True, "signals": len(signals), "events": len(events)}
+
+
+def _alert_poller() -> None:
+    while True:
+        cfg = settings_store.load().get("alerting", {})
+        interval = max(10, int(cfg.get("poll_seconds", 60)))
+        if cfg.get("enabled"):
+            try:
+                _alert_evaluate_once()
+            except Exception:  # an eval failure must never kill the loop
+                pass
+        time.sleep(interval)
+
+
+@app.get("/api/alerts")
+def alerts_status():
+    """Current signal states, recent alert history and the (redacted) config."""
+    cfg = settings_store.redacted().get("alerting", {})
+    state = alerts.load_state()
+    history = list(reversed(state.get("history", [])))[:50]
+    # Live signal snapshot (does not mutate edge state) when enabled.
+    live: list[dict] = []
+    if settings_store.load().get("alerting", {}).get("enabled"):
+        try:
+            live = _gather_alert_signals(settings_store.load().get("alerting", {}))
+        except Exception:
+            live = []
+    return jsonify({"config": cfg, "signals": live,
+                    "persisted": state.get("signals", {}),
+                    "history": history, "last_run": state.get("last_run")})
+
+
+@app.post("/api/alerts/test")
+def alerts_test():
+    """Send a synthetic 'firing' notification through the enabled channels so the
+    operator can verify webhook/email wiring. Does not touch edge state."""
+    cfg = settings_store.load().get("alerting", {})
+    if not (cfg.get("webhook", {}).get("enabled") or cfg.get("email", {}).get("enabled")):
+        return jsonify(error="enable a webhook or email channel first"), 400
+    event = {"id": "test", "title": "Test alert", "kind": "firing",
+             "state": "degraded", "value": "test",
+             "summary": "manual test from the dashboard", "ts": time.time()}
+    return jsonify({"delivery": alerts.dispatch(event, cfg)})
+
+
+@app.post("/api/alerts/evaluate")
+def alerts_evaluate_now():
+    """Run one evaluation cycle immediately (for operators who don't want to wait
+    for the poll interval)."""
+    return jsonify(_alert_evaluate_once())
+
+
 @app.get("/api/monitor/routes")
 def monitor_routes():
     db = monitor_db()
@@ -3388,6 +3521,7 @@ def _start_background_poller() -> None:
     # Supervised: if the outer loop ever throws (config load, parsing, …) it is
     # logged and respawned with backoff rather than dying for the process life.
     supervise("lldp-poller", _background_poller, restart=True)
+    supervise("alert-poller", _alert_poller, restart=True)
 
 
 # Start the continuous-inventory poller when served under waitress (module

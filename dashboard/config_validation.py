@@ -106,12 +106,70 @@ def _validate_dangerous_actions(da: dict, errors: list[str]) -> None:
                         f"dangerous_actions.acknowledged.{key} must be true or false")
 
 
+ALERT_MIN_STATES = {"spike", "rising", "degraded"}
+
+
+def _validate_alerting(alerting: dict, errors: list[str]) -> None:
+    if not isinstance(alerting, dict):
+        errors.append("alerting: expected an object")
+        return
+    if "enabled" in alerting and not isinstance(alerting["enabled"], bool):
+        errors.append("alerting.enabled must be true or false")
+    if alerting.get("min_state") and alerting["min_state"] not in ALERT_MIN_STATES:
+        errors.append(f"alerting.min_state must be one of {sorted(ALERT_MIN_STATES)}")
+    for field, lo, hi in (("poll_seconds", 10, 3600), ("window_minutes", 5, 1440)):
+        if field in alerting:
+            val = alerting[field]
+            if not _is_number(val) or val < lo or val > hi:
+                errors.append(f"alerting.{field} must be a number between {lo} and {hi}")
+    signals = alerting.get("signals")
+    if signals is not None:
+        if not isinstance(signals, dict):
+            errors.append("alerting.signals must be an object")
+        else:
+            for key, val in signals.items():
+                if not isinstance(val, bool):
+                    errors.append(f"alerting.signals.{key} must be true or false")
+    webhook = alerting.get("webhook")
+    if webhook is not None:
+        if not isinstance(webhook, dict):
+            errors.append("alerting.webhook must be an object")
+        else:
+            if "enabled" in webhook and not isinstance(webhook["enabled"], bool):
+                errors.append("alerting.webhook.enabled must be true or false")
+            url = webhook.get("url")
+            if url:
+                if not isinstance(url, str):
+                    errors.append("alerting.webhook.url must be a string")
+                elif not (url.startswith("http://") or url.startswith("https://")):
+                    errors.append("alerting.webhook.url must start with http:// or https://")
+                elif len(url) > 2048:
+                    errors.append("alerting.webhook.url is too long (max 2048 chars)")
+    email = alerting.get("email")
+    if email is not None:
+        if not isinstance(email, dict):
+            errors.append("alerting.email must be an object")
+        else:
+            if "enabled" in email and not isinstance(email["enabled"], bool):
+                errors.append("alerting.email.enabled must be true or false")
+            if "use_tls" in email and not isinstance(email["use_tls"], bool):
+                errors.append("alerting.email.use_tls must be true or false")
+            if "smtp_port" in email:
+                port = email["smtp_port"]
+                if not _is_number(port) or port < 1 or port > 65535:
+                    errors.append("alerting.email.smtp_port must be a port between 1 and 65535")
+            for field in ("smtp_host", "from_addr", "to_addrs", "username"):
+                if field in email and not isinstance(email[field], str):
+                    errors.append(f"alerting.email.{field} must be a string")
+
+
 _VALIDATORS = {
     "snmp": _validate_snmp,
     "metrics": _validate_metrics,
     "interface_overrides": _validate_interface_overrides,
     "approved_scope": _validate_approved_scope,
     "dangerous_actions": _validate_dangerous_actions,
+    "alerting": _validate_alerting,
 }
 
 

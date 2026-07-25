@@ -70,6 +70,37 @@ DEFAULTS: dict = {
         "enabled": False,
         "token": "",   # secret; optional bearer token gating /metrics
     },
+    # Sustained-state alerting (task #53, roadmap P4). Off by default. A
+    # background evaluator watches the trend verdicts from task #50 (TCP
+    # retransmit, DNS failure) and open outage events, and notifies once per
+    # transition - when a signal crosses UP into the alerting band (>= min_state)
+    # and again when it recovers. Deliberately edge-triggered on the
+    # sustained-vs-spike classification, so a single spike never pages anyone.
+    "alerting": {
+        "enabled": False,
+        "min_state": "rising",       # spike | rising | degraded - alert at/above this
+        "poll_seconds": 60,          # how often the evaluator runs
+        "window_minutes": 60,        # trend look-back handed to the analysers
+        "signals": {                 # which signals to watch
+            "tcp_retransmit": True,
+            "dns_failure": True,
+            "outage": True,
+        },
+        "webhook": {
+            "enabled": False,
+            "url": "",               # POST target for a JSON alert payload
+        },
+        "email": {
+            "enabled": False,
+            "smtp_host": "",
+            "smtp_port": 587,
+            "use_tls": True,
+            "username": "",
+            "password": "",          # secret; SMTP auth password (replayed, not hashed)
+            "from_addr": "",
+            "to_addrs": "",          # comma-separated recipients
+        },
+    },
     # Roadmap P5 - explicitly excluded-by-default capabilities (task #55). This
     # is a safety governance gate, NOT an attack toolkit: the master switch and
     # the per-action flags below are all off, and even when turned on the probe
@@ -86,7 +117,8 @@ DEFAULTS: dict = {
 
 # Dotted paths whose values are secrets: never returned to the browser in the
 # clear (replaced with a boolean "<field>_set").
-SECRET_PATHS = ("snmp.community", "snmp.v3.auth_key", "snmp.v3.priv_key", "metrics.token")
+SECRET_PATHS = ("snmp.community", "snmp.v3.auth_key", "snmp.v3.priv_key",
+                "metrics.token", "alerting.email.password")
 
 
 def _merge(base: dict, over: dict) -> dict:

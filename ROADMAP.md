@@ -863,11 +863,18 @@ Probe interval by state:
 
 Operator-facing reporting and notification surfaces land here, on the dashboard.
 
-- [ ] **#53 — Webhook/email alerting on sustained state changes.** The concrete
-  implementation of the "Alert routing" bullet above: dashboard-configurable
-  webhook and SMTP targets, fired only on a *sustained* MDP state change
-  (STABLE→SUSPECT→DEGRADED/DOWN held past a debounce window), never on a single
-  cycle. Confidence-gated as above; deliveries recorded in the audit trail.
+- [x] **#53 — Webhook/email alerting on sustained state changes.** *(v1 shipped.)*
+  The concrete implementation of the "Alert routing" bullet above: dashboard-
+  configurable webhook and SMTP targets, fired only on a *sustained* trend state
+  change (edge-triggered on the #50 sustained-vs-spike classification — rising/
+  degraded held past the sustain window, never on a single spike). Fires once on
+  the not-alerting→alerting edge and once on recovery, using persisted per-signal
+  state so a steady degraded doesn't re-page and a restart doesn't replay.
+  `dashboard/alerts.py` = pure evaluator + formatters + stdlib urllib/smtplib
+  delivery; poller via `supervise("alert-poller")`; `GET /api/alerts`,
+  `POST /api/alerts/{test,evaluate}`; Settings → Alerting panel; SMTP password is
+  a replay secret (cleartext 0600, redacted to `password_set`). 34 tests in
+  `tests/test_alerts.py`.
 - [ ] **#48 — Session/acceptance report (JSON/CSV/HTML) with hashes.** A
   one-click export summarising a monitoring session: targets, uptime, anomaly
   events with RCA verdicts, baseline deviations, and config in effect. Emit
@@ -969,7 +976,7 @@ its phase's *"Folded-in tasks from the prior roadmap"* subsection.
 | **#54** SNMPv3 read + STP observation | Phase 1 | Collector-side data acquisition; STP change becomes a stream field |
 | **#50** TCP retransmission/reset + DNS failure trends | Phase 3 | ✅ v1 shipped (`33c798b`): /proc TCP counters + DNS trends, EWMA sustained-vs-spike classifier, `/api/monitor/{tcp,dns}`; eBPF+shared-detector wiring still to layer on |
 | **#51** Baselines by segment / hour / production state | Phase 3 | Generalises the 168-bucket adaptive control limits |
-| **#53** Webhook/email alerting on sustained state changes | Phase 6 | Concrete build of the Phase 6 alert-routing bullet |
+| **#53** Webhook/email alerting on sustained state changes | Phase 6 | ✅ v1 shipped: edge-triggered on #50 classifier, webhook+SMTP delivery, Settings panel, `/api/alerts*`, 34 tests |
 | **#48** Session/acceptance report (JSON/CSV/HTML) + hashes | Phase 6 | Operator-facing reporting/export surface |
 | **#47** Freeze-evidence action + disk reserve/capture policy | Phase 6 (trigger) + Phase 8 (policy) | Dashboard action snapshots JSON telemetry; disk-reserve is config/hardening. Full PCAP stays out of scope. |
 

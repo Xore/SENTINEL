@@ -40,6 +40,7 @@ os.environ.update({
     "PROBE_AUTH_FILE": str(AUTH_FILE),
     "PROBE_RECONCILE_DESIRED_DIR": str(TMP / "reconcile-desired"),
     "PROBE_RECONCILE_STATE_DIR": str(TMP / "reconcile-state"),
+    "PROBE_ALERT_STATE": str(TMP / "alert-state.json"),
 })
 
 

@@ -312,6 +312,34 @@
         <div class="form-row"><button class="primary" onclick="saveMonitorConfig()">Save monitor config</button><span id="mcSaveStatus" class="hint"></span></div>
         <div id="mcErrors" class="hint"></div>
       </div>
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">ALERTING</p><h2>Sustained-state notifications</h2></div><button onclick="loadAlerting()">Refresh</button></div>
+        <p class="hint">Notify once when a trend crosses into trouble and once when it recovers — edge-triggered on the <strong>sustained-vs-spike</strong> classification from the Protocol Trends work, so a single spike never pages you. Watches TCP retransmission, DNS failures and open outage events. Delivery is to <em>your own</em> webhook and/or SMTP server; nothing leaves the probe until you enable a channel.</p>
+        <div class="form-row"><label class="inline"><input type="checkbox" id="alEnabled"> alerting enabled</label>
+          <label class="inline">alert at / above
+            <select id="alMinState"><option value="rising">rising (sustained)</option><option value="degraded">degraded (severe)</option><option value="spike">spike (any blip)</option></select>
+          </label>
+          <label class="inline">evaluate every <input id="alPoll" type="number" min="10" max="3600" style="max-width:6rem"> s</label>
+          <label class="inline">look back <input id="alWindow" type="number" min="5" max="1440" style="max-width:6rem"> min</label>
+        </div>
+        <div class="form-row"><span class="hint">Signals:</span>
+          <label class="inline"><input type="checkbox" id="alSigTcp"> TCP retransmission</label>
+          <label class="inline"><input type="checkbox" id="alSigDns"> DNS failures</label>
+          <label class="inline"><input type="checkbox" id="alSigOutage"> outage events</label>
+        </div>
+        <div class="subhead"><strong>Webhook</strong></div>
+        <div class="form-row"><label class="inline"><input type="checkbox" id="alWhEnabled"> enabled</label><input id="alWhUrl" placeholder="https://hooks.example/…  (POST, JSON body)" aria-label="webhook URL" style="min-width:22rem"></div>
+        <div class="subhead"><strong>Email (SMTP)</strong></div>
+        <div class="genform">
+          <div class="form-row"><label class="inline"><input type="checkbox" id="alEmEnabled"> enabled</label><label class="inline"><input type="checkbox" id="alEmTls"> STARTTLS</label></div>
+          <div class="form-row"><input id="alEmHost" placeholder="smtp host" aria-label="SMTP host"><input id="alEmPort" type="number" placeholder="port" value="587" style="max-width:6rem" aria-label="SMTP port"></div>
+          <div class="form-row"><input id="alEmUser" placeholder="username (optional)" aria-label="SMTP username" autocomplete="off"><input id="alEmPass" type="password" placeholder="password (blank = keep)" aria-label="SMTP password" autocomplete="new-password"><span id="alEmPassSet" class="hint"></span></div>
+          <div class="form-row"><input id="alEmFrom" placeholder="from address" aria-label="from address"><input id="alEmTo" placeholder="to addresses, comma-separated" aria-label="to addresses" style="min-width:18rem"></div>
+        </div>
+        <div class="form-row"><button class="primary" onclick="saveAlerting()">Save alerting</button><button onclick="testAlert()" title="Send a test notification through the enabled channels">Send test</button><span id="alSaveStatus" class="hint"></span></div>
+        <div class="subhead"><strong>Current signals &amp; recent alerts</strong></div>
+        <div id="alSignals" class="hint">—</div>
+        <div id="alHistory" class="table-wrap"></div>
+      </div>
       <div class="panel" id="accountPanel"><div class="panel-head"><div><p class="eyebrow">ACCESS</p><h2>Account &amp; password</h2></div><button onclick="logout()">Sign out</button></div>
         <p class="hint">Sign in with a username and password (default <code>admin</code> / <code>admin</code> on a fresh install — change it below). The password is stored only as a salted hash. Sessions are held in memory, so <strong>restarting the dashboard signs everyone out</strong>. <span id="acctWho" class="hint"></span></p>
         <div class="form-row"><input id="acctUser" placeholder="username" aria-label="username" autocomplete="username"></div>
