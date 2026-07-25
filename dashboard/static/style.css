@@ -15,3 +15,20 @@ tr.ev-info td:first-child{border-left:3px solid var(--blue)}
 .ev-error .lvl{color:var(--red)}.ev-warning .lvl{color:var(--amber)}.ev-info .lvl{color:var(--blue)}
 #wifiMap svg{width:100%;height:auto;max-width:420px}
 #wifiMap text{font-family:var(--mono);fill:var(--muted)}
+
+/* Network map (#38/#40) — hierarchical SVG topology */
+.btngroup{display:inline-flex;gap:0}.btngroup button{border-radius:0}.btngroup button:first-child{border-radius:6px 0 0 6px}.btngroup button:last-child{border-radius:0 6px 6px 0}.btngroup button+button{border-left:0}
+.mapcanvas{position:relative;overflow:hidden;height:62vh;min-height:420px;margin-top:14px;border:1px solid var(--line);border-radius:10px;background:radial-gradient(circle at 50% 0,rgba(94,234,212,.05),transparent 45%),#091017;cursor:grab}
+.mapcanvas.grabbing{cursor:grabbing}
+.mapcanvas svg{width:100%;height:100%;display:block;touch-action:none}
+.map-node{cursor:pointer}.map-node text{font-family:var(--mono);fill:var(--text);pointer-events:none}
+.map-node .nlabel{font-size:11px}.map-node .nsub{font-size:9px;fill:var(--muted)}
+.map-node.dim{opacity:.22}.map-node.match circle,.map-node.match rect{stroke:var(--cyan);stroke-width:3}
+.map-node.tagged circle,.map-node.tagged rect{stroke-dasharray:3 2}
+.map-edge{fill:none}.map-edge.dim{opacity:.12}
+.maptip{position:absolute;pointer-events:none;display:none;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:8px 10px;font:11px var(--mono);color:var(--text);max-width:280px;z-index:5;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+.maptip b{color:var(--cyan)}
+.mapedit{border-top:1px solid var(--line);margin-top:16px;padding-top:14px}
+#mapLegend .chip{display:inline-flex;align-items:center;gap:6px}
+.legdot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.legline{width:18px;height:0;border-top-width:2px;border-top-style:solid;display:inline-block}

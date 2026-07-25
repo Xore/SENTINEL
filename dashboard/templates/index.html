@@ -30,6 +30,7 @@
         <ul class="nav nav-pills nav-sidebar flex-column" role="menu">
           <li class="nav-header">HOME</li>
           <li class="nav-item"><button data-view="overview" class="nav-link active" title="Probe status, anomalies and interfaces at a glance"><i class="nav-icon fas fa-gauge-high"></i><p>Overview</p></button></li>
+          <li class="nav-item"><button data-view="map" class="nav-link" title="Live Auvik-style topology map assembled from passive data (LLDP, traceroute, ARP, Wi-Fi)"><i class="nav-icon fas fa-sitemap"></i><p>Network Map</p></button></li>
           <li class="nav-header">WATCH</li>
           <li class="nav-item"><a href="/monitor" class="nav-link" title="Always-on outage, latency and path monitoring"><i class="nav-icon fas fa-wave-square"></i><p>Monitor</p></a></li>
           <li class="nav-item"><button data-view="security" class="nav-link" title="Passive intrusion-detection alerts from Suricata"><i class="nav-icon fas fa-shield-halved"></i><p>Security</p></button></li>
@@ -61,6 +62,43 @@
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">ATTENTION</p><h2>Anomalies &amp; data freshness</h2></div><button onclick="loadAttention()">Refresh</button></div><div id="freshness" class="chips"></div><div id="attention" class="attention"></div></div>
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">LINK TELEMETRY</p><h2>Interfaces</h2></div><button onclick="refresh()">Refresh</button></div><div id="interfaces" class="table-wrap"></div></div>
       <div class="panel"><p class="eyebrow">CAPABILITIES</p><h2>Local tools</h2><div id="tools" class="chips"></div></div>
+    </section>
+    <section id="map" class="view">
+      <div class="panel">
+        <div class="panel-head"><div><p class="eyebrow">AUVIK-STYLE · PASSIVE</p><h2>Network map</h2></div>
+          <div class="form-row" style="margin:0">
+            <span id="mapModes" class="btngroup"><button data-mode="hybrid" class="primary" onclick="mapSetMode('hybrid')" title="All connections">Hybrid</button><button data-mode="l1" onclick="mapSetMode('l1')" title="Physical / Layer-1 links (LLDP, Wi-Fi)">L1</button><button data-mode="l2" onclick="mapSetMode('l2')" title="Layer-2 (subnet membership)">L2</button><button data-mode="l3" onclick="mapSetMode('l3')" title="Layer-3 routing (traceroute)">L3</button></span>
+            <button onclick="loadMap()" title="Reassemble from the latest passive data">Refresh</button>
+            <button onclick="mapFit()" title="Zoom to fit">Fit</button>
+            <button onclick="mapExport('svg')" title="Download the map as SVG">SVG</button>
+            <button onclick="mapExport('png')" title="Download the map as PNG">PNG</button>
+          </div>
+        </div>
+        <p class="hint">Built entirely from data the probe already gathers — own interfaces, traceroute hops, LLDP neighbours, ARP/discovery hosts and Wi-Fi APs — with reachability coloured from the outage monitor. Read-only: opening this never launches a scan. Click a node for its dossier and to tag it.</p>
+        <div class="form-row">
+          <input id="mapSearch" placeholder="search name / IP / MAC / vendor / kind / subnet" oninput="mapSearch(this.value)" aria-label="Search the map" style="min-width:20rem">
+          <select id="mapKind" onchange="mapSetFilter()" aria-label="Filter by device kind"><option value="">all kinds</option></select>
+          <select id="mapStatus" onchange="mapSetFilter()" aria-label="Filter by status"><option value="">any status</option><option value="up">up</option><option value="down">down</option><option value="unknown">unknown</option></select>
+          <span id="mapStat" class="hint"></span>
+        </div>
+        <div id="mapLegend" class="chips"></div>
+        <div id="mapCanvas" class="mapcanvas"><div id="mapTip" class="maptip"></div><div id="mapEmpty" class="hint" style="padding:2rem">loading…</div></div>
+      </div>
+      <div id="mapDrawer" class="panel" style="display:none">
+        <div class="panel-head"><div><p class="eyebrow">NODE</p><h2 id="mapDrawerTitle">—</h2></div><button onclick="mapCloseDrawer()">Close</button></div>
+        <div id="mapDrawerBody"></div>
+        <div class="mapedit">
+          <p class="eyebrow">MANUAL TAG</p>
+          <p class="hint">Override the automatic classification. A tag wins over the inferred kind and persists across restarts.</p>
+          <div class="form-row">
+            <select id="mapTagKind" aria-label="Device kind"></select>
+            <input id="mapTagLabel" placeholder="display name (optional)" aria-label="Display name">
+            <input id="mapTagTags" placeholder="tags, comma-separated (optional)" aria-label="Tags">
+          </div>
+          <div class="form-row"><input id="mapTagNotes" placeholder="notes (optional)" aria-label="Notes" style="min-width:24rem"></div>
+          <div class="form-row"><button class="primary" onclick="mapSaveTag()">Save tag</button><button onclick="mapClearTag()">Clear tag</button><span id="mapTagStatus" class="hint"></span></div>
+        </div>
+      </div>
     </section>
     <section id="actions" class="view">
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">CUSTOM TARGET</p><h2>Run an action against any host</h2></div></div>
