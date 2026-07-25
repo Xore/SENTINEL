@@ -84,6 +84,27 @@ cookie. If the backend restarts, the shell keeps rendering and API calls return
 blank. Re-running the installer without `PROBE_SPLIT=1` collapses back to the
 single-process unit (and removes the backend unit).
 
+### Prometheus / OpenMetrics (optional)
+
+The dashboard can expose a read-only `/metrics` scrape endpoint in the Prometheus
+text format (target reachability, per-service check results, interface counters,
+open/24 h outage-event counts, collector counts). It is **off by default** — the
+endpoint returns `404` until you enable it under **Settings → Metrics**
+(`metrics.enabled`). Optionally set a bearer token there; scrapers must then send
+`Authorization: Bearer <token>` (the token is stored redacted and never appears in
+a URL). The endpoint is outside the browser-session login on purpose — the enable
+flag plus the optional token are its access control — so point Prometheus at it
+directly:
+
+```
+scrape_configs:
+  - job_name: network-probe
+    static_configs: [{ targets: ["<probe-ip>:8088"] }]
+    authorization: { credentials: "<token-if-set>" }
+```
+
+In split mode the frontend proxy forwards `/metrics` to the backend transparently.
+
 ## Enrolling a collector
 
 A collector is a separate machine that pushes to a standalone aggregator.

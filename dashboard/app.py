@@ -31,6 +31,7 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import reconcile
     from dashboard import auth
     from dashboard import classify
+    from dashboard import metrics as metrics_render
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
@@ -40,6 +41,7 @@ except ImportError:  # run from inside the dashboard directory
     import reconcile
     import auth
     import classify
+    import metrics as metrics_render
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # let us import the monitor/* helpers as a namespace pkg
@@ -121,7 +123,7 @@ _sessions_lock = threading.Lock()
 # Routes reachable without a session: the SPA shell (so the login UI can render),
 # health, the login/logout/status endpoints, static assets, and collector ingest
 # (which authenticates with its own per-collector key in _require_ingest).
-_OPEN_PATHS = {"/", "/healthz", "/api/login", "/api/logout", "/api/auth/status"}
+_OPEN_PATHS = {"/", "/healthz", "/api/login", "/api/logout", "/api/auth/status", "/metrics"}
 
 
 def _new_session(username: str) -> str:
@@ -1120,7 +1122,7 @@ def put_settings():
     if not isinstance(payload, dict):
         return jsonify(error="expected a JSON object"), 400
     # Only known top-level sections are accepted.
-    allowed = {"snmp", "interface_overrides", "approved_scope"}
+    allowed = {"snmp", "interface_overrides", "approved_scope", "metrics"}
     update = {k: v for k, v in payload.items() if k in allowed}
     if not update:
         return jsonify(error="no editable settings in request"), 400
@@ -1852,6 +1854,132 @@ def monitor_db() -> sqlite3.Connection | None:
     db = sqlite3.connect(f"file:{MONITOR_DB}?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
     return db
+
+
+def _collect_metrics_snapshot(window_s: int = 300) -> dict:
+    """Gather a read-only observability snapshot for the /metrics endpoint.
+
+    Pulls recent per-target reachability, latest service checks, latest interface
+    counters and event counts from the monitor DB (read-only), plus collector
+    counts from the history DB. Never launches a scan or touches a device; if the
+    monitor DB is absent it still returns a valid snapshot with monitor_up=0.
+    """
+    now = time.time()
+    since = now - window_s
+    snap: dict = {
+        "info": {"version": os.environ.get("PROBE_VERSION", "dev"),
+                 "role": (settings_store.load().get("multinode") or {}).get("role", "standalone")},
+        "scrape": {"monitor_up": 0},
+        "targets": [], "services": [], "interfaces": [],
+        "events": {"open": 0, "total_24h": 0},
+    }
+
+    db = monitor_db()
+    if db is not None:
+        snap["scrape"]["monitor_up"] = 1
+        try:
+            for row in db.execute(
+                """
+                SELECT target, COUNT(*) AS total, SUM(ok) AS ok,
+                       AVG(CASE WHEN ok = 1 THEN rtt_ms END) AS rtt_avg,
+                       MAX(ts) AS last_ts,
+                       (SELECT ok FROM ping_samples p2 WHERE p2.target = p1.target
+                        ORDER BY ts DESC LIMIT 1) AS last_ok
+                FROM ping_samples p1 WHERE ts >= ? GROUP BY target
+                """,
+                (since,),
+            ).fetchall():
+                total = row["total"] or 0
+                snap["targets"].append({
+                    "name": row["target"],
+                    "up": int(row["last_ok"] or 0),
+                    "rtt_ms": round(row["rtt_avg"], 3) if row["rtt_avg"] is not None else None,
+                    "loss_pct": round((total - (row["ok"] or 0)) / total, 4) if total else None,
+                })
+
+            # Latest sample per service name.
+            for row in db.execute(
+                """
+                SELECT s.name, s.kind, s.ok, s.duration_ms
+                FROM service_samples s
+                JOIN (SELECT name, MAX(ts) AS mts FROM service_samples GROUP BY name) m
+                  ON s.name = m.name AND s.ts = m.mts
+                """
+            ).fetchall():
+                snap["services"].append({
+                    "name": row["name"], "kind": row["kind"],
+                    "up": int(row["ok"] or 0), "duration_ms": row["duration_ms"],
+                })
+
+            # Latest counter sample per interface.
+            for row in db.execute(
+                """
+                SELECT i.interface, i.rx_dropped, i.tx_dropped, i.rx_errors,
+                       i.tx_errors, i.multicast
+                FROM iface_samples i
+                JOIN (SELECT interface, MAX(ts) AS mts FROM iface_samples GROUP BY interface) m
+                  ON i.interface = m.interface AND i.ts = m.mts
+                """
+            ).fetchall():
+                snap["interfaces"].append({
+                    "interface": row["interface"],
+                    "rx_dropped": row["rx_dropped"], "tx_dropped": row["tx_dropped"],
+                    "rx_errors": row["rx_errors"], "tx_errors": row["tx_errors"],
+                    "multicast": row["multicast"],
+                })
+
+            snap["events"]["open"] = db.execute(
+                "SELECT COUNT(*) FROM events WHERE ended IS NULL").fetchone()[0]
+            snap["events"]["total_24h"] = db.execute(
+                "SELECT COUNT(*) FROM events WHERE started >= ?", (now - 86400,)).fetchone()[0]
+        except sqlite3.Error as exc:
+            log.warning("metrics snapshot query failed: %s", exc)
+        finally:
+            db.close()
+
+    try:
+        collectors = history.list_collectors()
+        if collectors:
+            snap["collectors"] = {
+                "count": len(collectors),
+                "enabled": sum(1 for c in collectors if c.get("enabled")),
+            }
+    except Exception:  # history DB optional / best-effort
+        pass
+
+    return snap
+
+
+def _metrics_authorized() -> bool:
+    """Bearer-token gate for /metrics. No configured token -> open once enabled."""
+    token = (settings_store.load().get("metrics") or {}).get("token") or ""
+    if not token:
+        return True
+    header = request.headers.get("Authorization", "")
+    prefix = "Bearer "
+    if not header.startswith(prefix):
+        return False
+    return secrets.compare_digest(header[len(prefix):].strip(), token)
+
+
+@app.get("/metrics")
+def prometheus_metrics():
+    """Prometheus/OpenMetrics scrape endpoint (roadmap P4, task #52).
+
+    Disabled by default; enable under Settings (metrics.enabled). Optionally
+    gated by a bearer token so it can be exposed on a scrape network. It is in
+    the auth allowlist because Prometheus scrapes without a browser session; the
+    per-request gate here (enable flag + optional token) is its access control.
+    """
+    cfg = settings_store.load().get("metrics") or {}
+    if not cfg.get("enabled"):
+        return jsonify(error="metrics endpoint disabled"), 404
+    if not _metrics_authorized():
+        resp = jsonify(error="metrics token required")
+        resp.headers["WWW-Authenticate"] = "Bearer"
+        return resp, 401
+    body = metrics_render.render(_collect_metrics_snapshot())
+    return app.response_class(body, mimetype="text/plain; version=0.0.4; charset=utf-8")
 
 
 @app.get("/monitor")

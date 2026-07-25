@@ -63,11 +63,18 @@ DEFAULTS: dict = {
     # etc). Each value: {"kind","label","notes","tags":[...]}. Any subset of
     # fields may be set; empty/omitted fields fall back to the inferred value.
     "device_tags": {},
+    # Prometheus/OpenMetrics scrape endpoint (task #52, roadmap P4). Off by
+    # default: /metrics returns 404 until enabled. If `token` is set, a scraper
+    # must present it as `Authorization: Bearer <token>` (never in the URL).
+    "metrics": {
+        "enabled": False,
+        "token": "",   # secret; optional bearer token gating /metrics
+    },
 }
 
 # Dotted paths whose values are secrets: never returned to the browser in the
 # clear (replaced with a boolean "<field>_set").
-SECRET_PATHS = ("snmp.community", "snmp.v3.auth_key", "snmp.v3.priv_key")
+SECRET_PATHS = ("snmp.community", "snmp.v3.auth_key", "snmp.v3.priv_key", "metrics.token")
 
 
 def _merge(base: dict, over: dict) -> dict:

@@ -96,7 +96,9 @@ The probe should work as a field laptop, a remote sensor left at a site, and an 
       on demand via the Layer-2 health job)
 - [ ] TCP retransmission/reset and DNS failure trends
 - [ ] LLDP/CDP/STP observations as a continuous inventory
-- [ ] Wi-Fi beacon inventory, channel/security matrix and retry/roam timeline
+- [x] Wi-Fi beacon inventory, channel/security matrix and retry/roam timeline
+      (passive survey + nearby-AP map + colorized roam/handover timeline;
+      `monitor/wifi_survey.py`, Wi-Fi + Access Points tabs)
 - [ ] Baselines by segment, hour and production state
 
 ### P3 — authenticated infrastructure profiles
@@ -110,7 +112,8 @@ The probe should work as a field laptop, a remote sensor left at a site, and an 
 ### P4 — distributed and integration features
 
 - Multiple sensors forwarding normalized measurements rather than all PCAP
-- Prometheus/OpenMetrics and webhook/email integration
+- [x] Prometheus/OpenMetrics scrape endpoint (`/metrics`, off by default, optional
+      bearer token; `dashboard/metrics.py`) — webhook/email alerting still pending
 - NetBox inventory reconciliation
 - Role-based UI behind a site identity provider
 - Signed update/configuration bundles for offline sites
