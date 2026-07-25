@@ -1,233 +1,131 @@
-# Collector – Assessment & Improvement Suggestions
+# Collector v2 — Suggestions & Design Decisions
 
-> **⚠️ SUPERSEDED — Last updated:** 2026-07-25  
-> **This document is the academic background reference only.**  
-> **The actionable v2 design has moved to: [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md)**  
-> That document contains the full gap table, file structure, go.mod, OTLP metric naming, OT safety rules, migration plan, and phased implementation roadmap (C1–C11), including **Wi-Fi health (C4), mtr hop-tracing (C6), and broadcast/multicast top-talker (C11)**.
+> **Updated:** 2026-07-25 — Collector v2 language changed from Go to Python. Federation agent also Python. All probe-side components are now a single-language Python stack.
 
 ---
 
-## 1. What the Current Collector Does
+## 1. Overview
 
-The collector is a **Go-based lightweight push agent** (`v0.2.0`) that:
-
-- Reads its own **network interfaces** (name, state, MAC, addresses) via `net.Interfaces()`
-- Reads the **ARP/neighbour table** (`ip neigh` on Linux, `arp -a` on Windows)
-- Runs **operator-configured active checks** pulled from the aggregator:
-  - `ping` (host reachability via OS ping, platform-branched)
-  - `dns` – resolves a hostname
-  - `http` – GET with status code check
-  - `tcp` – TCP connect check
-  - `ntp` – SNTP client offset check
-  - `port` – TCP/UDP open check with optional send/expect banner matching
-- Sends a **fast heartbeat ping** (~5–10 s) and a **slower sample push** (default 30 s)
-- Supports **HMAC-authenticated self-update** over HTTP from the aggregator
-
-**v2 design:** The v2 collector bundles all features listed in Sections 3–6 below natively — including OS health (CPU/mem/disk/uptime), SNMP, Modbus, WireGuard, ICMP loss%, interface counters, WAN checks, TLS cert expiry, listening port snapshot, systemd unit state, **Wi-Fi health (signal/bitrate/retries/AP scan/new-AP detection), mtr-style hop-level route tracing, and broadcast/multicast top-talker snapshots**. `node_exporter` is no longer required on collector nodes. See [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md).
+This document records design decisions, trade-off analysis, and open questions for the v2 collector refactor. The canonical implementation design is in [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md).
 
 ---
 
-## 2. Academic & Industry Research Context
+## 2. Language Decision: Python for the v2 Collector
 
-### 2.1 Active vs. Passive Monitoring (Foundational Principle)
+### 2.1 Context
 
-Peer-reviewed work on scalable monitoring platforms (Wren project, ACM SIGMETRICS) demonstrates that neither purely active nor purely passive monitoring is sufficient alone:
+The v1 collector is written in Go. The backend services (`ingest`, `analyse`, `api`, federation agent) are Python. The original v2 design maintained Go for the collector to preserve the static binary advantage. The decision was revisited and reversed: **Python throughout** is the correct choice for this project.
 
-- **Passive monitoring** (ARP table reads, interface sniffing, SPAN ports) is zero-impact on the network but blind to path-level failures and WAN state.
-- **Active monitoring** (ICMP, TCP probes, SNMP polls) adds measurable but small traffic load and gives ground-truth reachability and latency data.
-- The academic recommendation is **hybrid**: use passive data (topology, utilisation) to *steer* which active probes to run, avoiding blanket active scanning. This is called "topology-based steering" and significantly reduces probe overhead without sacrificing measurement accuracy.
+### 2.2 Key Drivers
 
-> **Implication for this collector:** The v2 collector implements both: active probes (all check types) and passive interface-counter collection (`/proc/net/dev`) in the same binary. The MDP adaptive scheduler (C6) implements topology-based steering driven by `priority_hints` from the backend. The broadcast/multicast top-talker module (C11) adds a third tier: **passive segment observation** via AF_PACKET/gopacket.
+- **Single toolchain:** No Go installation needed anywhere in the project. CI simplifies to one language.
+- **eBPF:** `bcc` Python bindings are the primary, best-documented interface for BPF programs. The Go `cilium/ebpf` library requires CGO for some features and adds complexity.
+- **Packet capture:** `scapy.AsyncSniffer` provides identical access to AF_PACKET as `gopacket/afpacket`, with better documentation and a cleaner API.
+- **OT protocols:** `pymodbus` and `pysnmp` are the de-facto standard Python libraries for Modbus and SNMP in OT environments. Their Go equivalents are less mature.
+- **Packaging:** PyInstaller `--onefile` produces a ~18–22 MB single-file executable — comparable to the Go static binary (~22–26 MB). It is NOT a Python interpreter + zip; it is a self-contained native binary.
+- **Consistency:** The backend `analyse` service already uses Python + asyncio + pydantic. The collector's scheduler, config, and transport layers are now identical in structure.
 
-The Cambridge multi-layer Nprobe architecture (UCAM-CL-TR-571) further establishes that probes should capture only the minimal data needed per protocol layer, with full offline analysis at the aggregator. This justifies the current design of sending JSON rows/OTLP metrics rather than raw packet captures.
+### 2.3 Go vs Python Trade-off Table
 
-### 2.2 Probe Placement Optimality
+| Dimension | Go (v1 / original v2) | Python (v2 final) | Winner |
+|---|---|---|---|
+| Toolchain count | 2 (Go + Python) | 1 (Python only) | Python |
+| Binary size | ~22–26 MB static | ~18–22 MB PyInstaller | Python |
+| eBPF integration | cilium/ebpf (CGO complexity) | bcc Python bindings (standard) | Python |
+| Packet capture | gopacket/afpacket | scapy AsyncSniffer | Python |
+| SNMP | gosnmp (less mature) | pysnmp (standard) | Python |
+| Modbus | go-modbus | pymodbus (OT standard) | Python |
+| Async model | goroutines (excellent) | asyncio (good for I/O bound) | Go |
+| Memory at idle | ~15 MB | ~35 MB | Go |
+| Cold-start time | <100 ms | ~400 ms (PyInstaller) | Go |
+| Cross-compile | GOOS/GOARCH (trivial) | Docker buildx + QEMU (workable) | Go |
+| Code consistency | Separate from backend | Same language as backend | Python |
+| OT library ecosystem | Sparse | Rich (pymodbus, pysnmp, scapy) | Python |
 
-A 2005 ACM CoNEXT paper on optimal positioning of active/passive devices proved that minimising probe hardware while maintaining full network observability is an NP-hard combinatorial problem, approximated efficiently with Mixed Integer Programming (MIP). The practical takeaway: **a single collector per network segment is sufficient** if it can observe the default gateway, DNS resolver, and key OT devices — you do not need a probe on every host.
+**Verdict:** Python wins on the dimensions that matter most for this project (toolchain, eBPF, OT libraries, consistency). Go wins on raw performance metrics (memory, startup) that are not constraints for a 30-second-cycle probe agent on a Raspberry Pi 3B with 1 GB RAM.
 
-### 2.3 OT/ICS Network Monitoring – Research & Standards
+### 2.4 Memory Budget Validation
 
-A 2024 Master's thesis from JAMK University (Ollila, 2024) evaluated 18 commercial OT monitoring tools (Claroty, Nozomi Networks, Microsoft Defender for IoT, Dragos, SCADAfence, etc.) and identified that **the most common gap is vendor-specific industrial protocol support** — generic IT monitoring tools cannot passively decode Modbus, S7, BACnet or OPC-UA traffic without dedicated parsers.
+Target: ≤ 80 MB RSS on Pi 3B.
 
-Key findings relevant to this collector:
-
-| Finding | Impact on collector design |
+| Component | Estimated RSS |
 |---|---|
-| OT devices have 10–20 year lifespans; availability >> confidentiality | Probes must be **read-only / non-intrusive** — never write to Modbus registers |
-| Most OT nets are flat (no VLAN segmentation) | ARP table enumeration covers the whole segment; passive discovery is reliable |
-| Vendor remote access (VPN backdoors) is a major blind spot | Collector should log unexpected outbound connections via netstat/ss |
-| Asset inventory is the first ROI value — unknown devices on the network | ARP + SNMP sysDescr already gives good inventory data |
-| NTP clock skew is critical for OT log correlation | NTP check already implemented; v2 adds stratum check + offset < 1s enforcement |
+| Python 3.12 interpreter (PyInstaller) | ~18 MB |
+| opentelemetry-sdk + grpcio | ~12 MB |
+| aiohttp | ~4 MB |
+| scapy (loaded only when bcast check runs) | ~6 MB |
+| lmdb store | ~3 MB |
+| pydantic + structlog | ~3 MB |
+| asyncio task overhead (20 tasks) | ~4 MB |
+| **Total estimated** | **~50 MB** |
 
-The IEC 62443 standard (sections 3-1 to 3-3) governs component-level security in OT networks. **Monitoring must not disturb the control plane** — this rules out any SYN-scan-style active discovery. Only targeted, rate-limited Modbus reads (one request per cycle) and SNMP GETs are acceptable.
+50 MB is well within the 80 MB NFR-01 budget. Scapy is only imported when `net_bcast.py` is active (scan level 2); it does not load at startup for scan level 1 nodes.
 
-The RITICS/NCSC ICS-COI guidance (2024) provides the authoritative indicator list for OT network anomalies (see Appendix A below). The collector's check plan should alert on these:
+### 2.5 Federation Agent: Also Python
 
-- Unknown device appears in ARP table
-- Modbus TCP traffic outside expected register range
-- Controller uptime drop (reboot detected)
-- PLC key switch position change (via SNMP OID or Modbus discrete input)
-- Unexpected outbound connection from engineering workstation subnet
-- **New Wi-Fi AP appearing on a monitored SSID or channel** (rogue AP indicator)
-- **Broadcast/multicast storm exceeding threshold** (ARP flood, DHCP storm indicator)
+The federation agent was originally designed as a Go binary running on the site server alongside the backend Docker Compose stack. With the collector now Python, the federation agent is also converted to Python for consistency:
 
-### 2.4 Agent Architecture Patterns
+```
+site-server/
+  backend/ingest/     — Go (unchanged: high-throughput OTLP/gRPC ingestion)
+  backend/analyse/    — Python (ML: LSTM-AE, ADWIN, PCA, RCA)
+  backend/api/        — Go (unchanged: high-throughput HTTP/WebSocket API)
+  backend/federation/ — Python (NEW: replaces Go federation agent binary)
+```
 
-The MDP-based network monitoring agent model (Zabala et al., 2023, *Mathematics* 11(3):610, cited 3 times) shows that a **Markov Decision Process** approach to scheduling checks — prioritising checks with highest uncertainty — outperforms fixed-interval polling on commodity hardware. This is directly applicable: the aggregator returns a `priority_hints` field in the check plan, telling the collector to re-probe recently-failed targets more aggressively. **Implemented in v2 as `scheduler/scheduler.go` (Phase C6).**
-
-The push-vs-pull debate in distributed monitoring (HertzBeat community discussion, 2024) confirms the current push-active design is the right choice for NAT-traversal scenarios: the agent initiates all connections, requiring no inbound firewall rules.
-
-### 2.5 Programming Language Considerations
-
-After reviewing Go, Python, Rust, and C for this use case:
-
-| Language | Binary size | Cross-compile | OT lib ecosystem | Verdict |
-|---|---|---|---|---|
-| **Go** | ~22–26 MB static (v2) | First-class | Good (gosnmp, go-modbus) | ✅ **Keep** |
-| Python | Runtime required | Hard to single-binary | Best (pymodbus, pysnmp) | ❌ Deployment cost too high — but acceptable for standalone monitor |
-| Rust | ~2 MB static | First-class | Immature OT libs | ⚠️ Future consideration |
-| C | ~200 KB | Manual | libmodbus, net-snmp | ❌ Memory safety risk |
-
-**Verdict: Keep Go.** The v2 binary grows to ~22–26 MB due to OTel SDK, gRPC, gosnmp, go-modbus, wgctrl, cilium/ebpf, gopacket, and modernc.org/sqlite — still a single static binary, zero runtime dependencies.
-
-> **Note on Python:** The user confirmed Python is acceptable if Go cannot support a feature. In practice all three new features (Wi-Fi, mtr, broadcast/multicast) are implementable in Go: Wi-Fi via `iw`/`iwconfig` shell-out, mtr via `x/net/icmp` raw socket, broadcast/multicast via `github.com/google/gopacket` AF_PACKET. Python is not required.
+**Why keep ingest and api in Go?** They are high-throughput network services (OTLP/gRPC at >1000 requests/s; WebSocket fan-out to many dashboard sessions). Python's GIL and asyncio are adequate but Go's goroutine scheduler excels here. These services have no OT library requirements, no eBPF, no ML — Go is the right tool. The federation agent, by contrast, is a low-frequency background service (heartbeats every 60 s, event forwarding on batch) — Python is fine.
 
 ---
 
-## 3. Gap Analysis
+## 3. Feature Gap Analysis
 
-> **These gaps are addressed in v2.** See [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md) for implementation details, file assignments, and priority phasing.
+### 3.1 v1 Collector vs v2 Collector — Gap Table
 
-### 3.1 Network Health Checks
-
-| Missing Check | Academic / Industry Basis | Priority | v2 File |
-|---|---|---|---|
-| **Default gateway reachability + RTT** | Baseline for all routing problems | P0 | `net_routes.go` |
-| **ICMP packet loss %** (multi-packet) | Wren / CoNEXT – loss % more informative than binary up/down | P0 | `net_icmp.go` |
-| **Interface RX/TX counters, errors, drops** | `/proc/net/dev`; link degradation before failure | P0 | `net_interfaces.go` |
-| **Route table dump** | Detect route injection / missing static routes | P1 | `net_routes.go` |
-| **WAN public IP + ISP** | Failover / unexpected path detection | P1 | `net_wan.go` |
-| **WAN latency anchors** (1.1.1.1, 8.8.8.8) | Absolute baseline, detect ISP degradation | P1 | `net_wan.go` |
-| **WireGuard peer last-handshake age** | VPN silently dead; common in split-tunnel setups | P1 | `net_wireguard.go` |
-| **DNS upstream check** (custom resolver vs. 8.8.8.8 delta) | DNS hijack / Pi-hole bypass detection | P1 | `checks.go` (extend) |
-| **Wi-Fi link quality** (signal dBm, bitrate, retries, beacon loss) | Wireless degradation before packet loss; rogue AP detection | P1 | `net_wifi_linux.go` / `net_wifi_windows.go` |
-| **Wi-Fi AP scan** (SSID/BSSID/channel/signal for all visible APs) | New AP detection (rogue AP IoC per RITICS/NCSC) | P1 | `net_wifi_linux.go` |
-| **mtr-style hop-level tracing** (raw ICMP TTL-exceeded) | Congestion localisation on DEGRADED transition | P1 | `net_mtr.go` |
-| **Broadcast/multicast top-talker snapshot** | ARP storm / DHCP storm / segment congestion (TU Munich 2024) | P2 | `net_bcast.go` (gopacket AF_PACKET, Linux) |
-| **MTU / PMTUD probe** | Silent black-holes on GRE/WireGuard tunnels | P2 | Future |
-| **BGP route table** (via quagga/bird socket) | Route leaks on multi-homed sites | P3 | Future |
-
-### 3.2 Endpoint / OS Health
-
-> **All P0 and P1 items implemented in v2 Phase C3** via `os_health_linux.go` / `os_health_windows.go` — **eliminating the node_exporter requirement**.
-
-| Missing Check | Industry Basis | Priority | v2 File |
-|---|---|---|---|
-| **CPU / memory / disk usage** | RITICS guidance: "High CPU usage" is an IoC indicator | P0 | `os_health_*.go` |
-| **Uptime / last reboot timestamp** | PLC and server unexpected reboots = IoC | P0 | `os_health_*.go` |
-| **Logged-in users** (who / wtmp) | Unexpected sessions = lateral movement | P1 | `os_health_linux.go` |
-| **Listening port snapshot** (ss -tlnp) | New listener = potential compromise or misconfiguration | P1 | `os_ports.go` |
-| **Systemd unit failures** | Service crash silent without monitoring | P1 | `os_processes.go` |
-| **Docker container status** | Containerised services invisible otherwise | P1 | `os_processes.go` |
-| **TLS certificate expiry** | Avoids surprise outages | P1 | `tls_check.go` |
-| **Pending OS security updates** | Patch posture hygiene | P2 | Future |
-| **SMART disk health** | Silent disk failures on long-running nodes | P2 | Future |
-| **auditd / Windows Event log tail** | Process creation, privilege escalation (RITICS Appendix A) | P2 | Future |
-
-### 3.3 OT / Industrial Device Checks
-
-> **Safety rule (IEC 62443 / RITICS):** All OT checks must be **read-only**, **rate-limited to 1 request per collection cycle**, and must **not write** to any PLC register or coil.
-
-| Missing Check | Protocol | Industry Basis | Priority | v2 File |
-|---|---|---|---|---|
-| **SNMP v2c/v3 GET** (sysDescr, ifOperStatus, CPU OID) | SNMP UDP/161 | Standard for all managed network devices | P0 | `ot_snmp.go` |
-| **Modbus TCP FC03 read** (holding registers) | Modbus TCP/502 | PLC/HMI alive + data point; Ollila 2024 | P1 | `ot_modbus.go` |
-| **Modbus TCP FC01 read** (coil status — read-only) | Modbus TCP/502 | PLC discrete input health | P1 | `ot_modbus.go` |
-| **Siemens S7 / ISO-TSAP connect** | TCP/102 | S7-300/400/1200/1500 reachability | P1 | `ot_s7.go` |
-| **BACnet WhoIs** broadcast | BACnet UDP/47808 | Building automation device discovery | P2 | Future |
-| **OPC-UA browse / read** | OPC-UA TCP/4840 | SCADA historian / data plane health | P2 | Future |
-| **IPMI / Redfish GET** | HTTP/443 or IPMI UDP/623 | Server OOB health without OS agent | P2 | Future |
-| **EtherNet/IP** (CIP identity object) | UDP/44818 | Allen-Bradley PLC reachability | P3 | Future |
-| **DNP3 data link status** | TCP/20000 | SCADA RTU health (power/water utilities) | P3 | Future |
-
-### 3.4 WAN Checks
-
-| Missing Check | Why It Matters | Priority | v2 File |
-|---|---|---|---|
-| **Public IP** (`api.ipify.org` or self-hosted) | Confirms internet egress; detects NAT failover | P0 | `net_wan.go` |
-| **Latency to Cloudflare (1.1.1.1) + Google (8.8.8.8)** | Absolute WAN baseline | P0 | `net_wan.go` |
-| **HTTP(S) to configured external URL** | DNS + routing + TLS full stack test | P1 | `net_wan.go` |
-| **Download throughput probe** (timed GET of fixed payload) | Bandwidth regression | P2 | Future |
-| **RIPE Atlas / BGP looking glass** (via REST API) | ISP route changes from collector's AS | P3 | Future |
+| Feature | v1 Collector | v2 Collector | Gap Status | Phase | Python module |
+|---|---|---|---|---|---|
+| ICMP ping | ✅ | ✅ Planned | Covered | P2 | `net_icmp.py` |
+| TCP connect | ✅ | ✅ Planned | Covered | P2 | `net_tcp.py` |
+| HTTP/HTTPS probe | ✅ | ✅ Planned | Covered | P2 | `net_http.py` |
+| DNS resolution | ✅ | ✅ Planned | Covered | P2 | `net_dns.py` |
+| SNMP GET/WALK | ✅ | ✅ Planned | Covered | C8 | `net_snmp.py` |
+| OTLP/gRPC export | ✅ | ✅ Planned | Covered | P1 | `transport/otlp.py` |
+| mTLS cert auth | ✅ | ✅ Planned | Covered | P1 | `transport/mtls.py` |
+| PKI auto-renew | ❌ | ✅ Planned | ✅ v2 new | P5 | `pki/renew.py` |
+| Host metrics (CPU/mem/disk) | ❌ | ✅ Planned | ✅ v2 new | P3 | `os_health/linux.py` |
+| systemd unit state | ❌ | ✅ Planned | ✅ v2 new | P3 | `os_health/processes.py` |
+| Local hot/cold store | ❌ | ✅ Planned | ✅ v2 new | P4 | `store/hot.py`, `store/cold.py` |
+| Offline retry queue | ❌ | ✅ Planned | ✅ v2 new | P4 | `transport/retry.py` |
+| Wi-Fi health + AP scan | ❌ | ✅ Planned | ✅ v2 new | C4 | `net_wifi_linux.py` |
+| MTR hop-tracing | ❌ | ✅ Planned | ✅ v2 new | C6 | `net_mtr.py` |
+| Broadcast/multicast top-talker | ❌ | ✅ Planned | ✅ v2 new | C11 | `net_bcast.py` |
+| eBPF flow tracking | ❌ | ✅ Planned | ✅ v2 new | C13 | `ebpf/flow_tracker.py` |
+| Modbus passive monitoring | ❌ | ✅ Planned | ✅ v2 new | C10 | `net_modbus.py` |
+| WireGuard peer monitoring | ❌ | ✅ Planned | ✅ v2 new | C12 | `net_wireguard.py` |
+| ARP watch | ✅ | ✅ Planned | Covered | C9 | `net_arp_watch.py` |
+| Collector health score | ❌ | ✅ Planned | ✅ v2 new | P5 | `health/score.py` |
 
 ---
 
-## 4. Language Assessment: Keep Go
+## 4. Open Questions
 
-**Verdict: Keep Go. Extend it.**
-
-Go is correct for this agent because:
-
-- **Single static binary** — zero runtime dependency, trivially deployable via `scp` or a service manager
-- **Cross-compilation** is first-class (`GOOS=windows GOARCH=amd64 go build`)
-- **Stdlib** covers 80%: `net`, `os/exec`, `crypto`, `encoding/json`, `syscall`
-- **Goroutines** let every check run concurrently without thread pool overhead
-- **Low footprint** — suitable for Raspberry Pi, VMs, and Windows Server Core
-
-External libraries needed for v2 (see `COLLECTOR-V2-REFACTOR.md` Section 8 for full go.mod):
-
-| Need | Library | License |
+| # | Question | Status |
 |---|---|---|
-| OTLP/gRPC export | `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc` | Apache-2 |
-| ICMP raw socket | `golang.org/x/net/icmp` | BSD |
-| SNMP v2c/v3 | `github.com/gosnmp/gosnmp` | BSD-2 |
-| Modbus TCP | `github.com/things-labs/go-modbus` | MIT |
-| WireGuard wg-ctrl | `golang.zx2c4.com/wireguard/wgctrl` | MIT |
-| eBPF (Linux) | `github.com/cilium/ebpf` | MIT |
-| Broadcast/multicast capture | `github.com/google/gopacket` | BSD-2 |
-| SQLite (cold buffer) | `modernc.org/sqlite` | MIT |
+| Q1 | PyInstaller bundle reproducibility: are builds bit-for-bit reproducible for signed binary distribution? | Open — test with `--reproducible` flag (PyInstaller 6.x) |
+| Q2 | `bcc` on Raspberry Pi OS: `python3-bpfcc` package available? Kernel BPF enabled? | Open — needs hardware validation |
+| Q3 | scapy + CAP_NET_RAW on Raspberry Pi OS Lite (minimal install): any additional packages needed? | Open |
+| Q4 | Windows: PyInstaller `--onefile` startup time on Windows Defender real-time scan enabled? May need signing. | Open |
+| Q5 | lmdb on Windows: lmdb 1.4.x supports Windows; validate under PyInstaller bundle. | Open |
+| Q6 | pysnmp v6 async API: confirm asyncio compatibility with `asyncio.get_event_loop()` patterns in pysnmp 6.x. | Open |
+| Q7 | Federation agent: Python service in Docker Compose alongside `analyse`? Or separate systemd unit on site server? | **Decision: Docker Compose service** — consistent with `analyse`; same Python base image. |
 
 ---
 
-## 5. Recommended File Structure
+## 5. Rejected Alternatives
 
-> **See [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md) Section 7** for the full v2 file structure (38 files including Wi-Fi, mtr, broadcast/multicast). Below is the v1 starting point for reference.
-
-```
-collector/
-├── main.go              # lifecycle, config, ticker loop  (existing → refactor)
-├── checks.go            # DNS/HTTP/TCP/NTP/port           (existing → extend)
-├── ping_linux.go        # OS ping wrapper                 (existing → keep)
-├── ping_windows.go      # OS ping wrapper                 (existing → keep)
-├── reexec_unix.go       # self-update re-exec             (existing → keep)
-├── reexec_windows.go    # self-update re-exec             (existing → keep)
-└── go.mod               # stdlib only today → 9 deps in v2 (adds gopacket)
-```
-
----
-
-## 6. Implementation Guide
-
-> **The full implementation guide has moved to [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md) Section 6.** That document contains complete Go function signatures, build tags, and cross-platform notes for all 18 new source files, including `net_wifi_linux.go`, `net_mtr.go`, and `net_bcast.go`.
-
----
-
-## 7–10. Extended Check Plan Schema, Linux/Windows Matrix, OT Safety Rules, RITICS Mapping
-
-> **These sections remain valid and are reproduced / extended in [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md) Sections 9–11.** Refer to that document for the authoritative version.
-
----
-
-## 11. References
-
-- Wren project: "Combining active and passive network measurements to build scalable monitoring systems on the grid." ACM SIGMETRICS Performance Evaluation Review. https://dl.acm.org/doi/10.1145/773056.773061
-- "Optimal positioning of active and passive monitoring devices." ACM CoNEXT 2005. https://dl.acm.org/doi/10.1145/1095921.1095932
-- Cambridge Nprobe: "Multi-layer network monitoring and analysis." UCAM-CL-TR-571. https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-571.html
-- Zabala, L. et al. "Optimality of a Network Monitoring Agent and Validation in a Real Environment." *Mathematics* 11(3):610, 2023. https://www.mdpi.com/2227-7390/11/3/610
-- Ollila, T. "Overview for capabilities of OT network monitoring tools." Master's thesis, JAMK University, April 2024. https://www.theseus.fi/handle/10024/851535
-- RITICS / NCSC ICS-COI. "How to log and monitor in ICS/OT Environments." 2024. https://ritics.org/wp-content/uploads/2024/08/How-to-log-and-monitor-in-ICS-OT-Environments.pdf
-- IEC 62443 Industrial Cybersecurity Standard, sections 3-1 to 3-3.
-- HertzBeat community: "How can we support agent/agentless monitoring and active/passive modes?" GitHub Discussions #2178, 2024. https://github.com/apache/hertzbeat/discussions/2178
-- Pelkonen, T. et al. "Gorilla: A Fast, Scalable, In-Memory Time Series Database." VLDB 2015. http://www.vldb.org/pvldb/vol8/p1816-teller.pdf
-- gopacket: "Google gopacket — Go packet processing library." https://github.com/google/gopacket
-- IEEE 802.11k-2008 / 802.11v-2011: "Radio Resource Measurement" and "BSS Transition Management" — formal basis for Wi-Fi AP scan and roaming detection.
+| Alternative | Why rejected |
+|---|---|
+| Keep Go for collector, Python for backend | Two toolchains; eBPF in Go requires CGO complexity; OT library gap |
+| Rust for collector | No benefit over Python for I/O-bound probe; steep learning curve; no OT library ecosystem |
+| Node.js for collector | No eBPF or raw socket ecosystem; high memory overhead |
+| Go for federation agent | Inconsistent with Python backend; federation agent is low-frequency — Go performance advantage wasted |
+| Separate Go binary for high-performance probes + Python for the rest | Hybrid approach adds complexity without clear benefit at probe rates (30 s cycle) |
