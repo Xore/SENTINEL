@@ -151,6 +151,113 @@ Goal: derive a real threshold instead of the placeholder "> N ARP replies per mi
 
 ---
 
+## 8. OTLP Batch Sizing Under Lossy Wi-Fi (Export Pipeline Tuning)
+
+Goal: replace the data-centre-optimised OTLP defaults with a Wi-Fi-appropriate configuration
+validated by simulation against recorded loss traces.
+
+> Full theory: `docs/theory/probes/otlp-batch-sizing-lossy-wifi.md`
+
+**Step 8.1 — Understand the theoretical stakes**
+- Read Kaul et al. "Real-time Status Updates: A Fresh Perspective." IEEE INFOCOM 2012 (the
+  original Age of Information paper). Key result: larger batch sizes increase the
+  time-average AoI at the receiver, directly increasing anomaly-detection latency.
+- Read Kadota, I. "Age-of-information in Wireless Networks." MIT PhD Thesis, 2020
+  (dspace.mit.edu) — extends AoI to lossy wireless; provides the D/G/1 queue AoI formula
+  that bounds the optimal flush interval.
+- Read Dash0 "Batching, Queuing, and Retries in the OTel Collector." June 2026
+  (dash0.com) — current treatment of all exporter-helper knobs including the new
+  exporter-level `batch` block, `sizer` semantics, and persistent queue mechanics.
+
+**Step 8.2 — Understand burst-loss mechanics**
+- Skim Elliott 1963 / Mushkin & Bar-David 1989 (Gilbert-Elliott channel model).
+  Key insight: Wi-Fi loss is bursty, not i.i.d. A single 100 ms congestion event can
+  drop an entire 800 KB OTLP flush (8 192 items at ~100 bytes/item). Smaller batches
+  (≤ 256 items, ≈ 25 KB) fit within a good-state burst window.
+
+**Step 8.3 — Deploy the recommended starting configuration**
+- Apply the Wi-Fi profile from `docs/theory/probes/otlp-batch-sizing-lossy-wifi.md` §3
+  to the collector node's `config/otelcol-wifi.yaml`.
+  Key changes: `timeout: 15s`, `max_elapsed_time: 0`, `queue_size: 2000`,
+  `num_consumers: 4`, `min_size: 256`, `flush_timeout: 5s`, persistent queue enabled.
+
+**Step 8.4 — Extract loss traces from outage_monitor.py**
+- Query `ping_samples` for `is_loss = 1` rows over ≥ 14 days.
+- Fit Gilbert-Elliott parameters (α, β, p_G, p_B) to the observed burst-length
+  distribution (maximum-likelihood; e.g., using Python `scipy.optimize`).
+
+**Step 8.5 — Simulate the OTLP pipeline over the grid**
+- Grid: `min_size` ∈ {128, 256, 512, 1024, 4096, 8192} × `flush_timeout` ∈ {1 s, 5 s, 10 s, 30 s}.
+- For each configuration, measure: total items dropped (`max_elapsed_time = 300s`),
+  average AoI at `monitor/` receiver, retransmit overhead (bytes retried / bytes sent).
+- Identify Pareto-optimal configuration under constraints: AoI ≤ 60 s, drop rate ≤ 0.1 %.
+
+**Step 8.6 — Validate in production**
+- Deploy Pareto-optimal config; run 72-hour soak test; confirm
+  `otelcol_exporter_enqueue_failed_*` stays < 0.1 %.
+
+**Exit criteria:**
+- [ ] ≥ 14 days of Wi-Fi loss traces extracted from `outage_monitor.py`
+- [ ] Gilbert-Elliott parameters fitted and documented
+- [ ] Simulation grid complete; Pareto-optimal (min_size, flush_timeout) identified
+- [ ] 72-hour soak test passed with drop rate < 0.1 %
+- [ ] Validated config committed to `config/otelcol-wifi.yaml`
+
+---
+
+## 9. SQLite WAL vs. Embedded TSDB Storage Crossover (monitor/ backend)
+
+Goal: confirm that the current SQLite WAL backend can sustain the expected aggregate
+metrics/s at the deployment hardware ceiling, or identify when and how to migrate.
+
+> Full theory: `docs/theory/storage/embedded-tsdb-selection.md`
+
+**Step 9.1 — Read the reference query workload**
+- Re-read Pelkonen et al. "Gorilla: A Fast, Scalable, In-Memory Time Series Database."
+  VLDB 2015 (already cited in `docs/theory/probes/gorilla-compression-go-theory.md`).
+  Focus on §3 (workload characterisation): 80% range queries, 60% aggregations, < 5%
+  point queries. This is the query profile the `monitor/` dashboard will approximate.
+- Read Raasveldt & Mühleisen "DuckDB: An Embeddable Analytical Database." SIGMOD 2019
+  for DuckDB's design rationale (columnar in-process OLAP; bulk-insert-optimised).
+
+**Step 9.2 — Review the empirical SQLite ceiling**
+- From marending.dev (Dec 2023) benchmarks: SQLite WAL + SYNCHRONOUS=NORMAL achieves
+  80 000–113 000 writes/s on x86. On Linux ARM (Hetzner CAX31): 3 316 writes/s WAL
+  default. The Pi 4 SD card is the real constraint, not CPU — expected ceiling
+  15 000–25 000 writes/s with SYNCHRONOUS=NORMAL.
+- Note: the 1 000 metrics/s scenario sits well within ceiling for a single collector.
+  The crossover is estimated at 3 000–5 000 metrics/s on Pi 4 SD but is **unverified
+  on the actual hardware**.
+
+**Step 9.3 — Run the crossover benchmark on the actual Pi 4**
+- Implement `scripts/benchmark_sqlite_write.py` using the exact `monitor/db/schema.sql`
+  schema. Measure sustained INSERT throughput + p95 write latency at
+  100 / 500 / 1 000 / 2 000 / 5 000 rows/s for 60 s each.
+- Record: WAL checkpoint frequency, disk I/O utilisation (iostat), any write errors.
+
+**Step 9.4 — Apply the decision matrix**
+- See `docs/theory/storage/embedded-tsdb-selection.md` §4 for the full decision matrix.
+  Summary:
+  - ≤ 1 000 metrics/s (single collector): stay with SQLite WAL + SYNCHRONOUS=NORMAL.
+  - 1 000–5 000 metrics/s (2–4 collectors): add batched write path (100–500 ms flush).
+  - > 5 000 metrics/s or query latency unacceptable: migrate to DuckDB (bulk insert)
+    or Prometheus TSDB (if Grafana already deployed).
+
+**Step 9.5 — If DuckDB migration is needed**
+- Change the `monitor/` write path to buffer metrics in a Go channel and flush as
+  Arrow batch every 500 ms. Rewrite time-range queries using DuckDB SQL (GROUP BY
+  time_bucket). Verify ARM64 compatibility on Pi 4.
+- Do NOT attempt single-row DuckDB inserts — DuckDB single-row write throughput is
+  *slower* than SQLite WAL.
+
+**Exit criteria:**
+- [ ] Benchmark run on actual Pi 4 SD card hardware; crossover point measured
+- [ ] Decision (stay with SQLite or migrate) documented with measured numbers
+- [ ] If migration: DuckDB bulk-insert write path implemented and tested
+- [ ] If SQLite retained: `PRAGMA synchronous = NORMAL` confirmed in `monitor/db/db.go`
+
+---
+
 ## Summary Table: Research Gate per Phase
 
 | Phase | Research required before coding? | Primary reading | Data-driven validation needed |
@@ -162,3 +269,5 @@ Goal: derive a real threshold instead of the placeholder "> N ARP replies per mi
 | 5 — Probe budget allocation | Yes | Amjad et al. 2021 | Small-N simulation |
 | 2 — eBPF passive RTT | Yes | Sundberg 2024 | Raspberry Pi kernel/capability test |
 | 3 — ARP-rate thresholds | Yes | Brügge & Simon 2024 | 7+ days of own ARP baseline |
+| **8 — OTLP batch sizing (Wi-Fi)** | **Yes** | **Kaul INFOCOM 2012; Kadota MIT 2020; Dash0 2026** | **14+ days loss traces; simulation grid; 72 h soak** |
+| **9 — SQLite vs. TSDB crossover** | **Yes** | **Pelkonen VLDB 2015; Raasveldt SIGMOD 2019** | **Crossover benchmark on actual Pi 4 SD card** |
