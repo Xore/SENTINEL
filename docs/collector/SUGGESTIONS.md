@@ -1,7 +1,9 @@
 # Collector – Assessment & Improvement Suggestions
 
-> **Last updated:** 2026-07-25  
-> **Scope:** Full review of the current Go collector, academic and industry research grounding, and a concrete roadmap for production-grade network + OT probe collection.
+> **⚠️ SUPERSEDED — Last updated:** 2026-07-25  
+> **This document is the academic background reference only.**  
+> **The actionable v2 design has moved to: [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md)**  
+> That document contains the full gap table, file structure, go.mod, OTLP metric naming, OT safety rules, migration plan, and phased implementation roadmap (C1–C10).
 
 ---
 
@@ -21,6 +23,8 @@ The collector is a **Go-based lightweight push agent** (`v0.2.0`) that:
 - Sends a **fast heartbeat ping** (~5–10 s) and a **slower sample push** (default 30 s)
 - Supports **HMAC-authenticated self-update** over HTTP from the aggregator
 
+**v2 design:** The v2 collector bundles all features listed in Sections 3–6 below natively — including OS health (CPU/mem/disk/uptime), SNMP, Modbus, WireGuard, ICMP loss%, interface counters, WAN checks, TLS cert expiry, listening port snapshot, and systemd unit state. `node_exporter` is no longer required on collector nodes. See [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md).
+
 ---
 
 ## 2. Academic & Industry Research Context
@@ -33,9 +37,9 @@ Peer-reviewed work on scalable monitoring platforms (Wren project, ACM SIGMETRIC
 - **Active monitoring** (ICMP, TCP probes, SNMP polls) adds measurable but small traffic load and gives ground-truth reachability and latency data.
 - The academic recommendation is **hybrid**: use passive data (topology, utilisation) to *steer* which active probes to run, avoiding blanket active scanning. This is called "topology-based steering" and significantly reduces probe overhead without sacrificing measurement accuracy.
 
-> **Implication for this collector:** The current agent is already push-based (active). It should add passive interface-counter collection (`/proc/net/dev`) in parallel, so the aggregator can correlate active probe results against real link utilisation.
+> **Implication for this collector:** The v2 collector implements both: active probes (all check types) and passive interface-counter collection (`/proc/net/dev`) in the same binary. The MDP adaptive scheduler (C6) implements topology-based steering driven by `priority_hints` from the backend.
 
-The Cambridge multi-layer Nprobe architecture (UCAM-CL-TR-571) further establishes that probes should capture only the minimal data needed per protocol layer, with full offline analysis at the aggregator. This justifies the current design of sending JSON rows rather than raw packet captures.
+The Cambridge multi-layer Nprobe architecture (UCAM-CL-TR-571) further establishes that probes should capture only the minimal data needed per protocol layer, with full offline analysis at the aggregator. This justifies the current design of sending JSON rows/OTLP metrics rather than raw packet captures.
 
 ### 2.2 Probe Placement Optimality
 
@@ -53,7 +57,7 @@ Key findings relevant to this collector:
 | Most OT nets are flat (no VLAN segmentation) | ARP table enumeration covers the whole segment; passive discovery is reliable |
 | Vendor remote access (VPN backdoors) is a major blind spot | Collector should log unexpected outbound connections via netstat/ss |
 | Asset inventory is the first ROI value — unknown devices on the network | ARP + SNMP sysDescr already gives good inventory data |
-| NTP clock skew is critical for OT log correlation | NTP check already implemented; should add per-device offset threshold alerting |
+| NTP clock skew is critical for OT log correlation | NTP check already implemented; v2 adds stratum check + offset < 1s enforcement |
 
 The IEC 62443 standard (sections 3-1 to 3-3) governs component-level security in OT networks. **Monitoring must not disturb the control plane** — this rules out any SYN-scan-style active discovery. Only targeted, rate-limited Modbus reads (one request per cycle) and SNMP GETs are acceptable.
 
@@ -67,7 +71,7 @@ The RITICS/NCSC ICS-COI guidance (2024) provides the authoritative indicator lis
 
 ### 2.4 Agent Architecture Patterns
 
-The MDP-based network monitoring agent model (Zabala et al., 2023, *Mathematics* 11(3):610, cited 3 times) shows that a **Markov Decision Process** approach to scheduling checks — prioritising checks with highest uncertainty — outperforms fixed-interval polling on commodity hardware. This is directly applicable: the aggregator could eventually return a `priority_hints` field in the check plan, telling the collector to re-probe recently-failed targets more aggressively.
+The MDP-based network monitoring agent model (Zabala et al., 2023, *Mathematics* 11(3):610, cited 3 times) shows that a **Markov Decision Process** approach to scheduling checks — prioritising checks with highest uncertainty — outperforms fixed-interval polling on commodity hardware. This is directly applicable: the aggregator returns a `priority_hints` field in the check plan, telling the collector to re-probe recently-failed targets more aggressively. **Implemented in v2 as `scheduler/scheduler.go` (Phase C6).**
 
 The push-vs-pull debate in distributed monitoring (HertzBeat community discussion, 2024) confirms the current push-active design is the right choice for NAT-traversal scenarios: the agent initiates all connections, requiring no inbound firewall rules.
 
@@ -77,73 +81,77 @@ After reviewing Go, Python, Rust, and C for this use case:
 
 | Language | Binary size | Cross-compile | OT lib ecosystem | Verdict |
 |---|---|---|---|---|
-| **Go** | ~8 MB static | First-class | Good (gosnmp, go-modbus) | ✅ **Keep** |
+| **Go** | ~22–26 MB static (v2) | First-class | Good (gosnmp, go-modbus) | ✅ **Keep** |
 | Python | Runtime required | Hard to single-binary | Best (pymodbus, pysnmp) | ❌ Deployment cost too high |
 | Rust | ~2 MB static | First-class | Immature OT libs | ⚠️ Future consideration |
 | C | ~200 KB | Manual | libmodbus, net-snmp | ❌ Memory safety risk |
 
-**Verdict: Keep Go.** The only scenario where switching would add value is if the collector needs to run on extremely resource-constrained embedded hardware (< 16 MB RAM), in which case Rust would be the alternative.
+**Verdict: Keep Go.** The v2 binary grows to ~22–26 MB due to OTel SDK, gRPC, gosnmp, go-modbus, wgctrl, cilium/ebpf, and modernc.org/sqlite — still a single static binary, zero runtime dependencies.
 
 ---
 
 ## 3. Gap Analysis
 
+> **These gaps are addressed in v2.** See [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md) for implementation details, file assignments, and priority phasing.
+
 ### 3.1 Network Health Checks
 
-| Missing Check | Academic / Industry Basis | Priority |
-|---|---|---|
-| **Default gateway reachability + RTT** | Baseline for all routing problems | P0 |
-| **ICMP packet loss %** (multi-packet) | Wren / CoNEXT – loss % more informative than binary up/down | P0 |
-| **Interface RX/TX counters, errors, drops** | `/proc/net/dev`; link degradation before failure | P0 |
-| **Route table dump** | Detect route injection / missing static routes | P1 |
-| **WAN public IP + ISP** | Failover / unexpected path detection | P1 |
-| **WAN latency anchors** (1.1.1.1, 8.8.8.8) | Absolute baseline, detect ISP degradation | P1 |
-| **WireGuard peer last-handshake age** | VPN silently dead; common in split-tunnel setups | P1 |
-| **DNS upstream check** (custom resolver vs. 8.8.8.8 delta) | DNS hijack / Pi-hole bypass detection | P1 |
-| **MTU / PMTUD probe** | Silent black-holes on GRE/WireGuard tunnels | P2 |
-| **Traceroute hop latency** (3 probes per hop) | Congestion localisation | P2 |
-| **BGP route table** (via quagga/bird socket) | Route leaks on multi-homed sites | P3 |
+| Missing Check | Academic / Industry Basis | Priority | v2 File |
+|---|---|---|---|
+| **Default gateway reachability + RTT** | Baseline for all routing problems | P0 | `net_routes.go` |
+| **ICMP packet loss %** (multi-packet) | Wren / CoNEXT – loss % more informative than binary up/down | P0 | `net_icmp.go` |
+| **Interface RX/TX counters, errors, drops** | `/proc/net/dev`; link degradation before failure | P0 | `net_interfaces.go` |
+| **Route table dump** | Detect route injection / missing static routes | P1 | `net_routes.go` |
+| **WAN public IP + ISP** | Failover / unexpected path detection | P1 | `net_wan.go` |
+| **WAN latency anchors** (1.1.1.1, 8.8.8.8) | Absolute baseline, detect ISP degradation | P1 | `net_wan.go` |
+| **WireGuard peer last-handshake age** | VPN silently dead; common in split-tunnel setups | P1 | `net_wireguard.go` |
+| **DNS upstream check** (custom resolver vs. 8.8.8.8 delta) | DNS hijack / Pi-hole bypass detection | P1 | `checks.go` (extend) |
+| **MTU / PMTUD probe** | Silent black-holes on GRE/WireGuard tunnels | P2 | Future |
+| **Traceroute hop latency** (3 probes per hop) | Congestion localisation | P2 | Phase 6 |
+| **BGP route table** (via quagga/bird socket) | Route leaks on multi-homed sites | P3 | Future |
 
 ### 3.2 Endpoint / OS Health
 
-| Missing Check | Industry Basis | Priority |
-|---|---|---|
-| **CPU / memory / disk usage** | RITICS guidance: "High CPU usage" is an IoC indicator | P0 |
-| **Uptime / last reboot timestamp** | PLC and server unexpected reboots = IoC | P0 |
-| **Logged-in users** (who / wtmp) | Unexpected sessions = lateral movement | P1 |
-| **Listening port snapshot** (ss -tlnp) | New listener = potential compromise or misconfiguration | P1 |
-| **Systemd unit failures** | Service crash silent without monitoring | P1 |
-| **Docker container status** | Containerised services invisible otherwise | P1 |
-| **TLS certificate expiry** | Avoids surprise outages | P1 |
-| **Pending OS security updates** | Patch posture hygiene | P2 |
-| **SMART disk health** | Silent disk failures on long-running nodes | P2 |
-| **auditd / Windows Event log tail** | Process creation, privilege escalation (RITICS Appendix A) | P2 |
+> **All P0 and P1 items implemented in v2 Phase C3** via `os_health_linux.go` / `os_health_windows.go` — **eliminating the node_exporter requirement**.
+
+| Missing Check | Industry Basis | Priority | v2 File |
+|---|---|---|---|
+| **CPU / memory / disk usage** | RITICS guidance: "High CPU usage" is an IoC indicator | P0 | `os_health_*.go` |
+| **Uptime / last reboot timestamp** | PLC and server unexpected reboots = IoC | P0 | `os_health_*.go` |
+| **Logged-in users** (who / wtmp) | Unexpected sessions = lateral movement | P1 | `os_health_linux.go` |
+| **Listening port snapshot** (ss -tlnp) | New listener = potential compromise or misconfiguration | P1 | `os_ports.go` |
+| **Systemd unit failures** | Service crash silent without monitoring | P1 | `os_processes.go` |
+| **Docker container status** | Containerised services invisible otherwise | P1 | `os_processes.go` |
+| **TLS certificate expiry** | Avoids surprise outages | P1 | `tls_check.go` |
+| **Pending OS security updates** | Patch posture hygiene | P2 | Future |
+| **SMART disk health** | Silent disk failures on long-running nodes | P2 | Future |
+| **auditd / Windows Event log tail** | Process creation, privilege escalation (RITICS Appendix A) | P2 | Future |
 
 ### 3.3 OT / Industrial Device Checks
 
 > **Safety rule (IEC 62443 / RITICS):** All OT checks must be **read-only**, **rate-limited to 1 request per collection cycle**, and must **not write** to any PLC register or coil.
 
-| Missing Check | Protocol | Industry Basis | Priority |
-|---|---|---|---|
-| **SNMP v2c/v3 GET** (sysDescr, ifOperStatus, CPU OID) | SNMP UDP/161 | Standard for all managed network devices | P0 |
-| **Modbus TCP FC03 read** (holding registers) | Modbus TCP/502 | PLC/HMI alive + data point; Ollila 2024 | P1 |
-| **Modbus TCP FC01 read** (coil status — read-only) | Modbus TCP/502 | PLC discrete input health | P1 |
-| **Siemens S7 / ISO-TSAP connect** | TCP/102 | S7-300/400/1200/1500 reachability | P1 |
-| **BACnet WhoIs** broadcast | BACnet UDP/47808 | Building automation device discovery | P2 |
-| **OPC-UA browse / read** | OPC-UA TCP/4840 | SCADA historian / data plane health | P2 |
-| **IPMI / Redfish GET** | HTTP/443 or IPMI UDP/623 | Server OOB health without OS agent | P2 |
-| **EtherNet/IP** (CIP identity object) | UDP/44818 | Allen-Bradley PLC reachability | P3 |
-| **DNP3 data link status** | TCP/20000 | SCADA RTU health (power/water utilities) | P3 |
+| Missing Check | Protocol | Industry Basis | Priority | v2 File |
+|---|---|---|---|---|
+| **SNMP v2c/v3 GET** (sysDescr, ifOperStatus, CPU OID) | SNMP UDP/161 | Standard for all managed network devices | P0 | `ot_snmp.go` |
+| **Modbus TCP FC03 read** (holding registers) | Modbus TCP/502 | PLC/HMI alive + data point; Ollila 2024 | P1 | `ot_modbus.go` |
+| **Modbus TCP FC01 read** (coil status — read-only) | Modbus TCP/502 | PLC discrete input health | P1 | `ot_modbus.go` |
+| **Siemens S7 / ISO-TSAP connect** | TCP/102 | S7-300/400/1200/1500 reachability | P1 | `ot_s7.go` |
+| **BACnet WhoIs** broadcast | BACnet UDP/47808 | Building automation device discovery | P2 | Future |
+| **OPC-UA browse / read** | OPC-UA TCP/4840 | SCADA historian / data plane health | P2 | Future |
+| **IPMI / Redfish GET** | HTTP/443 or IPMI UDP/623 | Server OOB health without OS agent | P2 | Future |
+| **EtherNet/IP** (CIP identity object) | UDP/44818 | Allen-Bradley PLC reachability | P3 | Future |
+| **DNP3 data link status** | TCP/20000 | SCADA RTU health (power/water utilities) | P3 | Future |
 
 ### 3.4 WAN Checks
 
-| Missing Check | Why It Matters | Priority |
-|---|---|---|
-| **Public IP** (`api.ipify.org` or self-hosted) | Confirms internet egress; detects NAT failover | P0 |
-| **Latency to Cloudflare (1.1.1.1) + Google (8.8.8.8)** | Absolute WAN baseline | P0 |
-| **HTTP(S) to configured external URL** | DNS + routing + TLS full stack test | P1 |
-| **Download throughput probe** (timed GET of fixed payload) | Bandwidth regression | P2 |
-| **RIPE Atlas / BGP looking glass** (via REST API) | ISP route changes from collector's AS | P3 |
+| Missing Check | Why It Matters | Priority | v2 File |
+|---|---|---|---|
+| **Public IP** (`api.ipify.org` or self-hosted) | Confirms internet egress; detects NAT failover | P0 | `net_wan.go` |
+| **Latency to Cloudflare (1.1.1.1) + Google (8.8.8.8)** | Absolute WAN baseline | P0 | `net_wan.go` |
+| **HTTP(S) to configured external URL** | DNS + routing + TLS full stack test | P1 | `net_wan.go` |
+| **Download throughput probe** (timed GET of fixed payload) | Bandwidth regression | P2 | Future |
+| **RIPE Atlas / BGP looking glass** (via REST API) | ISP route changes from collector's AS | P3 | Future |
 
 ---
 
@@ -159,353 +167,48 @@ Go is correct for this agent because:
 - **Goroutines** let every check run concurrently without thread pool overhead
 - **Low footprint** — suitable for Raspberry Pi, VMs, and Windows Server Core
 
-External libraries needed (minimal, all pure-Go):
+External libraries needed for v2 (see `COLLECTOR-V2-REFACTOR.md` Section 8 for full go.mod):
 
 | Need | Library | License |
 |---|---|---|
-| SNMP v2c/v3 | `github.com/gosnmp/gosnmp` | BSD-2 |
-| Modbus TCP | `github.com/things-go/go-modbus` | MIT |
-| WireGuard wg-ctrl | `golang.zx2c4.com/wireguard/wgctrl` | MIT |
+| OTLP/gRPC export | `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc` | Apache-2 |
 | ICMP raw socket | `golang.org/x/net/icmp` | BSD |
-| Prometheus metrics export | `github.com/prometheus/client_golang` | Apache-2 |
+| SNMP v2c/v3 | `github.com/gosnmp/gosnmp` | BSD-2 |
+| Modbus TCP | `github.com/things-labs/go-modbus` | MIT |
+| WireGuard wg-ctrl | `golang.zx2c4.com/wireguard/wgctrl` | MIT |
+| eBPF (Linux) | `github.com/cilium/ebpf` | MIT |
+| SQLite (cold buffer) | `modernc.org/sqlite` | MIT |
 
 ---
 
 ## 5. Recommended File Structure
 
+> **See [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md) Section 7** for the full v2 file structure (35 files). Below is the v1 starting point for reference.
+
 ```
 collector/
-├── main.go              # lifecycle, config, ticker loop  (existing)
-├── checks.go            # DNS/HTTP/TCP/NTP/port           (existing)
-├── ping_linux.go        # OS ping wrapper                 (existing)
-├── ping_windows.go      # OS ping wrapper                 (existing)
-├── reexec_unix.go       # self-update re-exec             (existing)
-├── reexec_windows.go    # self-update re-exec             (existing)
-│
-├── net_interfaces.go    # interface counters, errors, MTU (NEW)
-├── net_routes.go        # route table, GW reachability    (NEW)
-├── net_wan.go           # public IP, WAN latency probes   (NEW)
-├── net_wireguard.go     # wgctrl last-handshake, peers    (NEW)
-├── net_icmp.go          # ICMP loss %, x/net/icmp         (NEW)
-│
-├── os_health.go         # CPU/mem/disk, uptime            (NEW — build-tagged)
-├── os_health_linux.go   # /proc/stat, /proc/meminfo       (NEW)
-├── os_health_windows.go # Get-CimInstance Win32_OS        (NEW)
-├── os_processes.go      # systemd units, Docker containers(NEW)
-├── os_ports.go          # ss/netstat listening snapshot   (NEW)
-│
-├── ot_snmp.go           # SNMP GET, walk (gosnmp)         (NEW)
-├── ot_modbus.go         # Modbus TCP FC01/FC03 read-only  (NEW)
-├── ot_s7.go             # Siemens ISO-TSAP connect check  (NEW)
-├── ot_bacnet.go         # BACnet WhoIs / ReadProperty     (NEW)
-│
-├── tls_check.go         # cert expiry check               (NEW)
-├── SUGGESTIONS.md       # this file
-└── go.mod
+├── main.go              # lifecycle, config, ticker loop  (existing → refactor)
+├── checks.go            # DNS/HTTP/TCP/NTP/port           (existing → extend)
+├── ping_linux.go        # OS ping wrapper                 (existing → keep)
+├── ping_windows.go      # OS ping wrapper                 (existing → keep)
+├── reexec_unix.go       # self-update re-exec             (existing → keep)
+├── reexec_windows.go    # self-update re-exec             (existing → keep)
+└── go.mod               # stdlib only today → 8 deps in v2
 ```
 
 ---
 
-## 6. Concrete Implementation Guide
+## 6. Implementation Guide
 
-### 6.1 Interface Counters (P0)
+> **The full implementation guide has moved to [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md) Section 6.** That document contains complete Go function signatures, build tags, and cross-platform notes for all 15 new source files.
 
-```go
-// net_interfaces.go — Linux reads /proc/net/dev; Windows uses PowerShell
-func collectInterfaceCounters() []map[string]any {
-    // Linux: parse /proc/net/dev
-    // Columns: iface | rx_bytes rx_packets rx_errs rx_drop ... | tx_bytes ...
-    // Windows: exec PowerShell "Get-NetAdapterStatistics | ConvertTo-Json"
-    // Return per-interface: rx_bytes, tx_bytes, rx_errors, tx_errors, rx_dropped, tx_dropped
-}
-```
-
-Linux `/proc/net/dev` is available without any privilege escalation. Windows `Get-NetAdapterStatistics` requires no elevation either.
-
-### 6.2 ICMP Loss % (P0)
-
-```go
-// net_icmp.go — uses golang.org/x/net/icmp
-// Requires CAP_NET_RAW on Linux (same privilege path as reexec_unix.go already handles)
-// Requires Administrator on Windows (document this in service install guide)
-func pingWithLoss(host string, count int, timeoutMs int) (up bool, avgRttMs float64, lossPercent float64) {
-    // Send `count` ICMP echo requests with sequence numbers
-    // Collect replies within timeout window
-    // lossPercent = (sent - received) / sent * 100
-    // avgRttMs = mean of reply RTTs
-}
-```
-
-Academic basis: binary up/down is insufficient — the Wren project showed that loss % and jitter are the leading indicators of path degradation before a link goes fully down.
-
-### 6.3 Default Gateway + Route Table (P1)
-
-```go
-// net_routes.go
-func collectRoutes() []map[string]any {
-    // Linux:   exec("ip", "route") → parse "default via X.X.X.X dev ethN"
-    // Windows: exec("route", "print", "-4") → parse 0.0.0.0 line
-    // Always extract: destination, gateway, interface, metric
-    // Then ping the default gateway address (using pingWithLoss above)
-    // Return: gateway_ip, gateway_rtt_ms, gateway_loss_pct, route_count, routes[]
-}
-```
-
-### 6.4 WAN Public IP + Latency (P1)
-
-```go
-// net_wan.go
-func collectWAN(cfg wanConfig) map[string]any {
-    // Step 1: GET cfg.PublicIPURL (default: https://api.ipify.org?format=json)
-    // Parse {"ip":"1.2.3.4"} — confirms internet egress
-    // Step 2: ping each cfg.LatencyTargets (["1.1.1.1","8.8.8.8"]) with loss %
-    // Step 3: optional HTTP GET to cfg.ExternalURL — confirms DNS + TLS stack
-    // Return: public_ip, latency_cf_ms, latency_google_ms, external_ok, tls_cert_days_left
-}
-```
-
-### 6.5 WireGuard Peer Health (P1)
-
-```go
-// net_wireguard.go — uses golang.zx2c4.com/wireguard/wgctrl
-func collectWireGuard() []map[string]any {
-    // Open wgctrl.New() client
-    // For each device: for each peer:
-    //   - PublicKey (truncated for display)
-    //   - AllowedIPs
-    //   - LastHandshakeTime → age in seconds
-    //   - RxBytes, TxBytes (delta from previous cycle)
-    //   - up: LastHandshakeTime < 3 minutes (WireGuard keepalive default)
-    // If wgctrl fails (no WireGuard interfaces) → return empty, no error
-}
-```
-
-### 6.6 SNMP GET for OT/Network Gear (P0)
-
-```go
-// ot_snmp.go — uses github.com/gosnmp/gosnmp
-// Recommended base OIDs:
-//   sysDescr        1.3.6.1.2.1.1.1.0  — device identity
-//   sysUpTime       1.3.6.1.2.1.1.3.0  — uptime (detect reboots)
-//   sysName         1.3.6.1.2.1.1.5.0  — hostname
-//   ifOperStatus    1.3.6.1.2.1.2.2.1.8.N — interface state
-//   ifInErrors      1.3.6.1.2.1.2.2.1.14.N
-//   ifOutErrors     1.3.6.1.2.1.2.2.1.20.N
-
-func collectSNMP(targets []snmpTarget) []map[string]any {
-    // For each target: gosnmp.Get(oids)
-    // Support v2c (community string) and v3 (user/auth/priv)
-    // Rate-limit: one SNMP GET per target per collection cycle
-    // Return: name, host, sysDescr, sysUpTime, interface_states[]
-}
-```
-
-Per RITICS/NCSC ICS-COI guidance: a `sysUpTime` drop back to near-zero is a **high-priority indicator** of an unexpected PLC/switch reboot.
-
-### 6.7 Modbus TCP Read-Only Poll (P1)
-
-```go
-// ot_modbus.go — uses github.com/things-go/go-modbus
-// SAFETY: FC03 (read holding registers) and FC01 (read coils) ONLY
-// NEVER use FC05 (write single coil), FC06 (write register), FC16 (write multiple)
-func collectModbus(targets []modbusTarget) []map[string]any {
-    // For each target:
-    //   client := modbus.NewClient(modbus.NewTCPClientProvider(host:port))
-    //   data, err := client.ReadHoldingRegisters(unitID, address, count)
-    //   Interpret as uint16 values; store raw + optional scaling factor from config
-    // Return: name, host, unit_id, registers[], timestamp, ok, error
-}
-
-type modbusTarget struct {
-    Name      string           `json:"name"`
-    Host      string           `json:"host"`
-    Port      int              `json:"port"`      // default 502
-    UnitID    uint8            `json:"unit_id"`
-    Registers []modbusRegister `json:"registers"`
-    TimeoutMs int              `json:"timeout_ms"` // default 2000
-}
-type modbusRegister struct {
-    Address uint16  `json:"address"`
-    Count   uint16  `json:"count"`
-    Scale   float64 `json:"scale"` // optional: raw * scale = engineering unit
-    Label   string  `json:"label"`
-}
-```
-
-### 6.8 OS Health (P0)
-
-```go
-// os_health_linux.go (build tag: //go:build linux)
-func collectOSHealth() map[string]any {
-    // CPU: parse /proc/stat (user+nice+system / total ticks) → usage %
-    // Memory: parse /proc/meminfo (MemTotal, MemAvailable, SwapTotal, SwapFree)
-    // Disk: for each configured path → syscall.Statfs → used_bytes, free_bytes, used_pct
-    // Uptime: read /proc/uptime → uptime_seconds
-    // Load average: read /proc/loadavg → load1, load5, load15
-    // Users: exec("who") → count and list
-}
-
-// os_health_windows.go (build tag: //go:build windows)
-func collectOSHealth() map[string]any {
-    // exec PowerShell: "Get-CimInstance Win32_OperatingSystem | ConvertTo-Json"
-    // Parse: FreePhysicalMemory, TotalVisibleMemorySize, LastBootUpTime
-    // exec: "Get-PSDrive -PSProvider FileSystem | ConvertTo-Json"
-    // Parse: Used, Free per drive letter
-}
-```
-
-### 6.9 TLS Certificate Expiry (P1)
-
-```go
-// tls_check.go
-func checkCertExpiry(host string, port int, daysWarnThreshold int) map[string]any {
-    // net.DialTimeout("tcp", host:port, 5s)
-    // tls.Client(conn, &tls.Config{ServerName: host, InsecureSkipVerify: false})
-    // conn.Handshake()
-    // cert := conn.ConnectionState().PeerCertificates[0]
-    // daysLeft := time.Until(cert.NotAfter).Hours() / 24
-    // Return: host, subject, issuer, not_after, days_left, ok: daysLeft > daysWarnThreshold
-}
-```
-
-### 6.10 Listening Port Snapshot (P1)
-
-```go
-// os_ports.go
-func collectListeningPorts() []map[string]any {
-    // Linux:   exec("ss", "-tlnp") → parse LISTEN lines
-    //          fields: proto, local_addr, local_port, pid, process_name
-    // Windows: exec("netstat", "-ano") | filter LISTENING
-    //          then cross-reference PID with Get-Process
-    // Return: proto, port, address, pid, process — for change detection at aggregator
-}
-```
+The code samples in the original version of this section (6.1–6.10) remain academically valid and are referenced from the v2 refactor document.
 
 ---
 
-## 7. Extended Check Plan Schema
+## 7–10. Extended Check Plan Schema, Linux/Windows Matrix, OT Safety Rules, RITICS Mapping
 
-```json
-{
-  "targets":  [...],
-  "services": [...],
-  "ports":    [...],
-
-  "snmp_targets": [
-    {
-      "name": "core-switch",
-      "host": "10.0.0.1",
-      "version": "2c",
-      "community": "public",
-      "oids": ["1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.3.0"]
-    },
-    {
-      "name": "ups-01",
-      "host": "10.0.0.5",
-      "version": "3",
-      "username": "monitor",
-      "auth_protocol": "SHA",
-      "auth_passphrase": "...",
-      "priv_protocol": "AES",
-      "priv_passphrase": "..."
-    }
-  ],
-
-  "modbus_targets": [
-    {
-      "name": "plc-main",
-      "host": "10.100.0.5",
-      "port": 502,
-      "unit_id": 1,
-      "timeout_ms": 2000,
-      "registers": [
-        { "address": 100, "count": 4, "label": "production_counter" },
-        { "address": 200, "count": 2, "label": "temperature_raw", "scale": 0.1 }
-      ]
-    }
-  ],
-
-  "wan_checks": {
-    "enabled": true,
-    "public_ip_url": "https://api.ipify.org?format=json",
-    "latency_targets": ["1.1.1.1", "8.8.8.8", "9.9.9.9"],
-    "external_url": "https://example.com/healthz"
-  },
-
-  "wireguard": {
-    "enabled": true,
-    "max_handshake_age_seconds": 180
-  },
-
-  "os_health": {
-    "enabled": true,
-    "disk_paths": ["/", "/data", "/var"],
-    "disk_warn_pct": 85,
-    "users_warn_count": 3
-  },
-
-  "tls_checks": [
-    { "name": "traefik", "host": "proxy.internal", "port": 443, "warn_days": 30 },
-    { "name": "aggregator", "host": "192.168.50.32", "port": 8088, "warn_days": 14 }
-  ]
-}
-```
-
----
-
-## 8. Linux vs. Windows Agent Matrix
-
-| Concern | Linux | Windows |
-|---|---|---|
-| ICMP raw socket | `CAP_NET_RAW` (setcap or reexec as root) | Admin; `NETWORK SERVICE` with firewall rule |
-| Interface counters | `/proc/net/dev` — no privilege | `Get-NetAdapterStatistics` — no privilege |
-| Route table | `ip route` (iproute2) | `route print` or `Get-NetRoute` (PS) |
-| CPU/memory | `/proc/stat`, `/proc/meminfo` | `Get-CimInstance Win32_OperatingSystem` |
-| Disk | `syscall.Statfs` | `Get-PSDrive` or `WMI Win32_LogicalDisk` |
-| Uptime | `/proc/uptime` | `(Get-Date) - (gcim Win32_OS).LastBootUpTime` |
-| WireGuard | `wgctrl` kernel socket (root) | `wgctrl` (Admin) |
-| SNMP | same Go binary | same Go binary |
-| Service status | `systemctl is-active` | `Get-Service` or SCM API |
-| Docker | `/var/run/docker.sock` | `npipe:////./pipe/docker_engine` |
-| Listening ports | `ss -tlnp` | `netstat -ano` |
-| Install as service | systemd unit file | `sc.exe create` or NSSM |
-| Log forwarding (OT) | rsyslog / auditd | WEF + WEC chain |
-
-The existing Go build-tag pattern (`ping_linux.go` / `ping_windows.go`) must be extended to `os_health_linux.go` / `os_health_windows.go` and `net_routes_linux.go` / `net_routes_windows.go`.
-
----
-
-## 9. OT Safety Rules (Non-Negotiable)
-
-Based on IEC 62443, RITICS/NCSC ICS-COI 2024 guidance, and Ollila 2024 thesis:
-
-1. **Never write to OT devices** — only FC01 (read coils), FC02 (read discrete inputs), FC03 (read holding registers), FC04 (read input registers) are permitted.
-2. **Rate-limit all OT probes** — maximum 1 request per device per collection cycle (default 30 s). OT devices have limited TCP connection tables.
-3. **Respect zone/conduit topology** (IEC 62443-3-3) — the collector must not bridge traffic between Purdue levels. Deploy one collector per zone.
-4. **No broadcast scanning** — do not send ARP broadcasts on OT VLANs; rely only on the existing ARP/neighbour table passively populated by the OS.
-5. **NTP alignment** — OT log correlation requires all collectors to be NTP-synchronised to the same stratum-1/2 source. The existing NTP check should validate this offset is < 1 second.
-6. **Alert on unexpected reboots** — `sysUpTime` via SNMP dropping near zero or `uptime` from Modbus reset counter is a **high-priority IoC** per RITICS Appendix A.
-
----
-
-## 10. RITICS/NCSC Indicator Checklist (Appendix A Mapping)
-
-The following RITICS indicators should map directly to collector checks:
-
-| RITICS Indicator | Collector Check | Stream |
-|---|---|---|
-| Unknown device on network | ARP table new entry (aggregator diff) | `neighbours` |
-| Unknown IP address | ARP + DNS reverse lookup | `neighbours` |
-| Unexpected ARP broadcasting | ARP count spike (aggregator rate) | `neighbours` |
-| Detection of port scanning | Listening port change | `port_snapshot` |
-| Communications outside specification | Modbus register out of expected range | `modbus_checks` |
-| Controller uptime drop | SNMP sysUpTime near-zero | `snmp_checks` |
-| PLC key switch position change | Modbus discrete input (configurable) | `modbus_checks` |
-| High CPU usage | OS health CPU % threshold | `os_health` |
-| Unexpected process started | Listening port new entry | `port_snapshot` |
-| WAN path change | Public IP change between cycles | `wan_checks` |
-| VPN tunnel dead | WireGuard handshake age > 3 min | `wireguard` |
-| Certificate expiry imminent | TLS days_left < warn_days | `tls_checks` |
+> **These sections remain valid and are reproduced / extended in [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md) Sections 9–11.** Refer to that document for the authoritative version.
 
 ---
 
@@ -519,3 +222,4 @@ The following RITICS indicators should map directly to collector checks:
 - RITICS / NCSC ICS-COI. "How to log and monitor in ICS/OT Environments." 2024. https://ritics.org/wp-content/uploads/2024/08/How-to-log-and-monitor-in-ICS-OT-Environments.pdf
 - IEC 62443 Industrial Cybersecurity Standard, sections 3-1 to 3-3.
 - HertzBeat community: "How can we support agent/agentless monitoring and active/passive modes?" GitHub Discussions #2178, 2024. https://github.com/apache/hertzbeat/discussions/2178
+- Pelkonen, T. et al. "Gorilla: A Fast, Scalable, In-Memory Time Series Database." VLDB 2015. http://www.vldb.org/pvldb/vol8/p1816-teller.pdf

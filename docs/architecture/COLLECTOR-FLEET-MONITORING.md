@@ -1,6 +1,7 @@
 # Collector Fleet Monitoring
 
 > **Context:** This document covers monitoring the health of 50+ remote `analyselaptop-collector` systemd services — not the network targets they probe.  
+> **v2 collector design:** [`../collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) — the v2 binary bundles all host-metric collection natively; `node_exporter` is no longer required on collector nodes.  
 > **v2 extended architecture:** [`ARCHITECTURE-V2-EXTENDED.md`](ARCHITECTURE-V2-EXTENDED.md) — Section 10.2 (Collector Health Scoring) and Section 8 (Alerting: vmalert rules) extend the patterns described here.
 
 ---
@@ -13,19 +14,26 @@ Every collector node has three independent failure modes. Each layer catches a d
 Layer 1 — Heartbeat (application-level)
   └─ Is the collector binary actually running and sending data?
   └─ Detected by: missing OTLP push → no `last_seen` update in PostgreSQL
+     AND: collector_heartbeat_total counter stale in VictoriaMetrics
 
 Layer 2 — systemd unit state (OS-level)
   └─ Is the systemd service active/inactive/failed?
   └─ Is it crash-looping (restart count rising)?
-  └─ Detected by: node_exporter --collector.systemd scrape → VictoriaMetrics
+  └─ Detected by: v2 collector bundles host_systemd_unit_active + host_systemd_restart_total
+     natively via os_health_linux.go / os_health_windows.go — no node_exporter required
 
 Layer 3 — Host vitals (hardware/OS-level)
   └─ Is the node reachable at all? CPU/memory/disk/network?
-  └─ Detected by: node_exporter full scrape → VictoriaMetrics
+  └─ Detected by: v2 collector bundles host_cpu_usage_pct, host_mem_available_bytes,
+     host_disk_free_bytes, host_net_rx/tx_bytes_total natively — no node_exporter required
 ```
 
+All three layers are covered by the **v2 collector binary alone**. The v2 collector reads `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `syscall.Statfs`, and `systemctl show` directly and emits them as OTLP metrics alongside probe results. On Windows it uses `Get-CimInstance Win32_OperatingSystem`.
+
+> **node_exporter is optional in v2.** It may still be deployed on nodes that need to feed a separate Prometheus/Grafana stack, but it is no longer required for the analyselaptop fleet monitoring pipeline. See [Section 9](#9-optional-node_exporter-fallback) for the fallback pattern.
+
 Layer 1 is already built into the v2 architecture (ingest service writes `last_seen` to PostgreSQL on every OTLP push).  
-Layers 2 and 3 require deploying `node_exporter` on each collector node.
+Layers 2 and 3 are served by the v2 collector's native OS health collection — `os_health_linux.go` / `os_health_windows.go` (see [`COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) Section 6.1).
 
 ---
 
@@ -64,119 +72,47 @@ Store this as a VictoriaMetrics `vmalert` rule (see `ARCHITECTURE-V2-EXTENDED.md
 
 ---
 
-## 3. Layer 2: systemd Unit State via `node_exporter`
+## 3. Layer 2: systemd Unit State — Native v2 Collector Metrics
 
-### Deploy `node_exporter` via Ansible
+In v2, the collector emits systemd unit health as OTLP gauges. No `node_exporter` or DBus scrape is needed on the hub side:
 
-`node_exporter` is a static binary like the collector — deploy it the same way, under the same Ansible role structure.
+| OTLP Metric | Labels | Meaning |
+|---|---|---|
+| `host_systemd_unit_active` | `collector_id, site_id, unit` | 1 = active, 0 = not active |
+| `host_systemd_restart_count_30m` | `collector_id, site_id, unit` | Restarts in last 30 min window |
+| `host_systemd_start_time_s` | `collector_id, site_id, unit` | Last start time (Unix epoch) |
 
-```yaml
-# deploy/ansible/roles/collector/tasks/node_exporter.yml
-- name: Deploy node_exporter binary
-  copy:
-    src: "node_exporter-linux-{{ arch }}"
-    dest: /usr/local/bin/node_exporter
-    owner: root
-    group: root
-    mode: '0755'
-  notify: restart node_exporter
+These are emitted from `os_processes.go` on Linux (via `systemctl show -p ActiveState,NRestarts,ActiveEnterTimestamp analyselaptop-collector.service`).
 
-- name: Deploy node_exporter systemd unit
-  template:
-    src: node_exporter.service.j2
-    dest: /etc/systemd/system/node_exporter.service
-    mode: '0644'
-  notify:
-    - daemon-reload
-    - restart node_exporter
+### Mapping from old `node_exporter` metrics
 
-- name: Enable node_exporter
-  systemd:
-    name: node_exporter
-    enabled: true
-    state: started
-```
-
-```ini
-# deploy/ansible/roles/collector/templates/node_exporter.service.j2
-[Unit]
-Description=Prometheus Node Exporter
-After=network.target
-
-[Service]
-Type=simple
-User=nobody
-Group=nogroup
-ExecStart=/usr/local/bin/node_exporter \
-  --collector.systemd \
-  --collector.systemd.unit-include="analyselaptop-collector\.service" \
-  --collector.systemd.enable-restarts-metrics \
-  --collector.systemd.enable-start-time-metrics \
-  --collector.netdev \
-  --collector.meminfo \
-  --collector.cpu \
-  --collector.diskstats \
-  --collector.filesystem \
-  --collector.loadavg \
-  --web.listen-address=127.0.0.1:9100 \
-  --web.disable-exporter-metrics
-Restart=always
-RestartSec=10
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**Key flags:**
-- `--collector.systemd.unit-include` — only export metrics for `analyselaptop-collector.service`; avoids DBus overhead for every unit on the node.
-- `--collector.systemd.enable-restarts-metrics` — exposes `node_systemd_service_restart_total` for crash-loop detection.
-- `--web.listen-address=127.0.0.1:9100` — node_exporter listens on loopback only. The collector binary reads it locally and includes host metrics in its OTLP push.
-
-### Key `node_exporter` metrics for the collector unit
-
-| Metric | Meaning |
+| Old (`node_exporter`) | New (v2 collector) |
 |---|---|
-| `node_systemd_unit_state{name="analyselaptop-collector.service", state="active"} == 1` | Service is running |
-| `node_systemd_unit_state{name="analyselaptop-collector.service", state="failed"} == 1` | Service has failed |
-| `node_systemd_service_restart_total` | Cumulative restart count |
-| `node_systemd_service_start_time_seconds` | Last start time (unix epoch) |
-| `node_load1` | 1-minute load average (host overloaded?) |
-| `node_memory_MemAvailable_bytes` | Free memory |
-| `node_filesystem_avail_bytes` | Disk available (local hot/cold store) |
-| `node_network_transmit_bytes_total{device="eth0"}` | Outbound traffic (collector is sending?) |
-
-### Scrape topology: push not pull
-
-Collector nodes are edge devices — they may be behind NAT, OT firewalls, or isolated VLANs. The hub **cannot** scrape them outbound.
-
-**Solution: collector binary pushes node_exporter metrics as part of its OTLP batch.**
-
-The collector binary reads the `node_exporter` `/metrics` endpoint on `127.0.0.1:9100` at each push interval, wraps the host metrics into the OTLP batch alongside probe metrics, and ships them to the hub ingest service. This means:
-
-- Zero new open ports on the collector node.
-- No firewall rule changes beyond the existing `4317/tcp` outbound.
-- The ingest service receives both probe metrics and host metrics in the same authenticated, mTLS-protected channel.
-- VictoriaMetrics stores them all under the same `collector_id` label.
-
-Alternatively, for nodes where embedding is not yet implemented: deploy `Prometheus Pushgateway` on the hub on `127.0.0.1:9091` and have each collector node run a cron/systemd timer that does:
-
-```bash
-curl -s http://localhost:9100/metrics | \
-  curl --data-binary @- \
-  --header 'Content-Type: text/plain; version=0.0.4' \
-  "https://hub:9091/metrics/job/node_exporter/instance/${HOSTNAME}"
-```
-
-This is a short-term bridge until the collector binary embeds the node_exporter read.
+| `node_systemd_unit_state{state="active"}` | `host_systemd_unit_active{unit="analyselaptop-collector.service"}` |
+| `node_systemd_unit_state{state="failed"}` | `host_systemd_unit_active == 0` (check `host_systemd_unit_failed` label) |
+| `node_systemd_service_restart_total` | `host_systemd_restart_count_30m` |
+| `node_systemd_service_start_time_seconds` | `host_systemd_start_time_s` |
 
 ---
 
-## 4. Layer 3: Host Vitals
+## 4. Layer 3: Host Vitals — Native v2 Collector Metrics
 
-The same `node_exporter` scrape that delivers systemd metrics also delivers CPU, memory, disk, and network counters. All are stored in VictoriaMetrics under `{collector_id=..., job="node_exporter"}` labels.
+The v2 collector emits all host vitals from its own `os_health_linux.go` / `os_health_windows.go`. No sidecar needed:
+
+| OTLP Metric | Labels | Source |
+|---|---|---|
+| `host_cpu_usage_pct` | `collector_id, site_id` | `/proc/stat` |
+| `host_load1` / `host_load5` / `host_load15` | `collector_id, site_id` | `/proc/loadavg` |
+| `host_mem_available_bytes` | `collector_id, site_id` | `/proc/meminfo` |
+| `host_mem_total_bytes` | `collector_id, site_id` | `/proc/meminfo` |
+| `host_disk_free_bytes` | `collector_id, site_id, mountpoint` | `syscall.Statfs` |
+| `host_uptime_s` | `collector_id, site_id` | `/proc/uptime` |
+| `host_net_rx_bytes_total` | `collector_id, site_id, interface` | `/proc/net/dev` |
+| `host_net_tx_bytes_total` | `collector_id, site_id, interface` | `/proc/net/dev` |
+| `host_net_rx_errors_total` | `collector_id, site_id, interface` | `/proc/net/dev` |
+| `collector_health_score` | `collector_id, site_id` | `health_score.go` (self-computed) |
+| `collector_cert_days_left` | `collector_id, site_id` | `pki/expiry.go` |
+| `collector_cycle_duration_ms` | `collector_id, site_id` | `main.go` loop timer |
 
 ---
 
@@ -206,82 +142,59 @@ groups:
           summary: "Collector {{ $labels.collector_id }} has not pushed for >5 min"
           runbook: "Check systemd status; check network path to hub:4317"
 
-      # --- systemd unit state ---
+      # --- systemd unit state (v2 native metric) ---
       - alert: CollectorServiceFailed
         expr: |
-          node_systemd_unit_state{
-            name="analyselaptop-collector.service",
-            state="failed"
-          } == 1
+          host_systemd_unit_active{
+            unit="analyselaptop-collector.service"
+          } == 0
         for: 2m
         labels:
           severity: critical
         annotations:
-          summary: "analyselaptop-collector.service FAILED on {{ $labels.instance }}"
+          summary: "analyselaptop-collector.service not active on {{ $labels.collector_id }}"
           runbook: "Run: journalctl -u analyselaptop-collector -n 50"
 
-      - alert: CollectorServiceNotActive
-        expr: |
-          node_systemd_unit_state{
-            name="analyselaptop-collector.service",
-            state="active"
-          } == 0
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "analyselaptop-collector.service not active on {{ $labels.instance }}"
-
-      # --- Crash-loop detection ---
+      # --- Crash-loop detection (v2 native metric) ---
       - alert: CollectorCrashLooping
-        expr: |
-          increase(
-            node_systemd_service_restart_total{
-              name="analyselaptop-collector.service"
-            }[30m]
-          ) > 3
+        expr: host_systemd_restart_count_30m{unit="analyselaptop-collector.service"} > 3
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Collector {{ $labels.instance }} restarted >3 times in 30 min"
+          summary: "Collector {{ $labels.collector_id }} restarted >3 times in 30 min"
           runbook: "Run: journalctl -u analyselaptop-collector -n 100"
 
-      # --- Host vitals ---
+      # --- Host vitals (v2 native metrics) ---
       - alert: CollectorNodeHighLoad
-        expr: node_load1{job="node_exporter"} > 4
+        expr: host_load1 > 4
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "High CPU load on collector node {{ $labels.instance }}"
+          summary: "High CPU load on collector {{ $labels.collector_id }}"
 
       - alert: CollectorNodeLowMemory
         expr: |
-          node_memory_MemAvailable_bytes{job="node_exporter"} /
-          node_memory_MemTotal_bytes{job="node_exporter"} < 0.10
+          host_mem_available_bytes / host_mem_total_bytes < 0.10
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Collector node {{ $labels.instance }} has <10% free RAM"
+          summary: "Collector {{ $labels.collector_id }} has <10% free RAM"
 
       - alert: CollectorNodeDiskFull
         expr: |
-          node_filesystem_avail_bytes{
-            job="node_exporter",
-            mountpoint="/var/lib/analyselaptop"
-          } < 100 * 1024 * 1024
+          host_disk_free_bytes{mountpoint="/var/lib/analyselaptop"} < 100 * 1024 * 1024
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Collector local store on {{ $labels.instance }} has <100 MB free"
+          summary: "Collector local store on {{ $labels.collector_id }} has <100 MB free"
 
       # --- PKI cert expiry ---
       - alert: CollectorCertExpiringSoon
-        expr: |
-          (analyselaptop_collector_cert_expiry_seconds - time()) < 14 * 86400
+        expr: collector_cert_days_left < 14
         for: 1h
         labels:
           severity: warning
@@ -289,9 +202,9 @@ groups:
           summary: "Collector {{ $labels.collector_id }} cert expires in <14 days"
           runbook: "The collector should auto-renew; check PKI enrollment endpoint"
 
-      # --- Collector health score (v2 extended) ---
+      # --- Collector health score ---
       - alert: CollectorHealthDegraded
-        expr: analyselaptop_collector_health_score < 0.6
+        expr: collector_health_score < 0.6
         for: 5m
         labels:
           severity: warning
@@ -368,12 +281,26 @@ Row colour coding in the fleet table:
 
 ---
 
-## 8. What Gets Deployed Per Collector Node
+## 8. What Gets Deployed Per Collector Node (v2)
 
 | Component | Binary | Managed by | Port exposed |
 |---|---|---|---|
-| `analyselaptop-collector` | Go static binary | Ansible + systemd | None (outbound `4317` only) |
-| `node_exporter` | Static binary | Ansible + systemd | `127.0.0.1:9100` (loopback only) |
-| Metrics push | Collector reads `9100` locally, includes in OTLP batch | Part of collector binary | None |
+| `analyselaptop-collector` v2 | Go static binary (~22–26 MB) | Ansible + systemd | None (outbound `4317` only) |
+| ~~`node_exporter`~~ | ~~Static binary~~ | ~~Ansible + systemd~~ | ~~`127.0.0.1:9100`~~ |
 
-No additional inbound firewall rules beyond the existing outbound `4317/tcp` to the hub.
+> **node_exporter is removed from the per-node deployment.** The v2 collector binary bundles all host metrics natively. Deploying `node_exporter` on analyselaptop collector nodes is no longer part of the standard Ansible role.
+
+No additional inbound firewall rules beyond the existing outbound `4317/tcp` to the hub. No additional binaries. No additional systemd units.
+
+---
+
+## 9. Optional: node_exporter Fallback
+
+`node_exporter` may still be useful in two scenarios:
+
+1. **You run a separate Prometheus/Grafana stack** alongside analyselaptop and want a unified host-metrics feed.
+2. **v1 collector nodes not yet migrated to v2** — during the migration window (phases M1–M4 in `COLLECTOR-V2-REFACTOR.md` Section 12), v1 nodes still rely on `node_exporter` for Layers 2 and 3.
+
+For v1 nodes during migration, the original Ansible tasks from the previous version of this document remain valid. After migration completes (phase M5), the `node_exporter` Ansible tasks should be removed from the collector role and the binaries removed from nodes.
+
+See [`COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) Section 12 for the full migration plan.
