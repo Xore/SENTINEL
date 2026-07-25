@@ -41,5 +41,13 @@ else
 fi
 
 echo
+echo "== Shell (lab-access) tests =="
+if [[ -f tests/test_lab_access_sh.sh ]]; then
+  bash tests/test_lab_access_sh.sh || rc=1
+else
+  echo "SKIP: tests/test_lab_access_sh.sh not found" >&2
+fi
+
+echo
 if [[ $rc -eq 0 ]]; then echo "ALL TESTS PASSED"; else echo "TESTS FAILED"; fi
 exit $rc

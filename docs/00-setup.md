@@ -104,6 +104,33 @@ one collector with the toolbar's *all collectors / <id>* selector. Revoke or rot
 a collector's key any time from **Collectors** (revoking drops its data from the
 map). See [[network-map]] and [[analyse-laptop-deploy]].
 
+## Passwordless access to a lab box
+
+For **trusted lab machines you own**, one command from your workstation sets up
+key-based SSH plus passwordless sudo so you can deploy and re-run installers
+without retyping a password:
+
+```bash
+./scripts/lab-access-bootstrap.sh --host 192.168.50.33 --user adminuser
+```
+
+It generates an ed25519 keypair (`~/.ssh/analyse_lab`) if you don't have one,
+installs the **public** key on the box, then runs
+[`scripts/lab-grant-access.sh`](../scripts/lab-grant-access.sh) there to make the
+key install idempotent and drop a validated `/etc/sudoers.d/90-analyse-<user>`
+granting NOPASSWD sudo. The **only** step that asks for the box's password is the
+one-time `ssh-copy-id` — you type it; once the key is in, everything else is
+non-interactive. The private key never leaves your workstation.
+
+To undo it on the box:
+
+```bash
+sudo ./scripts/lab-grant-access.sh --user adminuser --revoke
+```
+
+> This is a deliberate convenience for disposable lab hosts. Do **not** point it
+> at production machines — NOPASSWD sudo removes the password check for that user.
+
 ## Components
 
 | id | Installer | Notes |
