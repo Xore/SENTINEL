@@ -32,6 +32,7 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import auth
     from dashboard import classify
     from dashboard import metrics as metrics_render
+    from dashboard import config_validation
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
@@ -42,6 +43,7 @@ except ImportError:  # run from inside the dashboard directory
     import auth
     import classify
     import metrics as metrics_render
+    import config_validation
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # let us import the monitor/* helpers as a namespace pkg
@@ -1126,10 +1128,30 @@ def put_settings():
     update = {k: v for k, v in payload.items() if k in allowed}
     if not update:
         return jsonify(error="no editable settings in request"), 400
+    # Validate BEFORE persisting so a bad value is rejected with a clear reason
+    # instead of being silently stored and breaking a loop later (#49).
+    errors = config_validation.validate_settings(update)
+    if errors:
+        return jsonify(error="invalid settings", details=errors), 400
     try:
-        return jsonify(settings_store.apply_update(update))
+        result = settings_store.apply_update(update)
     except OSError as exc:
         return jsonify(error=f"could not save settings: {exc}"), 500
+    history.record_audit("settings.update", user=_session_user() or "-",
+                         target=",".join(sorted(update)),
+                         detail=config_validation.summarize_settings(update))
+    return jsonify(result)
+
+
+@app.get("/api/audit")
+def get_audit():
+    """Recent config-change audit entries (newest first). Read-only trail of who
+    changed what and when; secret values are never recorded (#49)."""
+    try:
+        limit = int(request.args.get("limit", 100))
+    except ValueError:
+        return jsonify(error="limit must be a number"), 400
+    return jsonify({"entries": history.list_audit(limit)})
 
 
 def _csv_dicts(path: Path, columns: list[str]) -> list[dict]:
@@ -2723,6 +2745,9 @@ def set_multinode():
     if not update:
         return jsonify(error="nothing to update"), 400
     settings_store.apply_update({"multinode": update})
+    history.record_audit("multinode.update", user=_session_user() or "-",
+                         target="multinode",
+                         detail=", ".join(f"{k}={v}" for k, v in sorted(update.items())))
     return jsonify(_multinode_cfg())
 
 
@@ -3114,13 +3139,20 @@ def map_tag_set(node_id: str):
         )
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+    history.record_audit("device_tag.set", user=_session_user() or "-",
+                         target=node_id,
+                         detail=f"kind={entry.get('kind', '')} label={entry.get('label', '')}")
     return jsonify(node_id=node_id, tag=entry)
 
 
 @app.delete("/api/map/tags/<path:node_id>")
 def map_tag_delete(node_id: str):
     """Remove one node's manual tag (revert to the inferred classification)."""
-    return jsonify(ok=settings_store.delete_device_tag(node_id))
+    ok = settings_store.delete_device_tag(node_id)
+    if ok:
+        history.record_audit("device_tag.delete", user=_session_user() or "-",
+                             target=node_id)
+    return jsonify(ok=ok)
 
 
 @app.get("/api/monitor/throughput")

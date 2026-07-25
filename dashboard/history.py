@@ -145,6 +145,15 @@ CREATE TABLE IF NOT EXISTS collector_samples (
     payload      TEXT           -- JSON
 );
 CREATE INDEX IF NOT EXISTS idx_collector_samples ON collector_samples(collector_id, stream, ts);
+CREATE TABLE IF NOT EXISTS audit_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      REAL,
+    user    TEXT,               -- session user who made the change (or "-")
+    action  TEXT,               -- e.g. settings.update, monitor.config, multinode
+    target  TEXT,               -- what was changed (section/key/id)
+    detail  TEXT                -- short, already-redacted human summary
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
 """
 
 
@@ -864,3 +873,37 @@ def get_collector_neighbours(max_age: float = 3600.0) -> list[dict]:
             "state": p.get("state") or "", "ts": r["ts"],
         }
     return list(latest.values())
+
+
+# --- Audit trail -----------------------------------------------------------
+
+def record_audit(action: str, *, user: str = "-", target: str = "",
+                 detail: str = "") -> None:
+    """Append one config-change entry to the audit trail. Best-effort: a logging
+    failure must never block the change it describes. `detail` MUST already be
+    redacted by the caller — never pass secret values here."""
+    if not action:
+        return
+    try:
+        with _lock, _connect() as db:
+            db.execute(
+                "INSERT INTO audit_log(ts, user, action, target, detail) VALUES(?,?,?,?,?)",
+                (time.time(), (user or "-")[:80], action[:60], (target or "")[:200],
+                 (detail or "")[:500]),
+            )
+            db.commit()
+    except sqlite3.Error:
+        pass
+
+
+def list_audit(limit: int = 100) -> list[dict]:
+    """Most-recent audit entries first (id, ts, user, action, target, detail)."""
+    limit = max(1, min(int(limit), 1000))
+    try:
+        with _lock, _connect() as db:
+            rows = db.execute(
+                "SELECT id, ts, user, action, target, detail FROM audit_log "
+                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    except sqlite3.Error:
+        return []
+    return [dict(r) for r in rows]

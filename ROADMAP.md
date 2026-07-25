@@ -88,7 +88,10 @@ The probe should work as a field laptop, a remote sensor left at a site, and an 
       cooldown floor, separate low-rate OT queue; drives the service/port loops)
 - [ ] Disk reserve/capture policy and a freeze-evidence action
 - [ ] JSON/CSV/HTML session report with hashes
-- [ ] Configuration validation and an audit trail
+- [x] Configuration validation and an audit trail
+      (`dashboard/config_validation.py`: per-section checks reject a bad settings
+      payload 400 before it is persisted; every accepted change is recorded to a
+      secret-free `audit_log` table, exposed at `/api/audit`)
 
 ### P2 — network and Wi-Fi health
 
