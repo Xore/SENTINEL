@@ -5,6 +5,10 @@
 # and guarded by an import check — it is deliberately NOT listed here.
 
 # OTLP export
+# NOTE: opentelemetry 1.25.0 + grpcio-status 1.64.1 is UNSATISFIABLE —
+# opentelemetry-proto 1.25.0 requires protobuf<5.0 but grpcio-status 1.64.1
+# requires protobuf>=5.26.1. Bumped both stacks to the latest mutually
+# compatible pair (verified with `pip check`).
 opentelemetry-sdk==1.44.0
 opentelemetry-exporter-otlp-proto-grpc==1.44.0
 grpcio==1.83.0
