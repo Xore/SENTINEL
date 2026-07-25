@@ -89,11 +89,29 @@ def _validate_approved_scope(scope, errors: list[str]) -> None:
             errors.append(f"approved_scope[{i}] must be a string or object")
 
 
+def _validate_dangerous_actions(da: dict, errors: list[str]) -> None:
+    if not isinstance(da, dict):
+        errors.append("dangerous_actions: expected an object")
+        return
+    if "enabled" in da and not isinstance(da["enabled"], bool):
+        errors.append("dangerous_actions.enabled must be true or false")
+    ack = da.get("acknowledged")
+    if ack is not None:
+        if not isinstance(ack, dict):
+            errors.append("dangerous_actions.acknowledged must be an object")
+        else:
+            for key, val in ack.items():
+                if not isinstance(val, bool):
+                    errors.append(
+                        f"dangerous_actions.acknowledged.{key} must be true or false")
+
+
 _VALIDATORS = {
     "snmp": _validate_snmp,
     "metrics": _validate_metrics,
     "interface_overrides": _validate_interface_overrides,
     "approved_scope": _validate_approved_scope,
+    "dangerous_actions": _validate_dangerous_actions,
 }
 
 

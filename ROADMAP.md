@@ -902,3 +902,31 @@ scripts/
 10. Amjad et al. "Optimal Probing with Statistical Guarantees." arXiv:2109.07743, 2021. https://doi.org/10.48550/arXiv.2109.07743
 11. Zhao et al. "Wasm-bpf: Streamlining eBPF Deployment in Cloud Environments." arXiv:2408.04856, 2024. https://arxiv.org/abs/2408.04856
 12. cilium/ebpf examples: tcp_close RTT kprobe. https://github.com/cilium/ebpf/blob/main/examples/tcprtt/
+
+---
+
+### P5 — excluded-by-default capability gate
+
+A governance surface (Dashboard → **Dangerous Actions**), NOT an attack toolkit.
+Each excluded behaviour is registered, shown with its risk, and gated behind an
+explicit master switch plus per-item acknowledgement, with every attempt written
+to the audit trail. The checkbox marks that the item is **surfaced and gated** —
+the destructive technique itself is deliberately **not implemented** and
+`/api/dangerous/<id>/run` refuses even when fully unlocked.
+
+- [x] Automatic subnet expansion — gated, refused by design
+- [x] Vulnerability / exploit scanning — gated, refused by design
+- [x] Credential guessing, default-password checks — gated, refused by design
+- [x] SNMP community sweeps — gated, refused by design
+- [x] Wi-Fi deauthentication — gated, refused by design
+- [x] Wi-Fi frame injection — gated, refused by design
+- [x] Wi-Fi AP impersonation (rogue/evil-twin) — gated, refused by design
+- [x] S7 / OPC UA writes — gated, refused by design
+- [x] PLC mode changes / program operations — gated, refused by design
+- [x] Arbitrary OPC UA node browsing — gated, refused by design
+- [x] Inline blocking / automatic production changes — gated, refused by design
+- [x] Internet dashboard exposure — gated, refused by design
+
+These remain **excluded by default** as a matter of design. The gate exists to
+make the exclusion explicit and auditable, not to enable the behaviours. The
+destructive techniques are intentionally left unbuilt.

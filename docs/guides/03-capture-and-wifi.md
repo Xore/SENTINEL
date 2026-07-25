@@ -10,7 +10,7 @@ sudo ethtool -k CAPTURE_IFACE
 sudo tcpdump -ni CAPTURE_IFACE -c 50
 ```
 
-The interface should be UP but have no IPv4/IPv6 address. The packet sample should show both directions and the expected VLANs/hosts. Malcolm or its installer may disable GRO/LRO/TSO offloads; confirm the current Malcolm guidance before changing these manually. Compare switch SPAN counters, NIC counters, and application capture-drop metrics under peak load.
+The interface should be UP but have no IPv4/IPv6 address. The packet sample should show both directions and the expected VLANs/hosts. NIC offloads (GRO/LRO/TSO) can merge or reorder frames and distort capture; disable them on the capture NIC (`ethtool -K <iface> gro off lro off tso off gso off`) when doing timing-sensitive analysis. Compare switch SPAN counters, NIC counters, and application capture-drop metrics under peak load.
 
 ## Wi-Fi limitations and workflow
 
@@ -28,11 +28,11 @@ Example capture after a monitor interface already exists:
 sudo dumpcap -i wlan0mon -b duration:300 -b files:24 -w /var/capture/wifi.pcapng
 ```
 
-This example retains roughly two hours in 5-minute files. Size limits should also be used on busy channels. Import completed PCAP/PCAPNG files through Malcolm's upload interface. Channel hopping loses packets and makes timing analysis unreliable; use multiple radios for simultaneous channels.
+This example retains roughly two hours in 5-minute files. Size limits should also be used on busy channels. Open completed PCAP/PCAPNG files in Wireshark or another PCAP-compatible analyser. Channel hopping loses packets and makes timing analysis unreliable; use multiple radios for simultaneous channels.
 
 ## Visibility test
 
-Generate no traffic from the capture NIC. Instead, use already authorized client activity and confirm that Malcolm sees:
+Generate no traffic from the capture NIC. Instead, use already authorized client activity and confirm that the capture sees:
 
 - Expected source/destination IP and MAC pairs
 - DNS/DHCP/NTP where present

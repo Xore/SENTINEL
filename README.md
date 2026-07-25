@@ -48,7 +48,7 @@ Packet retention, not the tools, usually determines storage: average traffic in 
 > reference for what each component does and the safety context around it.
 
 1. Read [docs/01-design-and-safety.md](docs/01-design-and-safety.md) and obtain written authorization and network scope.
-2. Install **Ubuntu Desktop 24.04 LTS** (GUI needed to join Wi-Fi via NetworkManager) with full-disk encryption. Do not use the Malcolm appliance ISO unless every internal disk may be erased; its installer can partition all non-removable storage without confirmation.
+2. Install **Ubuntu Desktop 24.04 LTS** (GUI needed to join Wi-Fi via NetworkManager) with full-disk encryption. Use the standard Ubuntu installer and choose the partitioning manually; avoid any appliance ISO that can erase all non-removable storage without confirmation.
 3. Patch Ubuntu, create a non-root administrator, and enable Secure Boot if supported. The management NIC takes its address from DHCP (this build: `10.0.255.7`); a static reservation on the switch/router is fine. Do not configure an address, route, DNS, or gateway on the capture NIC.
 4. Copy this repository to the probe, run `sudo ./scripts/preflight.sh`, then `sudo ./scripts/install-lightweight.sh`. The first is read-only; the second shows the package plan and asks before installing.
 5. Follow [docs/02-install-lightweight.md](docs/02-install-lightweight.md) to select optional ntopng, Zeek, and Suricata layers.
@@ -267,7 +267,7 @@ sudo ./scripts/capture-pcapng.sh <capture-interface> /var/capture 300 24 2048
 ./scripts/pcap-summary.sh /var/capture/<file>.pcapng
 ```
 
-This produces a ring of 24 five-minute PCAPNG files with a 2 GiB per-file safety cap. The files open directly in Wireshark and can also be uploaded to Malcolm.
+This produces a ring of 24 five-minute PCAPNG files with a 2 GiB per-file safety cap. The files open directly in Wireshark or any PCAP-compatible analysis tool.
 
 ## Important safety boundary
 

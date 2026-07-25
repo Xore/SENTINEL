@@ -50,6 +50,8 @@
           <li class="nav-item"><button data-view="collectors" class="nav-link" title="Remote collector nodes pushing data to this aggregator — status, versions and updates"><i class="nav-icon fas fa-diagram-project"></i><p>Collectors</p></button></li>
           <li class="nav-item"><button data-view="jobs" class="nav-link" title="Log of recent jobs and their results"><i class="nav-icon fas fa-clock-rotate-left"></i><p>Activity</p></button></li>
           <li class="nav-item"><button data-view="settings" class="nav-link" title="Interfaces, SNMP credentials, custom services and the outage monitor"><i class="nav-icon fas fa-gear"></i><p>Settings</p></button></li>
+          <li class="nav-header">DANGER · P5</li>
+          <li class="nav-item"><button data-view="dangerous" class="nav-link" title="Excluded-by-default capabilities, gated behind an explicit opt-in — off by design"><i class="nav-icon fas fa-triangle-exclamation" style="color:var(--bad,#e05656)"></i><p>Dangerous Actions</p></button></li>
         </ul>
       </nav>
     </div>
@@ -334,6 +336,17 @@
         <div id="collectorsRelease" class="chips"></div>
         <div id="collectorsStatus" class="hint"></div>
         <div id="collectorsList" class="table-wrap"></div>
+      </div>
+    </section>
+    <section id="dangerous" class="view">
+      <div class="panel">
+        <div class="panel-head"><div><p class="eyebrow" style="color:var(--bad,#e05656)">ROADMAP P5 · EXCLUDED BY DEFAULT</p><h2>Dangerous actions</h2></div><button onclick="loadDangerous()">Refresh</button></div>
+        <p class="hint">These are the behaviours the probe <strong>deliberately does not do</strong> — the roadmap's <em>Excluded by default</em> list. This tab exists so they are visible and gated rather than silently absent. Everything here is a <strong>denial-of-service, credential-attack, OT-write or exposure technique</strong>. This build <strong>does not implement them</strong>: turning the switch on only unlocks the item and records your acknowledgement to the audit trail — the destructive technique is never executed. Only ever consider enabling this under explicit written authorization for the specific engagement.</p>
+        <div class="form-row" style="align-items:center">
+          <label class="inline"><input type="checkbox" id="daMaster" onchange="daToggleMaster()"> <strong>Enable dangerous actions (master switch)</strong></label>
+          <span id="daMasterStatus" class="hint"></span>
+        </div>
+        <div id="daList" class="table-wrap"></div>
       </div>
     </section>
     <section id="jobs" class="view"><div class="panel"><div class="panel-head"><h2>Recent activity</h2><button onclick="loadJobs()">Refresh</button></div><div id="jobsList"></div></div></section>

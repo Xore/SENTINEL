@@ -70,6 +70,18 @@ DEFAULTS: dict = {
         "enabled": False,
         "token": "",   # secret; optional bearer token gating /metrics
     },
+    # Roadmap P5 - explicitly excluded-by-default capabilities (task #55). This
+    # is a safety governance gate, NOT an attack toolkit: the master switch and
+    # the per-action flags below are all off, and even when turned on the probe
+    # does NOT perform the destructive technique - deauth/injection/exploit/
+    # credential-guessing/PLC-writes remain unimplemented by design. Turning a
+    # flag on only records acknowledged intent (audited) and unhides the item;
+    # the runtime still refuses to execute it. Keeps these behaviours visibly
+    # excluded rather than silently absent.
+    "dangerous_actions": {
+        "enabled": False,          # master switch; all items stay hidden until on
+        "acknowledged": {},        # per-action-id: operator ticked the warning box
+    },
 }
 
 # Dotted paths whose values are secrets: never returned to the browser in the

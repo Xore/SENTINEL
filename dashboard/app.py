@@ -33,6 +33,7 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import classify
     from dashboard import metrics as metrics_render
     from dashboard import config_validation
+    from dashboard import dangerous
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
@@ -44,6 +45,7 @@ except ImportError:  # run from inside the dashboard directory
     import classify
     import metrics as metrics_render
     import config_validation
+    import dangerous
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # let us import the monitor/* helpers as a namespace pkg
@@ -1124,7 +1126,8 @@ def put_settings():
     if not isinstance(payload, dict):
         return jsonify(error="expected a JSON object"), 400
     # Only known top-level sections are accepted.
-    allowed = {"snmp", "interface_overrides", "approved_scope", "metrics"}
+    allowed = {"snmp", "interface_overrides", "approved_scope", "metrics",
+               "dangerous_actions"}
     update = {k: v for k, v in payload.items() if k in allowed}
     if not update:
         return jsonify(error="no editable settings in request"), 400
@@ -1152,6 +1155,34 @@ def get_audit():
     except ValueError:
         return jsonify(error="limit must be a number"), 400
     return jsonify({"entries": history.list_audit(limit)})
+
+
+@app.get("/api/dangerous")
+def get_dangerous():
+    """Roadmap P5 register of excluded-by-default capabilities and the current
+    gate state, for the Dangerous Actions tab. Reading is always allowed; the
+    items stay locked until the master switch and per-item acknowledgement are
+    both on - and even then the destructive technique is not executed (#55)."""
+    cfg = settings_store.load()
+    return jsonify({
+        "enabled": dangerous.is_enabled(cfg),
+        "actions": dangerous.list_actions(cfg),
+    })
+
+
+@app.post("/api/dangerous/<action_id>/run")
+def run_dangerous(action_id: str):
+    """Attempt a dangerous action. Always audited; never executes a destructive
+    technique - returns the gate decision (this build refuses by design). The
+    endpoint exists so the refusal is explicit and logged rather than silent."""
+    cfg = settings_store.load()
+    result = dangerous.run_action(cfg, action_id)
+    history.record_audit(
+        "dangerous.run", user=_session_user() or "-", target=action_id,
+        detail=f"allowed={result['allowed']} executed={result['executed']} "
+               f"reason={result['reason']}")
+    status = 200 if result["allowed"] else 403
+    return jsonify(result), status
 
 
 def _csv_dicts(path: Path, columns: list[str]) -> list[dict]:

@@ -57,6 +57,6 @@ Preserve relevant PCAP and exported events, record UTC time and filters, hash ex
 
 - Daily/session: disk, drops, service health, clock, current alerts
 - Weekly: review new assets/services and false positives
-- Monthly: OS and Malcolm updates in a change window; test restore and certificate expiry
+- Monthly: OS and probe/application updates in a change window; test restore and certificate expiry
 - Quarterly: validate SPAN scope, access list, retention, alert routing, and incident drill
 - Before upgrades: read release notes, back up configuration, export critical data, and record current image digests
