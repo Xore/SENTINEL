@@ -44,22 +44,22 @@ Packet retention, not the tools, usually determines storage: average traffic in 
 > installer that runs the component scripts below in the right order. Preview a
 > node with `./scripts/setup.sh --standalone --dry-run`, then apply it with
 > `sudo ./scripts/setup.sh --standalone --apply`. Full guide:
-> [docs/00-setup.md](docs/00-setup.md). The numbered steps below remain the
+> [docs/guides/00-setup.md](docs/guides/00-setup.md). The numbered steps below remain the
 > reference for what each component does and the safety context around it.
 
-1. Read [docs/01-design-and-safety.md](docs/01-design-and-safety.md) and obtain written authorization and network scope.
+1. Read [docs/guides/01-design-and-safety.md](docs/guides/01-design-and-safety.md) and obtain written authorization and network scope.
 2. Install **Ubuntu Desktop 24.04 LTS** (GUI needed to join Wi-Fi via NetworkManager) with full-disk encryption. Use the standard Ubuntu installer and choose the partitioning manually; avoid any appliance ISO that can erase all non-removable storage without confirmation.
 3. Patch Ubuntu, create a non-root administrator, and enable Secure Boot if supported. The management NIC takes its address from DHCP (this build: `10.0.255.7`); a static reservation on the switch/router is fine. Do not configure an address, route, DNS, or gateway on the capture NIC.
 4. Copy this repository to the probe, run `sudo ./scripts/preflight.sh`, then `sudo ./scripts/install-lightweight.sh`. The first is read-only; the second shows the package plan and asks before installing.
-5. Follow [docs/02-install-lightweight.md](docs/02-install-lightweight.md) to select optional ntopng, Zeek, and Suricata layers.
+5. Follow [docs/guides/02-install-lightweight.md](docs/guides/02-install-lightweight.md) to select optional ntopng, Zeek, and Suricata layers.
 6. To install the local dashboard as a restricted service, copy the repository to a system path first (Ubuntu home directories are mode 750, so the service user cannot read `/home/<user>`): `sudo cp -r ~/analyseLaptop /opt/analyseLaptop && sudo chmod -R a+rX /opt/analyseLaptop`. Then review and run `sudo /opt/analyseLaptop/scripts/install-dashboard-service.sh --apply`, validate with `./scripts/verify-probe.sh`, and add the outage monitor with `sudo /opt/analyseLaptop/scripts/install-outage-monitor.sh --apply`.
 7. (Optional) Add passive attack detection: review and run `sudo /opt/analyseLaptop/scripts/install-ids.sh --apply [capture-interface]` to install Suricata (ET Open rules, AF_PACKET IDS mode). Alerts appear in the dashboard's Security tab. See "Attack detection (signature IDS)" below.
 8. (Optional) Add neighbour discovery: review and run `sudo /opt/analyseLaptop/scripts/install-neighbors.sh --apply` to install lldpd **receive-only** (passive: listens for LLDP/CDP frames, never transmits). The dashboard's Neighbours tab then shows which switch/port/VLAN the probe is plugged into. See "Neighbours and SNMP" below.
 9. (Optional) Add live flow analysis: review and run `sudo /opt/analyseLaptop/scripts/install-ntopng.sh --apply [capture-interface]` to install ntopng (passive libpcap capture, its own web UI on port 3000, first login forces a password change). Once detected, the dashboard's Overview tab shows a "ntopng flows" link.
-10. Configure the SPAN/TAP and validate packet visibility using [docs/03-capture-and-wifi.md](docs/03-capture-and-wifi.md).
+10. Configure the SPAN/TAP and validate packet visibility using [docs/guides/03-capture-and-wifi.md](docs/guides/03-capture-and-wifi.md).
 11. Enter known assets in `config/assets.csv`; it becomes the human-owned reference for results.
 12. Only after authorization, copy `config/targets.example.csv` to `config/targets.csv` and use `sudo ./scripts/ot-reachability.sh config/targets.csv` for narrowly scoped TCP checks.
-13. Use [docs/04-operations.md](docs/04-operations.md) for acceptance tests and routine operation.
+13. Use [docs/guides/04-operations.md](docs/guides/04-operations.md) for acceptance tests and routine operation.
 
 ## Continuous outage monitor
 
@@ -260,7 +260,13 @@ It cannot see traffic that does not cross the monitored link, encrypted applicat
 
 ## Repository map
 
-- `docs/` — design, lightweight installation, capture, operations, and research notes
+- `docs/guides/` — design, lightweight installation, capture, operations, research notes, Auvik feature reference, and network map roadmap
+- `docs/theory/` — background theory and academic references
+- `docs/setup/` — hardware and OS setup guides
+- `docs/collector/` — collector architecture and integration notes
+- `docs/gap-analysis/` — gap analysis documents
+- `docs/gap-analysis-collector-vs-standalone.md` — collector vs standalone feature parity analysis
+- `docs/research-guide-for-gap-topics.md` — academic research guide for roadmap gap topics
 - `scripts/preflight.sh` — read-only hardware/OS/interface readiness report
 - `scripts/ot-reachability.sh` — explicit allow-list TCP reachability checks only
 - `scripts/probe-health.sh` — local status and capture-drop checks
@@ -310,4 +316,4 @@ Passive capture is the default. Do not run generic vulnerability scanners, unaut
 
 ## Sources
 
-Research was refreshed 2026-07-25. Primary references are collected in [docs/05-research-and-decisions.md](docs/05-research-and-decisions.md).
+Research was refreshed 2026-07-25. Primary references are collected in [docs/guides/05-research-and-decisions.md](docs/guides/05-research-and-decisions.md).
