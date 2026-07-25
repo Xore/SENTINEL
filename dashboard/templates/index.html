@@ -79,6 +79,7 @@
           <input id="mapSearch" placeholder="search name / IP / MAC / vendor / kind / subnet" oninput="mapSearch(this.value)" aria-label="Search the map" style="min-width:20rem">
           <select id="mapKind" onchange="mapSetFilter()" aria-label="Filter by device kind"><option value="">all kinds</option></select>
           <select id="mapStatus" onchange="mapSetFilter()" aria-label="Filter by status"><option value="">any status</option><option value="up">up</option><option value="down">down</option><option value="unknown">unknown</option></select>
+          <select id="mapCollector" onchange="mapSetCollector(this.value)" aria-label="Scope map to a collector" title="Narrow the map to the devices one collector observed"><option value="all">all collectors</option></select>
           <span id="mapStat" class="hint"></span>
         </div>
         <div id="mapLegend" class="chips"></div>

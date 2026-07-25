@@ -283,6 +283,29 @@ class BackendTest(unittest.TestCase):
         self.assertTrue(self.c.delete("/api/map/tags/10.0.0.5").get_json()["ok"])
         self.assertNotIn("10.0.0.5", self.c.get("/api/map/tags").get_json()["tags"])
 
+    # --- collector scope (#36) -------------------------------------------------
+    def test_map_lists_collectors_and_defaults_to_all(self):
+        g = self.c.get("/api/map").get_json()
+        self.assertEqual(g["scope"], "all")
+        self.assertIn("local", g["collectors"])  # local node always observes something
+
+    def test_map_scope_to_unknown_collector_keeps_only_anchors(self):
+        appmod.history.get_hosts = lambda limit=500: [
+            {"address": "192.168.50.80", "mac": "", "vendor": "Dell", "name": "",
+             "last_kind": "discovery", "last_seen": None, "sources": []},
+        ]
+        full = self.c.get("/api/map").get_json()
+        self.assertIn("192.168.50.80", {n["id"] for n in full["nodes"]})
+        scoped = self.c.get("/api/map?collector=nope").get_json()
+        ids = {n["id"] for n in scoped["nodes"]}
+        self.assertEqual(scoped["scope"], "nope")
+        self.assertIn("self", ids)                       # anchor survives
+        self.assertNotIn("192.168.50.80", ids)           # local-observed node filtered out
+        # no dangling edges into dropped nodes
+        for e in scoped["edges"]:
+            self.assertIn(e["from"], ids)
+            self.assertIn(e["to"], ids)
+
 
 if __name__ == "__main__":
     unittest.main()

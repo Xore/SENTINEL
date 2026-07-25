@@ -143,9 +143,13 @@ requested and gated.
 ## Relationship to the multi-node plan
 
 The map is **per-collector aware from the start**: `/api/map` tags every node with
-the collector that observed it (`local` on the standalone box), so when task #36
-(multi-collector) lands, the same view narrows to one collector or unions all —
-no rework. This mirrors Auvik's site/collector structure (see
+the collector that observed it (`local` on the standalone box). Task #36's scoped
+view builds on that — `GET /api/map?collector=<id>` narrows the graph to one
+collector's observations (the shared `self`/`internet` anchors always survive so a
+scoped map is never rootless), and the payload carries `scope` + the `collectors`
+list so the map toolbar can offer an "all collectors / <id>" selector with no
+second round-trip. Union (`all`) is the default. This mirrors Auvik's
+site/collector structure (see
 [06-auvik-feature-reference.md](06-auvik-feature-reference.md) → Auvik Collectors).
 
 ## Task index

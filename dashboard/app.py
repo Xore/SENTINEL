@@ -2899,15 +2899,29 @@ def network_map():
         if tag.get("tags"):
             n["detail"]["tags"] = tag["tags"]
 
+    # --- collector scope (#36): the full graph unions every collector; a
+    # ?collector=<id> narrows it to one node's observations. `self`/`internet`
+    # are shared anchors and always survive so a scoped map is never rootless. ---
+    all_collectors = sorted({n.get("collector") or "local" for n in nodes.values()})
+    scope = (request.args.get("collector") or "").strip()
+    if scope and scope not in ("all", ""):
+        _ANCHORS = {"self", "internet"}
+        keep = {nid for nid, n in nodes.items()
+                if nid in _ANCHORS or (n.get("collector") or "local") == scope}
+        nodes = {nid: n for nid, n in nodes.items() if nid in keep}
+        edges = {k: e for k, e in edges.items() if e["from"] in keep and e["to"] in keep}
+
     for cidr, meta in subnets.items():
         meta["count"] = sum(1 for n in nodes.values() if n.get("subnet") == cidr)
 
     return jsonify({
         "updated": now,
         "collector": "local",
+        "scope": scope or "all",
+        "collectors": all_collectors,
         "nodes": list(nodes.values()),
         "edges": list(edges.values()),
-        "subnets": list(subnets.values()),
+        "subnets": [m for m in subnets.values() if m.get("count")],
         "wan_gateways": sorted(wan_gateways),
         "interfaces": iface_detail,
     })
