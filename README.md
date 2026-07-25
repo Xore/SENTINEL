@@ -2,7 +2,7 @@
 ### Scalable Edge Network Telemetry and Intelligent Network ELement
 
 > **v1 (current):** A single-host IT/OT network probe — passive capture, active checks, anomaly detection, and a Python/Flask dashboard.  
-> **v2 (in design):** A distributed fleet of Go collectors reporting to a multi-service backend (Go ingestion + Python analysis + Go API) with a SvelteKit frontend, VictoriaMetrics time-series storage, PostgreSQL, and an ML-based baseline learning engine. **v2 is not yet implemented.** See [docs/architecture/ARCHITECTURE-V2.md](docs/architecture/ARCHITECTURE-V2.md) for the full design.
+> **v2 (in design):** A distributed multi-site monitoring platform: Go collector fleet → Go ingest + Python analysis + Go API → VictoriaMetrics + PostgreSQL → SvelteKit frontend, with multi-site federation, backend HA, federated ML, and cross-site anomaly correlation. **v2 is not yet implemented.** See [`docs/architecture/ARCHITECTURE-V2-EXTENDED.md`](docs/architecture/ARCHITECTURE-V2-EXTENDED.md) for the full design.
 
 ---
 
@@ -131,68 +131,106 @@ cd collector && go build -o collector-linux-amd64 ./...
 
 ## v2 — Planned Architecture (not yet implemented)
 
-> **Status:** Design complete. Implementation not started. All v2 design documents are in [`docs/architecture/`](docs/architecture/) and [`docs/ml/`](docs/ml/).
+> **Status:** Design complete. Implementation not started.  
+> **Primary document:** [`docs/architecture/ARCHITECTURE-V2-EXTENDED.md`](docs/architecture/ARCHITECTURE-V2-EXTENDED.md)  
+> **Implementation phases:** [`ROADMAP.md`](ROADMAP.md)
 
-v1 was designed for a single monitoring probe on a bounded network. Three constraints are now broken:
+v1 was designed for a single monitoring probe on a bounded network. The v2 design addresses four structural constraints that v1 cannot meet:
 
-| Constraint | v1 | v2 target |
+| Constraint | v1 | v2 |
 |---|---|---|
-| Scale | 1 collector, local SQLite | 50+ simultaneous collector nodes |
-| Service separation | Monolithic Flask process | Independent services with defined API boundaries |
-| Language fit | Python for everything | Go for hot-path ingestion/API; Python for analysis/ML; TypeScript/SvelteKit for frontend |
+| Scale | 1 collector, local SQLite | 50–500+ collectors, VictoriaMetrics + PostgreSQL |
+| Multi-site | No cross-site visibility | Federation tier: global API, cross-site correlation |
+| Availability | Single server; monitoring stops if server fails | VictoriaMetrics dual-write HA + Patroni PostgreSQL HA |
+| ML cold-start | 7-day learning phase per site | Federated ML (FedAvg): new site learns in ~2 days from global model |
 
 ### v2 Service Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     SENTINEL v2 System                      │
-│                                                             │
-│  Collector tier (Go) ×50+ nodes                             │
-│  • Active checks: ICMP / DNS / HTTP / TCP / NTP             │
-│  • eBPF passive RTT layer                                    │
-│  • WireGuard introspection                                   │
-│  • SNMP GET / Modbus FC01/FC03                               │
-│  • Gorilla local hot/cold store                              │
-│  • MDP adaptive scheduler                                    │
-│                │ mTLS + OTLP/gRPC                            │
-│                ▼                                             │
-│  backend/ingest/   (Go)   — OTLP receiver, writes VM + PG   │
-│  backend/analyse/  (Python) — CUSUM/EWMA, PCA, RCA, ML      │
-│  backend/api/      (Go/Gin) — REST + WebSocket, JWT auth     │
-│                │                                             │
-│                ▼                                             │
-│  VictoriaMetrics  — time-series (metrics, RTT, loss, scores) │
-│  PostgreSQL       — events, anomalies, RCA, config, PKI      │
-│                │                                             │
-│                ▼                                             │
-│  frontend/ (SvelteKit/TypeScript) — static SPA via Nginx     │
-│  • Fleet overview, topology map (D3/SVG)                     │
-│  • Anomaly + RCA timeline                                    │
-│  • ML baseline status and model management                   │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                      SENTINEL v2 — Single Site                       │
+│                                                                      │
+│  Collector tier (Go) ×50+ nodes                                      │
+│  • Active checks: ICMP / DNS / HTTP / TCP / NTP                      │
+│  • eBPF passive RTT (kprobe tcp_close + TC hook)                     │
+│  • Gorilla local hot/cold store                                      │
+│  • MDP adaptive scheduler                                            │
+│  • SNMP v2c/v3, Modbus FC01/FC03, WireGuard, TLS expiry             │
+│           │ mTLS + OTLP/gRPC                                         │
+│           ▼                                                          │
+│  backend/ingest/   (Go)   — OTLP receiver, writes VM + PG           │
+│  backend/analyse/  (Python) — CUSUM/EWMA/PCA, RCA DAG, MDP, ML     │
+│  backend/api/      (Go/Gin) — REST + WebSocket, JWT/RBAC auth        │
+│           │                                                          │
+│  VictoriaMetrics  — time-series (metrics, RTT, loss, anomaly scores) │
+│  PostgreSQL       — events, anomalies, RCA, config, PKI, audit log   │
+│           │                                                          │
+│  frontend/ (SvelteKit/TypeScript) — static SPA via Nginx             │
+│  • Fleet overview, topology map (D3/SVG)                             │
+│  • Anomaly + RCA timeline                                            │
+│  • ML baseline status and model management                           │
+└──────────────────────────────────────────────────────────────────────┘
+           │ federation agent (mTLS, selective metric + event forward)
+           ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│              SENTINEL v2 — Global Tier (optional)                    │
+│                                                                      │
+│  global-api (Go/Gin)      global-vm (vmselect cluster)              │
+│  global-frontend (SvelteKit)  global-pg (read replica, site_id col) │
+│  Cross-site correlator (Python — DBSCAN temporal clustering)         │
+│  Federated ML aggregator (Python — FedAvg gradient aggregation)      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-### v2 Key capabilities
+### v2 Capability summary
 
-**Fleet scale:** 50+ independent collector nodes connect over mutual TLS (mTLS) with backend-issued PKI leaf certificates. Each collector is a zero-dependency Go static binary that cross-compiles to `linux/arm64`, `linux/amd64`, and `windows/amd64`.
+**Single-site baseline (Docker Compose, one server):**
+- 50+ collectors connecting over mTLS/OTLP/gRPC to a Go ingest service
+- Python analysis service: CUSUM + EWMA + PCA anomaly detection; causal DAG RCA; MDP adaptive scheduling
+- ML baseline learning: LSTM Autoencoder with ADWIN concept drift detection — learns normal behaviour per collector × metric group; raises anomaly scores instead of static thresholds
+- SvelteKit frontend: fleet table, topology map, anomaly timeline, RCA panel, ML management view
+- RBAC: viewer / operator / analyst / admin / ot-operator roles
+- vmalert + Alertmanager: alert deduplication, grouping by `(site_id, metric_group, rca_cause)`, Slack/PagerDuty routing
+- Gorilla delta-of-delta compression on collector (12× vs raw `(ts, value)`)
+- Tamper-evident SHA-256 evidence bundles; append-only audit log (IEC 62443 SR 2.8)
+- Signed Ed25519 collector auto-update
 
-**Time-series storage:** VictoriaMetrics replaces SQLite. Single binary, no external dependencies, Prometheus remote-write compatible, 20–30% lower memory than InfluxDB at equivalent write rate. 50 collectors × 30 metrics × 2 samples/min = ~50 samples/s — well within single-node capacity.
+**Multi-site federation (optional global tier):**
+- Federation agent on each site server forwards only anomaly scores and RCA events to the global tier (~400 bytes/s per site)
+- Global VictoriaMetrics vmselect cluster with `site_id` label injected by vmagent
+- Cross-site anomaly correlator: DBSCAN temporal clustering on events across sites; shared-cause hypotheses (shared ISP fault, coordinated OT attack)
+- IP-to-ASN enrichment (MaxMind GeoLite2-ASN, local, no API call) for WAN-origin correlation
+- Global SvelteKit view: site fleet table, global anomaly timeline, inter-site topology, correlation panel
 
-**Structured event storage:** PostgreSQL replaces SQLite for events, anomalies, RCA results, collector registry, check plans, and PKI cert metadata. PostgreSQL `LISTEN/NOTIFY` drives real-time WebSocket push to the SvelteKit frontend without a message broker.
+**Backend HA:**
+- VictoriaMetrics HA: dual-write from vmagent to two independent VM nodes; deduplication at query time
+- PostgreSQL HA: Patroni (etcd-backed primary election) + PgBouncer connection pooler
+- All backend services stateless or advisory-lock-guarded — two instances per service behind HAProxy/Nginx
 
-**ML baseline learning:** The `backend/analyse/` service learns normal network behaviour for each collector × metric group during a configurable learning phase (default: 7 days), then raises anomaly scores instead of static threshold breaches. Based on LSTM Autoencoder with ADWIN concept drift detection. See [`docs/ml/ML_BASELINE_LEARNING.md`](docs/ml/ML_BASELINE_LEARNING.md) for the full design.
+**Federated ML:**
+- FedAvg gradient aggregation: sites send gradient updates only, never raw training data
+- New site cold-starts from global model: effective learning phase ~2 days instead of 7
+- OT sites can opt out of gradient sharing under IEC 62443 change management obligations
 
-**SvelteKit frontend:** Replaces the Flask/Jinja2 dashboard. Compiled to a static SPA served by Nginx. Real-time WebSocket feed for anomaly events and collector state. Topology map, anomaly timeline, RCA panel, ML model management view.
+**Backend clustering (>500 collectors):**
+- VictoriaMetrics cluster edition (vminsert/vmstorage/vmselect) — no application code change
+- PostgreSQL read replicas for API query load; Citus sharding at extreme scale
+- `backend/analyse/` shards by `collector_id` with PostgreSQL advisory locks
 
-**Deployment:** Docker Compose on a single server (NUC or small VM) for the default 50-node case. Scales to VictoriaMetrics cluster + HAProxy for larger deployments without application code changes.
+**OT-specific extensions:**
+- IEC 62443 rule-based detections at confidence=1.0 (bypass ML confidence gating): Modbus FC write observed, STP topology change burst, new MAC on OT VLAN, PLC reboot (sysUpTime regression), WireGuard OT tunnel drop
+- Air-gap support: USB PKI bootstrap, offline model distribution, supervised periodic VPN sync
+- Deep RL / DQN scheduler (Phase 12): Q-network trained on corpus accumulated from MDP operation; shadow-mode evaluation before promotion
 
 ### v2 Design documents
 
 | Document | Contents |
 |---|---|
-| [`docs/architecture/ARCHITECTURE-V2.md`](docs/architecture/ARCHITECTURE-V2.md) | Full service decomposition, storage decisions, inter-service communication, deployment, migration path from v1 |
-| [`docs/ml/ML_BASELINE_LEARNING.md`](docs/ml/ML_BASELINE_LEARNING.md) | ML baseline learning design: LSTM-AE architecture, ADWIN drift detection, data storage strategy, learning phase lifecycle, PostgreSQL schema, SvelteKit ML view |
-| [`ROADMAP.md`](ROADMAP.md) | Phased implementation plan with per-phase tracking |
+| [`docs/architecture/ARCHITECTURE-V2-EXTENDED.md`](docs/architecture/ARCHITECTURE-V2-EXTENDED.md) | **Primary v2 design document.** Single-site baseline, multi-site federation, HA, cross-site correlation, federated ML, backend clustering, OT isolation, alerting, RBAC, evidence, operational hardening |
+| [`docs/architecture/COLLECTOR-FLEET-MONITORING.md`](docs/architecture/COLLECTOR-FLEET-MONITORING.md) | Per-collector health: heartbeat, systemd layer, host vitals, vmalert rules, Ansible ad-hoc checks, fleet status API |
+| [`docs/architecture/IaC-DEPLOYMENT-STRATEGY.md`](docs/architecture/IaC-DEPLOYMENT-STRATEGY.md) | Infrastructure-as-Code strategy: Ansible, Docker Compose, Terraform, environment-specific config |
+| [`docs/ml/ML_BASELINE_LEARNING.md`](docs/ml/ML_BASELINE_LEARNING.md) | ML baseline learning design: LSTM-AE architecture, ADWIN drift detection, learning phase lifecycle, PostgreSQL schema, SvelteKit ML view |
+| [`ROADMAP.md`](ROADMAP.md) | Phased implementation plan (12 phases, ~35 weeks) with per-phase academic grounding |
 
 ---
 
@@ -205,7 +243,10 @@ monitor/            Python monitoring stack (v1 only)
 scripts/            Bash install, capture, and operator tools (v1)
 config/             Example scope, asset, and target files
 docs/
-  architecture/     ARCHITECTURE.md (v1), ARCHITECTURE-V2.md (v2 design)
+  architecture/     v2 design documents
+    ARCHITECTURE-V2-EXTENDED.md   Primary v2 architecture (single-site + multi-site)
+    COLLECTOR-FLEET-MONITORING.md Per-collector health monitoring
+    IaC-DEPLOYMENT-STRATEGY.md    Infrastructure-as-Code strategy
   ml/               ML_BASELINE_LEARNING.md (v2 ML design)
   guides/           Design, install, capture, operations, research notes
   theory/           Academic background and references

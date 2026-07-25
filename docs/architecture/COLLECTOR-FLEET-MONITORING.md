@@ -1,9 +1,7 @@
 # Collector Fleet Monitoring
 
-> **Date:** 2026-07-25  
-> **Scope:** Monitoring the health of 50+ remote `analyselaptop-collector` systemd services, not the *network targets* they probe.  
-> The probe targets (RTT, loss, DNS, etc.) are handled by the collector itself and stored in VictoriaMetrics.  
-> This document covers: how the hub knows each collector node is alive, healthy, and running correctly.
+> **Context:** This document covers monitoring the health of 50+ remote `analyselaptop-collector` systemd services — not the network targets they probe.  
+> **v2 extended architecture:** [`ARCHITECTURE-V2-EXTENDED.md`](ARCHITECTURE-V2-EXTENDED.md) — Section 10.2 (Collector Health Scoring) and Section 8 (Alerting: vmalert rules) extend the patterns described here.
 
 ---
 
@@ -62,7 +60,7 @@ abs(time() - max by (collector_id) (
 )) > 300
 ```
 
-Store this as a VictoriaMetrics `vmalert` rule (or equivalent Prometheus rule) — it fires independently of the PostgreSQL query path.
+Store this as a VictoriaMetrics `vmalert` rule (see `ARCHITECTURE-V2-EXTENDED.md` Section 8.1 for the full vmalert + Alertmanager integration).
 
 ---
 
@@ -133,9 +131,9 @@ WantedBy=multi-user.target
 ```
 
 **Key flags:**
-- `--collector.systemd.unit-include` — only export metrics for `analyselaptop-collector.service`; avoids DBus overhead for every unit on the node. [web:155][web:163]
-- `--collector.systemd.enable-restarts-metrics` — exposes `node_systemd_service_restart_total` for crash-loop detection. [web:163]
-- `--web.listen-address=127.0.0.1:9100` — node_exporter listens on loopback only. The ingest service pulls metrics over the mTLS-authenticated channel (see Section 4), not a public port.
+- `--collector.systemd.unit-include` — only export metrics for `analyselaptop-collector.service`; avoids DBus overhead for every unit on the node.
+- `--collector.systemd.enable-restarts-metrics` — exposes `node_systemd_service_restart_total` for crash-loop detection.
+- `--web.listen-address=127.0.0.1:9100` — node_exporter listens on loopback only. The collector binary reads it locally and includes host metrics in its OTLP push.
 
 ### Key `node_exporter` metrics for the collector unit
 
@@ -152,7 +150,7 @@ WantedBy=multi-user.target
 
 ### Scrape topology: push not pull
 
-Collector nodes are edge devices. They may be behind NAT, behind OT firewalls, or on isolated VLANs. The hub **cannot** scrape them outbound (Prometheus pull model fails here).
+Collector nodes are edge devices — they may be behind NAT, OT firewalls, or isolated VLANs. The hub **cannot** scrape them outbound.
 
 **Solution: collector binary pushes node_exporter metrics as part of its OTLP batch.**
 
@@ -166,8 +164,6 @@ The collector binary reads the `node_exporter` `/metrics` endpoint on `127.0.0.1
 Alternatively, for nodes where embedding is not yet implemented: deploy `Prometheus Pushgateway` on the hub on `127.0.0.1:9091` and have each collector node run a cron/systemd timer that does:
 
 ```bash
-# /etc/systemd/system/node-metrics-push.timer
-# runs node-metrics-push.service every 30s
 curl -s http://localhost:9100/metrics | \
   curl --data-binary @- \
   --header 'Content-Type: text/plain; version=0.0.4' \
@@ -180,13 +176,15 @@ This is a short-term bridge until the collector binary embeds the node_exporter 
 
 ## 4. Layer 3: Host Vitals
 
-The same `node_exporter` scrape that delivers systemd metrics also delivers CPU, memory, disk, and network counters. No additional tooling needed. All are stored in VictoriaMetrics under `{collector_id=..., job="node_exporter"}` labels.
+The same `node_exporter` scrape that delivers systemd metrics also delivers CPU, memory, disk, and network counters. All are stored in VictoriaMetrics under `{collector_id=..., job="node_exporter"}` labels.
 
 ---
 
 ## 5. Alert Rules
 
-All rules are stored as VictoriaMetrics `vmalert` YAML files (Prometheus-compatible). Deploy at `deploy/compose/vmalert/rules/collector-fleet.yml`.
+All rules are stored as VictoriaMetrics `vmalert` YAML files. Deploy at `deploy/compose/vmalert/rules/collector-fleet.yml`.
+
+For the full vmalert + Alertmanager integration (deduplication, grouping, PagerDuty/Slack routing), see [`ARCHITECTURE-V2-EXTENDED.md`](ARCHITECTURE-V2-EXTENDED.md) Section 8.
 
 ```yaml
 # deploy/compose/vmalert/rules/collector-fleet.yml
@@ -290,29 +288,37 @@ groups:
         annotations:
           summary: "Collector {{ $labels.collector_id }} cert expires in <14 days"
           runbook: "The collector should auto-renew; check PKI enrollment endpoint"
+
+      # --- Collector health score (v2 extended) ---
+      - alert: CollectorHealthDegraded
+        expr: analyselaptop_collector_health_score < 0.6
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Collector {{ $labels.collector_id }} health score {{ $value | humanize }} < 0.6"
+          runbook: "Check heartbeat gap, cycle overrun, metric gaps, cert expiry, eBPF state"
 ```
 
 ---
 
 ## 6. Ansible Ad-hoc Fleet Health Checks
 
-For immediate operational checks (not automated alerting), Ansible ad-hoc commands are the fastest path: [web:162][web:167]
+For immediate operational checks (not automated alerting), Ansible ad-hoc commands are the fastest path:
 
 ```bash
-# Is the collector service active on all 50 nodes?
+# Is the collector service active on all nodes?
 ansible collectors -i deploy/ansible/inventory/hosts.yml \
   -m systemd -a "name=analyselaptop-collector" \
   --one-line | grep -v 'ActiveState.*active'
 
 # Last 20 log lines from failed nodes
 ansible collectors -i deploy/ansible/inventory/hosts.yml \
-  -m command -a "journalctl -u analyselaptop-collector -n 20 --no-pager" \
-  --limit "$(ansible collectors -i ... -m systemd -a '...' | grep failed | awk '{print $1}' | tr '\n' ',')"
+  -m command -a "journalctl -u analyselaptop-collector -n 20 --no-pager"
 
 # Disk space on local hot/cold store path
 ansible collectors -i deploy/ansible/inventory/hosts.yml \
-  -m command -a "df -h /var/lib/analyselaptop" \
-  --one-line
+  -m command -a "df -h /var/lib/analyselaptop" --one-line
 
 # PKI cert expiry on all nodes
 ansible collectors -i deploy/ansible/inventory/hosts.yml \
@@ -339,6 +345,7 @@ The API service (`GET /api/v1/collectors`) returns per-collector health fields t
   "last_seen": "2026-07-25T17:32:10Z",
   "silence_s": 0,
   "cert_expires_in_days": 28,
+  "health_score": 0.94,
   "host": {
     "load1": 0.34,
     "mem_free_pct": 72,
@@ -354,14 +361,14 @@ Row colour coding in the fleet table:
 
 | Condition | Colour |
 |---|---|
-| `state=active`, `silence_s < 300`, no alerts | Green |
-| `silence_s 300–1800` OR `restart_count_30m > 0` | Yellow |
-| `systemd_state=failed` OR `silence_s > 1800` | Red |
+| `state=active`, `health_score >= 0.8`, no alerts | Green |
+| `health_score 0.6–0.8` OR `restart_count_30m > 0` | Yellow |
+| `systemd_state=failed` OR `health_score < 0.6` OR `silence_s > 1800` | Red |
 | `cert_expires_in_days < 14` | Orange badge |
 
 ---
 
-## 8. Summary: What Gets Deployed Per Collector Node
+## 8. What Gets Deployed Per Collector Node
 
 | Component | Binary | Managed by | Port exposed |
 |---|---|---|---|
