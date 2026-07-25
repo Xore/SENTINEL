@@ -42,6 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import probes  # noqa: E402 - local module beside this file
 import scheduler  # noqa: E402 - guarded jitter/backoff/cooldown + OT/IT queues
+import tcp_stat  # noqa: E402 - passive kernel TCP counter reader (task #50)
 
 DB_PATH = Path(os.environ.get("PROBE_MONITOR_DB", "/var/lib/network-probe/monitor.db"))
 TARGET_FILE = Path(os.environ.get("PROBE_MONITOR_TARGETS", "/etc/network-probe/monitor-targets.csv"))
@@ -62,6 +63,9 @@ SNAPSHOT_SECONDS = int(os.environ.get("PROBE_MONITOR_SNAPSHOT_SECONDS", "15"))
 FAIL_THRESHOLD = int(os.environ.get("PROBE_MONITOR_FAIL_THRESHOLD", "3"))
 RECOVER_THRESHOLD = int(os.environ.get("PROBE_MONITOR_RECOVER_THRESHOLD", "5"))
 WIFI_INTERVAL = 5.0
+# Cadence for sampling cumulative kernel TCP counters (task #50). 30 s keeps the
+# tcp_samples table small while giving enough points for a 5-minute-bucket trend.
+TCP_INTERVAL = float(os.environ.get("PROBE_MONITOR_TCP_INTERVAL", "30"))
 
 PING_LINE = re.compile(r"icmp_seq=(\d+)(?:.*time=([\d.]+) ms)?")
 NO_ANSWER = re.compile(r"no answer yet for icmp_seq=(\d+)")
@@ -149,6 +153,17 @@ def open_db() -> sqlite3.Connection:
             multicast INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_iface_ts ON iface_samples (ts);
+        -- Cumulative kernel TCP counters (from /proc/net/{snmp,netstat}), sampled
+        -- periodically. The dashboard differences consecutive rows into
+        -- retransmission-ratio and reset-rate trends (task #50). Passive: no
+        -- packets sent, no sockets opened - just the counters the host keeps.
+        CREATE TABLE IF NOT EXISTS tcp_samples (
+            ts REAL NOT NULL,
+            in_segs INTEGER, out_segs INTEGER, retrans_segs INTEGER,
+            out_rsts INTEGER, attempt_fails INTEGER, estab_resets INTEGER,
+            tcp_syn_retrans INTEGER, tcp_lost_retransmit INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_tcp_ts ON tcp_samples (ts);
         CREATE TABLE IF NOT EXISTS service_samples (
             ts REAL NOT NULL,
             name TEXT NOT NULL,
@@ -731,6 +746,7 @@ def main() -> int:
     event_failed: set[str] = set()
     snapshot_results: collections.deque = collections.deque()
     last_wifi = 0.0
+    last_tcp = 0.0
     last_flush = 0.0
     last_target_reload = time.time()
 
@@ -762,6 +778,17 @@ def main() -> int:
             db.executemany(
                 "INSERT INTO iface_samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", iface_counters()
             )
+
+        # cumulative kernel TCP counters (retransmit/reset trends, task #50).
+        # sample_row() returns None off Linux / when /proc is unreadable, so
+        # this simply no-ops on unsupported hosts.
+        if now - last_tcp >= TCP_INTERVAL:
+            last_tcp = now
+            tcp_row = tcp_stat.sample_row(now)
+            if tcp_row is not None:
+                db.execute(
+                    "INSERT INTO tcp_samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", tcp_row
+                )
 
         # event state machine
         down_now = {name for name, worker in workers.items() if worker.down}
@@ -831,6 +858,7 @@ def main() -> int:
             db.execute("DELETE FROM ping_samples WHERE ts < ?", (horizon,))
             db.execute("DELETE FROM wifi_samples WHERE ts < ?", (horizon,))
             db.execute("DELETE FROM iface_samples WHERE ts < ?", (horizon,))
+            db.execute("DELETE FROM tcp_samples WHERE ts < ?", (horizon,))
             db.execute("DELETE FROM service_samples WHERE ts < ?", (horizon,))
 
     for worker in workers.values():

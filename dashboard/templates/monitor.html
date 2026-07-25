@@ -26,6 +26,17 @@
     .statgrid article{border:1px solid var(--line);border-radius:8px;padding:14px}
     .statgrid strong{display:block;font:16px var(--mono);margin:8px 0 3px}
     .statgrid span{color:var(--muted);font-size:12px}
+    .subhead{font:13px var(--mono);color:var(--text-secondary);margin:16px 0 6px}
+    .trend-verdicts{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin:12px 0}
+    .trend-verdict{border:1px solid var(--line);border-radius:8px;padding:12px 14px;border-left:3px solid var(--line)}
+    .trend-verdict span{display:block;color:var(--muted);font-size:12px}
+    .trend-verdict strong{display:block;font:14px var(--mono);margin:6px 0 3px}
+    .trend-verdict.ok{border-left-color:var(--series-3)}
+    .trend-verdict.warn{border-left-color:var(--series-6,#d0a215)}
+    .trend-verdict.bad{border-left-color:var(--series-8)}
+    .trend-verdict strong.ok{color:var(--series-3)}
+    .trend-verdict strong.warn{color:var(--series-6,#d0a215)}
+    .trend-verdict strong.bad{color:var(--series-8)}
     .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}
     .genform{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:14px}
     .genform label{display:flex;flex-direction:column;gap:5px;font:12px var(--mono);color:var(--muted)}
@@ -123,6 +134,17 @@
       <div class="chart-wrap"><canvas id="svcChart"></canvas><div class="tooltip" id="svcTip"></div></div>
       <div class="legend" id="svcLegend"></div>
       <div class="table-wrap"><table><thead><tr><th>Service</th><th>Kind</th><th>State</th><th>Last</th><th>Detail</th></tr></thead><tbody id="svcLatest"></tbody></table></div>
+    </div>
+
+    <div class="panel"><p class="eyebrow">PROTOCOL TRENDS</p><h2>TCP retransmission &amp; DNS failure</h2>
+      <p class="hint">Passive kernel TCP counters and DNS probe results, smoothed and classified so a <em>sustained</em> rise stands out from a single spike. Retransmit ratio = retransmitted / sent segments; DNS = probe failures per bucket. <span id="trendState"></span></p>
+      <div class="trend-verdicts" id="trendVerdicts"></div>
+      <h3 class="subhead">TCP retransmission ratio (%)</h3>
+      <div class="chart-wrap"><canvas id="tcpChart"></canvas><div class="tooltip" id="tcpTip"></div></div>
+      <div class="legend" id="tcpLegend"></div>
+      <h3 class="subhead">DNS failure rate (%)</h3>
+      <div class="chart-wrap"><canvas id="dnsChart"></canvas><div class="tooltip" id="dnsTip"></div></div>
+      <div class="legend" id="dnsLegend"></div>
     </div>
 
     <div class="panel"><p class="eyebrow">TRAFFIC</p><h2>Interface rate (packets/s)</h2>
@@ -310,7 +332,56 @@
     for (const [iface, s] of Object.entries(data.wifi || {})) wifi[iface + " signal"] = {ts: s.ts, v: s.signal_dbm};
     drawChart("wifiChart", "wifiTip", "wifiLegend", wifi, {min:-95, max:-20, fmt:v => v.toFixed(0)});
     loadEventsTable();
-    loadServices(); loadThroughput(); loadRoutes(); loadTopology();
+    loadServices(); loadThroughput(); loadRoutes(); loadTopology(); loadTrends();
+  }
+
+  // Sustained-vs-spike verdict → colour + label. Mirrors dashboard/trends.py.
+  const TREND_STATE = {
+    stable:            {cls:"ok",  label:"stable",   note:"at or below the warn line"},
+    spike:             {cls:"warn",label:"spike",    note:"over warn now, but only briefly"},
+    rising:            {cls:"warn",label:"rising",   note:"sustained rise over the warn line"},
+    degraded:          {cls:"bad", label:"degraded", note:"sustained and over the critical line"},
+    insufficient_data: {cls:"",    label:"no data",  note:"not enough samples yet"},
+  };
+  function trendBadge(title, verdict, fmt){
+    const st = TREND_STATE[verdict.state] || TREND_STATE.insufficient_data;
+    const latest = verdict.latest == null ? "–" : fmt(verdict.latest);
+    return `<article class="trend-verdict ${st.cls}">
+      <span>${title}</span><strong class="${st.cls}">${st.label.toUpperCase()}</strong>
+      <span>latest ${latest} · ${st.note}</span></article>`;
+  }
+
+  async function loadTrends(){
+    const box = document.getElementById("trendVerdicts");
+    const [tcpRes, dnsRes] = await Promise.all([
+      fetch(`/api/monitor/tcp?minutes=${minutes}`), fetch(`/api/monitor/dns?minutes=${minutes}`)]);
+    if (!tcpRes.ok && !dnsRes.ok){
+      document.getElementById("trendState").innerHTML =
+        '<span class="bad">monitor offline — no trend data</span>';
+      box.innerHTML = ""; return;
+    }
+    document.getElementById("trendState").innerHTML = "";
+    let badges = "";
+    if (tcpRes.ok){
+      const t = await tcpRes.json();
+      // ratio is a fraction; show it (and thresholds) as a percentage
+      const pct = {}, s = t.series || {};
+      pct["retransmit"] = {ts: s.ts || [], v: (s.retrans_ratio || []).map(v => v * 100)};
+      drawChart("tcpChart", "tcpTip", "tcpLegend", pct, {min:0, nice:true, fmt:v => v.toFixed(2) + "%"});
+      const v = t.verdict || {};
+      badges += trendBadge("TCP retransmit",
+        {state: v.state, latest: v.latest == null ? null : v.latest * 100},
+        x => x.toFixed(2) + "%");
+    }
+    if (dnsRes.ok){
+      const d = await dnsRes.json(), s = d.series || {};
+      drawChart("dnsChart", "dnsTip", "dnsLegend",
+        {"failure %": {ts: s.ts || [], v: s.fail_pct || []}},
+        {min:0, max:100, nice:true, fmt:v => v.toFixed(1) + "%"});
+      const v = d.verdict || {};
+      badges += trendBadge("DNS failures", v, x => x.toFixed(1) + "%");
+    }
+    box.innerHTML = badges;
   }
 
   const SVGNS = "http://www.w3.org/2000/svg";

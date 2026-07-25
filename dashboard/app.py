@@ -34,6 +34,7 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import metrics as metrics_render
     from dashboard import config_validation
     from dashboard import dangerous
+    from dashboard import trends
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
@@ -46,6 +47,7 @@ except ImportError:  # run from inside the dashboard directory
     import metrics as metrics_render
     import config_validation
     import dangerous
+    import trends
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # let us import the monitor/* helpers as a namespace pkg
@@ -2312,6 +2314,59 @@ def monitor_services():
     ).fetchall()
     db.close()
     return jsonify({"bucket_seconds": bucket, "series": series, "latest": [dict(row) for row in latest]})
+
+
+def _trend_window(default_minutes: int = 360) -> tuple[float, float]:
+    """(since_ts, bucket_seconds) from the request's ?minutes, clamped like the
+    other monitor endpoints. Buckets aim for ~600 points over the window."""
+    minutes = max(30, min(int(request.args.get("minutes", default_minutes)), 14 * 1440))
+    bucket = max(60.0, minutes * 60 / 600)
+    return time.time() - minutes * 60, bucket
+
+
+@app.get("/api/monitor/tcp")
+def monitor_tcp():
+    """TCP retransmission-ratio / reset-rate trend from cumulative kernel
+    counters (task #50). Sustained rise vs single spike, never raw counters."""
+    try:
+        since, bucket = _trend_window()
+    except ValueError:
+        return jsonify(error="minutes must be a number"), 400
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    rows = db.execute(
+        "SELECT ts, in_segs, out_segs, retrans_segs, out_rsts, attempt_fails, "
+        "estab_resets, tcp_syn_retrans, tcp_lost_retransmit "
+        "FROM tcp_samples WHERE ts >= ? ORDER BY ts",
+        (since,),
+    ).fetchall()
+    db.close()
+    samples = [dict(row) for row in rows]
+    result = trends.tcp_trend(samples, bucket_s=bucket)
+    result["samples"] = len(samples)
+    return jsonify(result)
+
+
+@app.get("/api/monitor/dns")
+def monitor_dns():
+    """DNS failure-rate trend from service_samples (kind='dns'), task #50."""
+    try:
+        since, bucket = _trend_window()
+    except ValueError:
+        return jsonify(error="minutes must be a number"), 400
+    db = monitor_db()
+    if db is None:
+        return jsonify(error="monitor database not found; is the outage monitor running?"), 503
+    rows = db.execute(
+        "SELECT ts, ok FROM service_samples WHERE kind = 'dns' AND ts >= ? ORDER BY ts",
+        (since,),
+    ).fetchall()
+    db.close()
+    samples = [dict(row) for row in rows]
+    result = trends.dns_trend(samples, bucket_s=bucket)
+    result["samples"] = len(samples)
+    return jsonify(result)
 
 
 @app.get("/api/monitor/routes")
