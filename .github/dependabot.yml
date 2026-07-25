@@ -1,0 +1,83 @@
+version: 2
+
+updates:
+
+  # ───────────────────────────────────────────────
+  # Go — collector/go.mod
+  # ───────────────────────────────────────────────
+  - package-ecosystem: gomod
+    directory: /collector
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "deps(go)"
+    ignore:
+      # Ignore major-version bumps — review those manually
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ───────────────────────────────────────────────
+  # pip — monitor/requirements.txt
+  # ───────────────────────────────────────────────
+  - package-ecosystem: pip
+    directory: /monitor
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "deps(pip/monitor)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ───────────────────────────────────────────────
+  # pip — tests/requirements.txt
+  # ───────────────────────────────────────────────
+  - package-ecosystem: pip
+    directory: /tests
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - python
+      - testing
+    commit-message:
+      prefix: "deps(pip/tests)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ───────────────────────────────────────────────
+  # GitHub Actions — .github/workflows/
+  # ───────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "deps(actions)"
+    # Allow major bumps for actions — v3→v4→v5 are common and safe
