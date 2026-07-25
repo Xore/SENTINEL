@@ -28,6 +28,7 @@ import collections
 import csv
 import json
 import os
+import random
 import re
 import shutil
 import signal
@@ -40,6 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import probes  # noqa: E402 - local module beside this file
+import scheduler  # noqa: E402 - guarded jitter/backoff/cooldown + OT/IT queues
 
 DB_PATH = Path(os.environ.get("PROBE_MONITOR_DB", "/var/lib/network-probe/monitor.db"))
 TARGET_FILE = Path(os.environ.get("PROBE_MONITOR_TARGETS", "/etc/network-probe/monitor-targets.csv"))
@@ -439,12 +441,23 @@ def load_ports() -> list[dict]:
 
 
 def port_check_loop(results: collections.deque) -> None:
-    """Probe configured ports every PORT_INTERVAL seconds and record the
-    result (ok, response time, matched/expected detail) into service_samples."""
+    """Probe configured ports through the guarded scheduler (jitter/backoff/
+    cooldown, OT/IT queues) and record each result into service_samples.
+
+    Instead of a fixed-interval sweep of every port, the scheduler decides which
+    ports are due, paces OT devices more gently than IT ones, and backs off from
+    a port that keeps failing rather than hammering it. See monitor/scheduler.py.
+    """
+    sched = scheduler.GuardedScheduler()
     while not stop_event.is_set():
-        for port in load_ports():
+        ports = {p["name"]: p for p in load_ports()}
+        sched.sync(list(ports.values()))
+        for name in sched.due():
             if stop_event.is_set():
                 return
+            port = ports.get(name)
+            if port is None:
+                continue
             spec = probes.spec_for(
                 port["port"], port["send"], port["expect"],
                 udp=(port["proto"] == "udp"), tls=False,
@@ -452,7 +465,8 @@ def port_check_loop(results: collections.deque) -> None:
             ok, duration, detail = probes.run_probe(port["host"], port["port"], spec)
             kind = f"port/{spec.label}"
             results.append(("service", (time.time(), port["name"], kind[:40], int(ok), duration, detail)))
-        stop_event.wait(PORT_INTERVAL)
+            sched.record(name, bool(ok))
+        stop_event.wait(sched.next_wait())
 
 
 def check_dns(target: str) -> tuple[bool, float | None, str]:
@@ -542,14 +556,25 @@ SERVICE_CHECKS = {"dns": check_dns, "http": check_http, "tcp": check_tcp, "ntp":
 
 
 def service_check_loop(results: collections.deque) -> None:
-    """Runs every SERVICE_INTERVAL seconds; sequential and low-rate on purpose."""
+    """Run DNS/HTTP/TCP/NTP service checks through the guarded scheduler.
+
+    The scheduler applies jitter, per-check exponential backoff on failure, a
+    cooldown floor, and separate OT/IT pacing (an OT-classified service is probed
+    gently and at low concurrency). See monitor/scheduler.py."""
+    sched = scheduler.GuardedScheduler()
     while not stop_event.is_set():
-        for service in load_services():
+        services = {s["name"]: s for s in load_services()}
+        sched.sync(list(services.values()))
+        for name in sched.due():
             if stop_event.is_set():
                 return
+            service = services.get(name)
+            if service is None:
+                continue
             ok, duration, detail = SERVICE_CHECKS[service["kind"]](service["target"])
             results.append(("service", (time.time(), service["name"], service["kind"], int(ok), duration, detail)))
-        stop_event.wait(SERVICE_INTERVAL)
+            sched.record(name, bool(ok))
+        stop_event.wait(sched.next_wait())
 
 
 ROUTE_MTR_CYCLES = 5  # probes per hop -> loss%/jitter (StDev) sample size
@@ -621,7 +646,8 @@ def route_check_loop(results: collections.deque) -> None:
             elif previous is None:
                 results.append(("route-init", (now, target["name"], None, hops)))
             seen[target["name"]] = hops
-        stop_event.wait(ROUTE_INTERVAL)
+        # Jitter the route sweep too, so it never locks step with other loops.
+        stop_event.wait(ROUTE_INTERVAL * random.uniform(0.9, 1.1))
 
 
 def classify(failed: set[str], target_groups: dict[str, str]) -> str:

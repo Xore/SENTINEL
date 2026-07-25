@@ -83,7 +83,9 @@ The probe should work as a field laptop, a remote sensor left at a site, and an 
       (`monitor-services.csv`, 60 s interval, TLS handshake timed separately)
 - [x] Historical charts and route-change detection (`/monitor` page; tracepath
       hop-sequence tracking every 5 min with change events)
-- [ ] Guarded scheduler with jitter, cooldown, backoff and OT/IT queues
+- [x] Guarded scheduler with jitter, cooldown, backoff and OT/IT queues
+      (`monitor/scheduler.py`: per-check exponential backoff, jittered intervals,
+      cooldown floor, separate low-rate OT queue; drives the service/port loops)
 - [ ] Disk reserve/capture policy and a freeze-evidence action
 - [ ] JSON/CSV/HTML session report with hashes
 - [ ] Configuration validation and an audit trail

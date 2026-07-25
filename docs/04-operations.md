@@ -34,6 +34,21 @@ The script performs one low-timeout TCP connection per listed target and does no
 
 The target CSV may contain many named endpoints. Use `s7-tcp` and `opcua-tcp` for OT listeners and `tcp` for an owner-approved IT management/service port. List each required port as its own row. Switches and APs are preferably inventoried passively from LLDP/CDP, ARP/DHCP, MAC addresses, and Wi-Fi beacon frames. SNMP, SSH, HTTPS, controller API, or vendor discovery checks require credentials and a separate site-specific profile; do not guess credentials or sweep every port.
 
+## Check scheduling and OT gentleness
+
+The outage monitor paces its active service/port checks through a guarded
+scheduler (`monitor/scheduler.py`), not a fixed sweep. Each check runs on a
+jittered interval, backs off geometrically while it keeps failing (up to a
+ceiling) and recovers to the base cadence on the next success, and is never
+re-run sooner than a cooldown floor. Checks are split into two queues with
+independent pacing and concurrency: **IT** (brisk) and **OT** (deliberately
+low-rate, low-concurrency). A check lands in the OT queue when it carries an
+explicit `queue: ot`, or when its group/name looks operational-technology
+(`plc`, `profinet`, `s7`, `opcua`, `modbus`, `scada`, `hmi`, ...) — so PLC and
+OPC UA endpoints are probed gently by default. Tune with the environment knobs
+`PROBE_SCHED_{IT,OT}_INTERVAL`, `_MIN`, `_MAX`, `_CONCURRENCY` and
+`PROBE_SCHED_STARTUP_SPREAD` on the monitor service; the defaults are safe.
+
 ## Broadcast-storm assessment
 
 Use the passive PCAP summary first. It reports total frame rate, broadcast/multicast rates, top Ethernet sources, and common discovery/control protocols. There is no universal storm threshold: compare against link capacity, switch telemetry, the site's baseline, and endpoint sensitivity. Investigate sustained growth, concentration from one MAC, repeated ARP/unknown-unicast behavior, topology-change events, interface errors, and packet loss together. A short PCAP from a SPAN port cannot alone prove the physical source of a switching loop.
