@@ -68,6 +68,13 @@ This index organizes `docs/` by purpose and tracks the status of every research 
 | [`theory/ot/ot-protocol-safety-theory.md`](./theory/ot/ot-protocol-safety-theory.md) | ✅ Closes gap: passive-first OT posture (NIST SP 800-82, IEC 62443), content-based protocol fingerprinting independent of port, and **multi-collector OT polling load** — mitigated via a single designated "OT owner" collector per device rather than tuning under an undocumented PLC connection limit |
 | [`theory/ot/segment-health-arp-dhcp-theory.md`](./theory/ot/segment-health-arp-dhcp-theory.md) | ✅ Closes gap: **ARP-storm/spoofing detection** via combined rate-baseline (mean+3σ) and IP-MAC binding-consistency checks, plus DHCP starvation detection via message-type distribution and DECLINE/ACK ratio tracking |
 
+## 8. Roadmap Phases 11–12
+
+| Doc | Phase |
+|---|---|
+| *(to be created)* `theory/ebpf/ebpf-flow-telemetry-theory.md` | Phase 11 — eBPF TC hook flow metadata: 5-tuple, byte counts, per-flow RTT, no-payload gate, GDPR scope |
+| *(to be created)* `theory/scheduling/deep-rl-mdp-theory.md` | Phase 12 — DQN scheduler: corpus schema, reward function, state vector, shadow evaluation, fallback contract |
+
 ---
 
 ## Research Gap Closure Status
@@ -83,3 +90,12 @@ All originally flagged "genuinely open" research topics from `gap-analysis/gap-a
 | 5 | Multi-collector OT polling load | [`theory/ot/ot-protocol-safety-theory.md`](./theory/ot/ot-protocol-safety-theory.md) §3.2–3.3 |
 
 Remaining work on these five topics is **implementation**, not further literature review: porting the specified logic into `net_arp_watch.go`, `net_dhcp_check.go`, `ot_modbus.go`, `ot_snmp.go`, and the collector's `initEBPF()`/scheduler code, then validating against this project's own historical data per the procedures each document specifies.
+
+## New Phases — Theory Docs Needed
+
+Phases 11 and 12 have been added to `ROADMAP.md` and require companion theory documents before implementation begins:
+
+| Phase | Theory doc to write | Key decisions to document |
+|---|---|---|
+| 11 | `theory/ebpf/ebpf-flow-telemetry-theory.md` | TC hook vs XDP; LRU map sizing; flow export batching interval; GDPR scope boundary |
+| 12 | `theory/scheduling/deep-rl-mdp-theory.md` | Reward function design; DQN vs PPO; corpus minimum size validation; shadow-mode promotion criteria |

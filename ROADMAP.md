@@ -49,9 +49,9 @@
 | Münz, G. **"Traffic Anomaly Detection and Cause Identification Using Flow-Level Measurements"** TU Munich, NET-2010-06-1. https://www.net.in.tum.de/fileadmin/TUM/NET/NET-2010-06-1.pdf | CUSUM + Shewhart control charts; PCA anomaly detection; automated cause identification | 3 |
 | Christodoulou et al. **"A Combination of CUSUM-EWMA for Anomaly Detection in Time Series"** DSAA 2015. https://pure.ulster.ac.uk/en/publications/a-combination-of-cusum-ewma | Combined CUSUM-EWMA outperforms either alone; reduces false positives | 3 |
 | Tikumporn et al. **"Automated Root Cause Analysis of Network Failures in IP Networks"** IEEE Access 2025. https://doi.org/10.1109/ACCESS.2025.11053841 | Causal DAG RCA; symptom-to-cause mapping; 92% accuracy on real failure corpus | 4 |
-| Zabala et al. **"Optimality of a Network Monitoring Agent"** Mathematics 11(3):610, 2023. https://doi.org/10.3390/math11030610 | MDP optimal scheduling; adaptive intervals outperform fixed by 40–60% | 5 |
+| Zabala et al. **"Optimality of a Network Monitoring Agent"** Mathematics 11(3):610, 2023. https://doi.org/10.3390/math11030610 | MDP optimal scheduling; adaptive intervals outperform fixed by 40–60%; finite-state MDP achieves ~80% of theoretical optimum without training data | 5, 12 |
 | Amjad et al. **"Optimal Probing with Statistical Guarantees"** arXiv:2109.07743, 2021. https://doi.org/10.48550/arXiv.2109.07743 | A-optimal probe budget; Frank-Wolfe approximation; 50% probe reduction | 5 |
-| Hinz et al. **"TCP's Third Eye: eBPF for Telemetry-Powered Congestion Control"** ACM SIGCOMM 2023. https://dl.acm.org/doi/10.1145/3609021.3609295 | eBPF-extracted TCP congestion signals (cwnd, rtt_var, retransmit rate) | 2 |
+| Hinz et al. **"TCP's Third Eye: eBPF for Telemetry-Powered Congestion Control"** ACM SIGCOMM 2023. https://dl.acm.org/doi/10.1145/3609021.3609295 | eBPF-extracted TCP congestion signals (cwnd, rtt_var, retransmit rate) | 2, 11 |
 | Zhao et al. **"Wasm-bpf: Streamlining eBPF Deployment in Cloud Environments"** arXiv:2408.04856, 2024. https://arxiv.org/abs/2408.04856 | eBPF in containerised environments; BTF CO-RE portability; minimal overhead vs native | 2 |
 | Pelkonen et al. **"Gorilla: A Fast, Scalable, In-Memory Time Series Database"** VLDB 2015. https://www.vldb.org/pvldb/vol8/p1816-teller.pdf | Delta-of-delta timestamps + XOR float64; 12× compression; 96% of timestamps = 1 bit; 85% of queries hit last 26 h | 10 |
 | Tagliaro et al. **"A Longitudinal View of IoT TLS Deployments"** ACM CCS 2024. | 99.84% of real-world IoT backends use insecure transport; mTLS + TLS 1.3 is an explicit design requirement | 9 |
@@ -401,6 +401,98 @@ scripts/
 
 ---
 
+## Phase 11 — eBPF Flow Telemetry (Weeks 29–31)
+
+**Component:** `collector/` (Linux nodes only)  
+**Academic basis:** Sundberg PAM 2023 (ePPing); Hinz et al. ACM SIGCOMM 2023; Bertrone COP2 2019
+
+> **Rationale:** Full PCAP (payload recording) was previously excluded due to GDPR
+> data-minimisation obligations and prohibitive storage cost. That exclusion no
+> longer applies to **eBPF-based flow metadata**: packet payloads are never
+> copied to user space, so no personal data is recorded. Probing is performed
+> exclusively on contracted internal networks (GDPR Art. 6(1)(b) — contractual
+> necessity). Only connection-level metadata (IPs, ports, RTT, byte counts,
+> TCP flags) is exported. This is the same data model used by NetFlow/IPFIX, which
+> is standard practice in network operations.
+
+### What this phase delivers
+
+- [ ] **eBPF TC egress/ingress hook for flow metadata.** Attach a `BPF_PROG_TYPE_SCHED_CLS` program to each monitored interface. Extract per-flow 5-tuple (src_ip, dst_ip, src_port, dst_port, proto), byte count, packet count, and TCP flags into a `BPF_MAP_TYPE_LRU_HASH` keyed by flow 5-tuple. No payload bytes are ever read.
+
+- [ ] **Per-flow RTT via TCP timestamp option (ePPing approach).** Parse TCP timestamp option (RFC 7323) in the TC hook. Match outgoing TSval → incoming TSecr to compute RTT passively for every TCP flow without active probing. Complements the kprobe `srtt_us` approach from Phase 2.
+
+- [ ] **Flow export to `monitor/`.** Aggregate flow records every 30 s into `FlowRecord{SrcIP, DstIP, SrcPort, DstPort, Proto, Bytes, Packets, RTT_us, TCPFlags, FirstSeen, LastSeen}`. Include in the OTLP push envelope as `ebpf_flows` stream.
+
+- [ ] **Flow-based anomaly inputs for Phase 4 RCA.**
+  - `flow_count` per subnet/hour → feeds new/rogue device + port scan symptoms
+  - `byte_rate` per flow → bandwidth anomaly detection
+  - TCP RST/FIN ratio → connection failure indicator
+  - All inputs join the existing CUSUM+EWMA pipeline as additional symptom streams
+
+- [ ] **Graceful degradation.** If TC hook attachment fails (missing `CAP_NET_ADMIN`, container without `network_mode: host`, or kernel < 4.8), fall back to kprobe-only RTT (Phase 2) and log reason. No crash, no data loss.
+
+- [ ] **No payload capture gate.** `BPF_F_NO_PREALLOC` maps only. Compile-time `static_assert` that no `bpf_skb_load_bytes()` call beyond L4 header offset is present in any BPF C source. CI check validates this at build time.
+
+### Scope boundary
+
+| Captured | Not captured |
+|---|---|
+| 5-tuple (IP, port, proto) | Payload bytes |
+| Byte / packet counts | DNS query names |
+| TCP RTT (timestamp option) | HTTP URLs / headers |
+| TCP flags (SYN, RST, FIN) | TLS SNI (after handshake) |
+| Flow start / end time | Any application-layer content |
+
+---
+
+## Phase 12 — Deep RL / Q-Learning MDP Scheduler (Weeks 31–35)
+
+**Component:** `monitor/` (Python) → `collector/` (check plan delivery)  
+**Academic basis:** Zabala et al. Mathematics 2023
+
+> **Rationale:** Deep RL for MDP scheduling was previously excluded because it
+> requires a labelled failure corpus for training. That prerequisite is now
+> solvable: Phases 1–11 produce a continuous stream of labelled probe
+> observations (RTT, loss, state transitions, RCA verdicts) against real
+> contracted infrastructure. After ~3 months of Phase 5 (finite-state MDP)
+> operation, sufficient failure episodes will exist to bootstrap a Q-network.
+> The finite-state MDP (Phase 5) achieves ~80% of theoretical optimum
+> (Zabala 2023) and remains the production scheduler until the Q-network
+> reaches parity on held-out validation data.
+
+### Prerequisite
+
+- Phase 5 (finite-state MDP) must be running in production for ≥ 90 days
+- Failure corpus: ≥ 500 labelled state-transition episodes (STABLE→SUSPECT→DEGRADED→DOWN + recovery) across ≥ 3 distinct target types
+- Corpus is accumulated automatically from MDP state logs written by Phase 5
+
+### What this phase delivers
+
+- [ ] **Failure corpus schema.** `monitor/rl/corpus.py` — SQLite table `mdp_episodes(target_id, ts, state_from, state_to, rtt_p95, loss_pct, probe_interval_s, reward)`. Reward function: `r = -probe_cost + detection_speed_bonus - false_alarm_penalty` (Zabala 2023 §4.2).
+
+- [ ] **DQN implementation.** `monitor/rl/dqn.py` — 3-layer MLP (input: 8-dim state vector, hidden: 64×64, output: 4 actions = probe intervals). `experience_replay` buffer (capacity 10 000). `epsilon`-greedy exploration (ε decay 1.0 → 0.05 over 50 000 steps). Target network updated every 1 000 steps.
+
+- [ ] **State vector.** `[rtt_p50, rtt_p95, rtt_p99, loss_pct, rtt_variance, time_since_last_change, hour_of_week_sin, hour_of_week_cos]` — same 8 dimensions as the Phase 3 PCA detector, enabling direct comparison.
+
+- [ ] **Offline training pipeline.** `scripts/train_dqn.sh` — loads corpus from SQLite, trains for 100 epochs, saves model to `config/rl/dqn_weights.pt`. CI job validates that episode reward on held-out 20% split exceeds finite-state MDP baseline by ≥ 5%.
+
+- [ ] **Shadow mode evaluation.** Run DQN alongside finite-state MDP for 14 days. Compare: probe budget consumed, mean detection latency (STABLE→DEGRADED recognition time), false alarm rate. Only promote DQN to production if all three metrics improve.
+
+- [ ] **Corpus privacy.** Corpus rows contain only `(target_id, ts, rtt, loss, state)` — no IP addresses, no payload, no personal data. `target_id` is an opaque hash of `collector_id + target_ip` (SHA-256, first 8 bytes). Compliant with GDPR data-minimisation under the same contractual basis as Phase 11.
+
+- [ ] **Fallback.** If DQN inference latency exceeds 5 ms (p99) or model file is absent, revert to finite-state MDP transparently. Log reason.
+
+### Training data requirement summary
+
+| Metric | Minimum | Target |
+|---|---|---|
+| Labelled episodes | 500 | 2 000 |
+| Distinct target types | 3 | 8 |
+| Failure event types | DOWN + DEGRADED | All 4 state transitions |
+| Collection period | 90 days | 180 days |
+
+---
+
 ## Full Timeline
 
 | Phase | Component | Description | Start | Duration |
@@ -415,8 +507,10 @@ scripts/
 | **8** | `tests/`+`scripts/`+`config/` | Full test suite, config schemas, systemd + Docker deployment | Wk 21 | 3 weeks |
 | **9** | `collector/`+`monitor/` | mTLS + backend PKI (CA, `/enroll`, cert renewal, revocation) + OTLP/gRPC exporter | Wk 24 | 3 weeks |
 | **10** | `collector/`+`monitor/` | Gorilla delta-of-delta compression + hot/cold SQLite store + compaction job | Wk 27 | 2 weeks |
+| **11** | `collector/` | eBPF flow telemetry: TC hook, per-flow RTT, flow export, no-payload gate | Wk 29 | 2 weeks |
+| **12** | `monitor/` | Deep RL / DQN scheduler: corpus accumulation, offline training, shadow eval | Wk 31 | 4 weeks |
 
-**Total: 29 weeks (~7 months)**
+**Total: 35 weeks (~9 months)**
 
 ---
 
@@ -430,6 +524,8 @@ scripts/
 | **#53** Webhook/email alerting on sustained state changes | Phase 6 | ✅ v1 shipped: edge-triggered on #50 classifier, webhook+SMTP, Settings panel, `/api/alerts*`, 34 tests |
 | **#48** Session/acceptance report (JSON/CSV/HTML) + hashes | Phase 6 | Operator-facing reporting/export surface |
 | **#47** Freeze-evidence action + disk reserve/capture policy | Phase 6 (trigger) + Phase 8 (policy) | Dashboard action snapshots JSON telemetry; disk-reserve is config/hardening |
+| **PCAP / full packet capture** | Phase 11 | Moved from out-of-scope: eBPF TC hook captures flow metadata only (no payload). GDPR-compliant on contracted internal networks. |
+| **Full Q-learning / deep RL for MDP** | Phase 12 | Moved from out-of-scope: failure corpus accumulates automatically from Phase 5 MDP logs. Finite-state MDP remains production scheduler until DQN reaches parity. |
 
 ---
 
@@ -438,11 +534,10 @@ scripts/
 | Item | Reason |
 |---|---|
 | Anomaly detection in `collector/` | Collector is stateless data-plane only. All maths lives in `monitor/`. |
-| Full Q-learning / deep RL for MDP | Requires failure corpus. Finite-state MDP achieves ~80% of theoretical optimum without training data (Zabala 2023). |
-| PCAP / full packet capture | eBPF provides RTT and flow metadata without payload recording. Avoids GDPR and storage burden. |
-| Custom ML training pipeline | CUSUM+EWMA+PCA are parameter-light; validated on real ISP data (Münz 2010); no labelled training data needed. |
+| Custom ML training pipeline (general) | CUSUM+EWMA+PCA are parameter-light; validated on real ISP data (Münz 2010); no labelled training data needed. Phase 12 covers the specific RL use case. |
 | eBPF on Windows nodes | Not supported by the Linux kernel eBPF subsystem. Windows nodes use active ICMP probing (graceful fallback). |
 | External PKI / Let's Encrypt | Backend-generated CA is sufficient for a closed probe fleet. External PKI adds ACME dependency with no security benefit for internal-only collectors. |
+| Payload / application-layer capture | eBPF TC hook is compile-time gated to L4 header only. No DNS names, HTTP URLs, TLS content, or any application payload is ever recorded. |
 
 ---
 
