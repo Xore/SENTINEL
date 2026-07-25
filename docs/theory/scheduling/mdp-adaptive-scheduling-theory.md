@@ -1,7 +1,7 @@
 # MDP Adaptive Probe Scheduling Theory
 ## Academic Research for `collector/` Phase 4/5 Implementation
 
-> **Status:** Research document — feeds directly into the collector's Phase 4 (MDP adaptive scheduler) and Phase 5 (probe-budget allocation) described in `collector/ROADMAP.md`.
+> **Status:** Research document — feeds directly into the collector's Phase 4 (MDP adaptive scheduler) and Phase 5 (probe-budget allocation) described in `docs/collector/ROADMAP.md`.
 > **Priority:** High — the finite-state approximation currently sketched in `ROADMAP.md` uses hard-coded thresholds (loss>1%, rtt_p95>2x baseline) that are not yet derived from the underlying theory or validated against real failure data. This document closes that gap, matching the depth of the sibling documents `docs/anomaly-detection-theory.md`, `docs/probe-budget-allocation.md`, and `docs/icmp-probe-design.md`.
 
 ---
@@ -65,11 +65,11 @@ Once a target enters SUSPECT/DEGRADED, Phase 5's Frank-Wolfe-approximated budget
 
 | Item | File | Status |
 |---|---|---|
-| Cite Cohen et al. (2013) and Mahmoody et al. (2015) alongside Zabala et al. (2023) in `ROADMAP.md` Phase 4 | `collector/ROADMAP.md` | **Missing — add this** |
-| Clarify that Zabala et al. models single-processor capture/analysis contention, not multi-target reachability scheduling | `collector/ROADMAP.md` | **Missing — add this** |
+| Cite Cohen et al. (2013) and Mahmoody et al. (2015) alongside Zabala et al. (2023) in `ROADMAP.md` Phase 4 | `docs/collector/ROADMAP.md` | **Missing — add this** |
+| Clarify that Zabala et al. models single-processor capture/analysis contention, not multi-target reachability scheduling | `docs/collector/ROADMAP.md` | **Missing — add this** |
 | Replace ad hoc `loss>1% OR rtt_p95>2x` rule with CUSUM-alarm-based transition (reusing `anomaly-detection-theory.md` Â§2.2 parameters) | `collector/main.go` (Phase 4 state machine) | Specified here — needs implementation |
 | Backtest CUSUM-derived thresholds against 30+ days of `monitor/` historical data before enabling in production | N/A (validation step) | Already scoped in `docs/research-guide-for-gap-topics.md` Â§4 |
-| Document the shared "uncertainty" interpretation linking Phase 4 states and Phase 5 variance weights | `collector/ROADMAP.md` | **Missing — add this** |
+| Document the shared "uncertainty" interpretation linking Phase 4 states and Phase 5 variance weights | `docs/collector/ROADMAP.md` | **Missing — add this** |
 
 ---
 

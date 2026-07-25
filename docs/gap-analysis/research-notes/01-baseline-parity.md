@@ -11,7 +11,7 @@ Status: Research complete, validated against `monitor/outage_monitor.py`.
 
 ## Next Implementation Step
 
-Add `collector/net_icmp.go` (loss%/RTT) and `collector/net_interfaces.go` (counters), matching the design already sketched in `collector/SUGGESTIONS.md` §6.1-6.2. Validate output against `monitor` SQLite `ping_samples` for the same targets/window before merging (exit criteria in research guide §1.3).
+Add `collector/net_icmp.go` (loss%/RTT) and `collector/net_interfaces.go` (counters), matching the design already sketched in `docs/collector/SUGGESTIONS.md` §6.1-6.2. Validate output against `monitor` SQLite `ping_samples` for the same targets/window before merging (exit criteria in research guide §1.3).
 
 ## Exit Criteria Status
 

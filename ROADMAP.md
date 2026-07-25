@@ -3,7 +3,7 @@
 
 > **Updated:** 2026-07-25  
 > **Scope:** Entire repository — `collector/`, `monitor/`, `dashboard/`, `config/`, `scripts/`, `tests/`  
-> Phases are additive. Each builds directly on the previous. The collector roadmap (`collector/ROADMAP.md`) is the implementation detail for Phase 1–3 of this document.
+> Phases are additive. Each builds directly on the previous. The collector roadmap (`docs/collector/ROADMAP.md`) is the implementation detail for Phase 1–3 of this document.
 
 ---
 
@@ -55,10 +55,27 @@
 
 ---
 
+## Component & Reference Documentation
+
+The detailed, per-component specifications live under `docs/`. This roadmap is the
+top-level plan; the documents below are its implementation detail and research
+backing.
+
+| Document | What it covers |
+|---|---|
+| [`docs/collector/ROADMAP.md`](docs/collector/ROADMAP.md) | Collector implementation roadmap — the phase-by-phase Go agent spec (check inventory, eBPF, MDP scheduling) that Phases 1–5 above build on |
+| [`docs/collector/SUGGESTIONS.md`](docs/collector/SUGGESTIONS.md) | Collector design suggestions — file layout, per-check OIDs/methods, OT safety rules, OS-support matrix |
+| [`docs/theory/`](docs/theory/) | Research documents grounding each phase: anomaly detection, eBPF deployment constraints, probe scheduling, OT/segment-health theory |
+| [`docs/gap-analysis/`](docs/gap-analysis/) | Collector-vs-standalone parity analysis and the research guide for open gap topics |
+| [`docs/guides/`](docs/guides/) | Operator guides: setup, capture & Wi-Fi, operations, research & decisions |
+| [`docs/setup/00-setup.md`](docs/setup/00-setup.md) | Menu-driven installer walkthrough |
+
+---
+
 ## Phase 1 — Collector: Complete Check Inventory (Weeks 1–5)
 
 **Component:** `collector/`  
-**Detail:** See `collector/ROADMAP.md` Phases 0–1 for full implementation specification.
+**Detail:** See `docs/collector/ROADMAP.md` Phases 0–1 for full implementation specification.
 
 ### What this phase delivers
 - Multi-packet ICMP with RTT distribution (p50/p95/p99) and loss %
@@ -88,6 +105,19 @@ Every check cycle produces a structured JSON envelope pushed to the `monitor/` a
   }
 }
 ```
+
+### Folded-in tasks from the prior roadmap
+
+These operational checks from the earlier field-probe roadmap live in this phase
+because they are collector-side data acquisition (the raw streams the `monitor/`
+maths later consumes).
+
+- [ ] **#54 — SNMPv3 read + STP observation.** Extend the SNMP GET check to full
+  SNMPv3 (authPriv, credentials from the dashboard settings store, never Git).
+  Read the Bridge-MIB / RSTP objects (`dot1dStpTopChanges`, port states,
+  designated root) so a topology change becomes an observable stream field.
+  Emit `stp_topology_changes` and per-port state into the `snmp_hosts` envelope;
+  a rising `dot1dStpTopChanges` is a symptom Phase 4 RCA can map to a cause.
 
 ---
 
@@ -252,7 +282,7 @@ func StartTCPRTTCollector(events chan<- RTTEvent) (stop func(), err error) {
 
 #### Approach B: TC Hook for Passive Timestamp-Based RTT (ePPing)
 
-For per-flow RTT on *all* TCP connections (not just those closed on this host), use the TC ingress hook with TCP timestamp matching — this is the ePPing approach covered in `collector/ROADMAP.md` Phase 2. The kprobe approach (Approach A) is complementary: it gives higher-fidelity per-connection RTT including `srtt_us` variance, while ePPing gives lower-overhead aggregate flow RTTs.
+For per-flow RTT on *all* TCP connections (not just those closed on this host), use the TC ingress hook with TCP timestamp matching — this is the ePPing approach covered in `docs/collector/ROADMAP.md` Phase 2. The kprobe approach (Approach A) is complementary: it gives higher-fidelity per-connection RTT including `srtt_us` variance, while ePPing gives lower-overhead aggregate flow RTTs.
 
 **Recommendation:** implement Approach A first (simpler, no BPF C for TC classifier needed), then add ePPing for passive aggregate monitoring.
 
@@ -571,6 +601,24 @@ class PCADetector:
 hour_of_week = (now.weekday() * 24 + now.hour)  # 0–167
 ```
 
+### Folded-in tasks from the prior roadmap
+
+Both prior-roadmap items are trend-detection over the collector streams and so
+belong to this phase's detector stack rather than the data plane.
+
+- [ ] **#50 — TCP retransmission/reset + DNS failure trends.** Feed the eBPF
+  `retransmits`/`lost` counters (Phase 2) and the Phase 1 DNS-check
+  success/latency into the CUSUM+EWMA detectors as their own series. Alert on a
+  sustained rise in retransmit ratio or DNS failure/SERVFAIL rate, not a single
+  spike. Emit `tcp_retransmit_ratio` and `dns_failure_rate` as detector inputs;
+  both become Phase 4 RCA symptoms.
+- [ ] **#51 — Baselines by segment / hour / production state.** Generalise the
+  168-bucket hour-of-week control limits above so the residual sigma is keyed by
+  `(metric, subnet_segment, hour_of_week, production_state)`. `production_state`
+  is an operator-set label (e.g. `production` vs `maintenance-window`) so a
+  planned change window does not read as an anomaly. Fall back to the coarser
+  bucket when a fine-grained slot has too few samples.
+
 ---
 
 ## Phase 4 — Monitor: Automated Root Cause Analysis (Weeks 11–14)
@@ -776,7 +824,7 @@ Dropped connection detected
 
 **Component:** `monitor/` → `collector/` (check plan delivery)  
 **Academic basis:** Zabala et al. Mathematics 2023; Amjad et al. arXiv 2021  
-**Detail:** See `collector/ROADMAP.md` Phases 4–5
+**Detail:** See `docs/collector/ROADMAP.md` Phases 4–5
 
 The `monitor/` process computes the optimal check plan and pushes it back to each collector:
 
@@ -805,6 +853,26 @@ Probe interval by state:
 - **Anomaly timeline:** swim-lane chart per collector; one marker per anomaly event; RCA result in tooltip
 - **High-latency client table:** live table from eBPF kprobe events (Phase 2c); sortable by RTT ratio
 - **Alert routing:** webhook / email / Alertmanager; confidence-gated: >0.8 auto-alert, 0.6–0.8 flagged probable, <0.6 raw symptoms only
+
+### Folded-in tasks from the prior roadmap
+
+Operator-facing reporting and notification surfaces land here, on the dashboard.
+
+- [ ] **#53 — Webhook/email alerting on sustained state changes.** The concrete
+  implementation of the "Alert routing" bullet above: dashboard-configurable
+  webhook and SMTP targets, fired only on a *sustained* MDP state change
+  (STABLE→SUSPECT→DEGRADED/DOWN held past a debounce window), never on a single
+  cycle. Confidence-gated as above; deliveries recorded in the audit trail.
+- [ ] **#48 — Session/acceptance report (JSON/CSV/HTML) with hashes.** A
+  one-click export summarising a monitoring session: targets, uptime, anomaly
+  events with RCA verdicts, baseline deviations, and config in effect. Emit
+  JSON + CSV + a self-contained HTML report, each with a SHA-256 content hash so
+  the artefact is tamper-evident for an acceptance hand-off.
+- [ ] **#47 (trigger) — Freeze-evidence action.** A dashboard button that snapshots
+  the current stream buffers + active anomaly/RCA context into a timestamped,
+  hashed evidence bundle. Snapshots collected JSON telemetry only — full PCAP
+  stays out of scope per the architecture. The disk-reserve policy that backs it
+  is a Phase 8 config concern (below).
 
 ---
 
@@ -857,6 +925,15 @@ scripts/
 └── update.sh               — rolling update with health check gate
 ```
 
+### Folded-in tasks from the prior roadmap
+
+- [ ] **#47 (policy) — Disk reserve / capture policy.** The config + hardening half
+  of the freeze-evidence feature (dashboard trigger in Phase 6): a `config/`
+  schema for a reserved evidence partition/quota, retention and rotation of
+  evidence bundles, and a hard floor that refuses a snapshot when free space
+  would drop below the reserve. Keeps evidence capture from ever filling the
+  disk and taking the collector/monitor down.
+
 ---
 
 ## Full Timeline
@@ -873,6 +950,23 @@ scripts/
 | **8** | `tests/`+`scripts/`+`config/` | Full test suite, config schemas, systemd + Docker deployment | Wk 21 | 3 weeks |
 
 **Total: 24 weeks (~6 months)**
+
+---
+
+## Prior-Roadmap Reconciliation
+
+The open items from the earlier field-probe roadmap are folded into the phases
+above by capability (not by their old priority label). Each is a `- [ ]` task in
+its phase's *"Folded-in tasks from the prior roadmap"* subsection.
+
+| Prior item | Folded into | Rationale |
+|---|---|---|
+| **#54** SNMPv3 read + STP observation | Phase 1 | Collector-side data acquisition; STP change becomes a stream field |
+| **#50** TCP retransmission/reset + DNS failure trends | Phase 3 | Trend detection over collector streams via CUSUM+EWMA |
+| **#51** Baselines by segment / hour / production state | Phase 3 | Generalises the 168-bucket adaptive control limits |
+| **#53** Webhook/email alerting on sustained state changes | Phase 6 | Concrete build of the Phase 6 alert-routing bullet |
+| **#48** Session/acceptance report (JSON/CSV/HTML) + hashes | Phase 6 | Operator-facing reporting/export surface |
+| **#47** Freeze-evidence action + disk reserve/capture policy | Phase 6 (trigger) + Phase 8 (policy) | Dashboard action snapshots JSON telemetry; disk-reserve is config/hardening. Full PCAP stays out of scope. |
 
 ---
 

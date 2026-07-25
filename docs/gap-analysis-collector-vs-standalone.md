@@ -5,7 +5,7 @@
 
 ## Overview
 
-`analyseLaptop` has three architectural tiers: a **standalone monitor** (Python, `monitor/`) that runs everything locally with a Flask **dashboard** (`dashboard/`), and a **Go collector agent** (`collector/`) deployable on remote nodes that pushes telemetry to an aggregator. The repository already has deep academic grounding in `collector/ROADMAP.md` and `collector/SUGGESTIONS.md`, citing RFC 7799, Sundberg (2024), Amjad et al. (2021), Zabala et al. (2023), Brügge & Simon (TU Munich, 2024), and RITICS/NCSC guidance. `docs/` additionally contains deep-dive papers on ICMP probe design, eBPF, anomaly detection theory, RCA/causal inference, WireGuard health, and probe-budget allocation.
+`analyseLaptop` has three architectural tiers: a **standalone monitor** (Python, `monitor/`) that runs everything locally with a Flask **dashboard** (`dashboard/`), and a **Go collector agent** (`collector/`) deployable on remote nodes that pushes telemetry to an aggregator. The repository already has deep academic grounding in `docs/collector/ROADMAP.md` and `docs/collector/SUGGESTIONS.md`, citing RFC 7799, Sundberg (2024), Amjad et al. (2021), Zabala et al. (2023), Brügge & Simon (TU Munich, 2024), and RITICS/NCSC guidance. `docs/` additionally contains deep-dive papers on ICMP probe design, eBPF, anomaly detection theory, RCA/causal inference, WireGuard health, and probe-budget allocation.
 
 This document identifies (1) roadmapped collector features not yet implemented, (2) standalone-only features missing from the collector (and vice versa), and (3) topics that need further research before correct implementation.
 

@@ -15,7 +15,7 @@
 
 ### 1.1 Why This Matters for This Project
 
-The collector's roadmapped OS-health/SNMP checks (`SUGGESTIONS.md` §6.6/6.10, `collector/ROADMAP.md` Phase 1e) intend to use uptime regression as a reboot/instability signal feeding into the outage-classification and RCA pipeline (`docs/rca-causal-inference.md`). A false "device rebooted" classification triggered by a rollover, once every ~497 days per monitored device, is a low-frequency but highly misleading false positive that would corrupt the historical events table used for the MDP scheduler's threshold-validation dataset (per `docs/mdp-adaptive-scheduling-theory.md` §4.2's 30-day backtest requirement) if left unhandled.
+The collector's roadmapped OS-health/SNMP checks (`SUGGESTIONS.md` §6.6/6.10, `docs/collector/ROADMAP.md` Phase 1e) intend to use uptime regression as a reboot/instability signal feeding into the outage-classification and RCA pipeline (`docs/rca-causal-inference.md`). A false "device rebooted" classification triggered by a rollover, once every ~497 days per monitored device, is a low-frequency but highly misleading false positive that would corrupt the historical events table used for the MDP scheduler's threshold-validation dataset (per `docs/mdp-adaptive-scheduling-theory.md` §4.2's 30-day backtest requirement) if left unhandled.
 
 ---
 

@@ -4,7 +4,7 @@
 
 ## How to Use This Guide
 
-Work top-to-bottom in priority order. Do not start implementation on a topic until its "Exit Criteria" are met — this keeps the academically-grounded style of the existing `collector/ROADMAP.md` and avoids hard-coding unvalidated thresholds.
+Work top-to-bottom in priority order. Do not start implementation on a topic until its "Exit Criteria" are met — this keeps the academically-grounded style of the existing `docs/collector/ROADMAP.md` and avoids hard-coding unvalidated thresholds.
 
 ---
 
@@ -14,7 +14,7 @@ Goal: port already-proven standalone behavior into the collector.
 
 **Step 1.1 — Re-read source of truth**
 - Re-read `monitor/outage_monitor.py` (`PingWorker`, `iface_counters()`, `wifi_sample()`) and `collector/main.go` side by side.
-- Re-read `collector/ROADMAP.md` Phase 0 and `collector/SUGGESTIONS.md` §3.1/§6.1-6.2.
+- Re-read `docs/collector/ROADMAP.md` Phase 0 and `docs/collector/SUGGESTIONS.md` §3.1/§6.1-6.2.
 
 **Step 1.2 — Extract the algorithm, not the code**
 - Loss % computation: `(sent - received) / sent * 100`.
@@ -155,7 +155,7 @@ Goal: derive a real threshold instead of the placeholder "> N ARP replies per mi
 
 | Phase | Research required before coding? | Primary reading | Data-driven validation needed |
 |---|---|---|---|
-| 0 — Parity port | No | `collector/ROADMAP.md` Phase 0 | Compare against standalone SQLite data |
+| 0 — Parity port | No | `docs/collector/ROADMAP.md` Phase 0 | Compare against standalone SQLite data |
 | 1 — Routes/WAN/OS/TLS/SNMP | Light | RFC 7799, RFC 1213 | Platform matrix soak test |
 | OT protocols | Yes — safety gate | IEC 62443-3-3, Ollila 2024, RITICS/NCSC | Simulator tests + controls-owner sign-off |
 | 4 — MDP scheduler | Yes | Zabala et al. 2023 | 30+ days of own outage data |

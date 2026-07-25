@@ -4,7 +4,7 @@ Status: Research complete per `../research-guide-for-gap-topics.md` §2.
 
 ## Standards Reviewed
 
-- RFC 7799 — defines active vs. passive metric terminology used consistently across `collector/ROADMAP.md` and `collector/SUGGESTIONS.md`; confirms route/WAN/OS checks below are all "active" methods requiring explicit rate limiting.
+- RFC 7799 — defines active vs. passive metric terminology used consistently across `docs/collector/ROADMAP.md` and `docs/collector/SUGGESTIONS.md`; confirms route/WAN/OS checks below are all "active" methods requiring explicit rate limiting.
 - RFC 1213 (SNMPv2-MIB) — confirms exact OID semantics already targeted in `SUGGESTIONS.md` §6.6: `sysDescr` (1.3.6.1.2.1.1.1.0), `sysUpTime` (1.3.6.1.2.1.1.3.0), `sysName` (1.3.6.1.2.1.1.5.0), `ifOperStatus` (1.3.6.1.2.1.2.2.1.8.N), `ifInErrors`/`ifOutErrors`.
 
 ## Platform Compatibility Findings
@@ -31,4 +31,4 @@ Status: Research complete per `../research-guide-for-gap-topics.md` §2.
 
 ## Next Implementation Step
 
-Implement `collector/net_routes.go`, `collector/net_wan.go`, `collector/os_health.go` (+ `_linux`/`_windows` variants), `collector/tls_check.go`, and `collector/ot_snmp.go` per the file layout already defined in `collector/SUGGESTIONS.md` §5, gated on the soak test above before merging to production use.
+Implement `collector/net_routes.go`, `collector/net_wan.go`, `collector/os_health.go` (+ `_linux`/`_windows` variants), `collector/tls_check.go`, and `collector/ot_snmp.go` per the file layout already defined in `docs/collector/SUGGESTIONS.md` §5, gated on the soak test above before merging to production use.

@@ -1,7 +1,7 @@
 # Segment Health: ARP Storm & DHCP Starvation Detection Theory
 ## Academic Research for `collector/` Phase 3 Implementation
 
-> **Status:** Research document — feeds directly into `collector/ROADMAP.md` Phase 3 (`net_arp_watch.go`, `net_segment_health.go`, `net_dhcp_check.go`) and the "excessive client" detection goal described there.
+> **Status:** Research document — feeds directly into `docs/collector/ROADMAP.md` Phase 3 (`net_arp_watch.go`, `net_segment_health.go`, `net_dhcp_check.go`) and the "excessive client" detection goal described there.
 > **Priority:** Medium-High — Phase 3's current spec leaves the ARP-rate anomaly threshold as an unspecified "> N ARP replies per minute" and gives no detection method for DHCP-side congestion beyond a simple lease-percentage check. This document supplies concrete, citable detection methods and closes that gap, matching the depth of the sibling documents already in `docs/` (`anomaly-detection-theory.md`, `mdp-adaptive-scheduling-theory.md`, `probe-budget-allocation.md`).
 
 ---
@@ -43,7 +43,7 @@ This directly implements the storm-vs-spoofing distinction from the literature r
 
 ### 1.4 Applicability to Wireless/OT Segments
 
-The wireless sensor network broadcast-storm literature (MDPI *Sensors* 11(6):5952, "Adaptive Broadcasting Method Using Neighbor Type Information in Wireless Sensor Networks") is a useful cross-domain reference confirming that **broadcast storms scale with neighbor density**, not just attack intent — a legitimately crowded Wi-Fi segment (many IoT devices) can trigger false positives on a naive global threshold. This reinforces per-segment, density-aware baselining (Phase 3b's `net_segment_health.go`) rather than a single network-wide constant, and is consistent with the TU Munich (2024) finding already cited in `collector/ROADMAP.md` that congestion should be correlated against neighbour count.
+The wireless sensor network broadcast-storm literature (MDPI *Sensors* 11(6):5952, "Adaptive Broadcasting Method Using Neighbor Type Information in Wireless Sensor Networks") is a useful cross-domain reference confirming that **broadcast storms scale with neighbor density**, not just attack intent — a legitimately crowded Wi-Fi segment (many IoT devices) can trigger false positives on a naive global threshold. This reinforces per-segment, density-aware baselining (Phase 3b's `net_segment_health.go`) rather than a single network-wide constant, and is consistent with the TU Munich (2024) finding already cited in `docs/collector/ROADMAP.md` that congestion should be correlated against neighbour count.
 
 ---
 
@@ -90,7 +90,7 @@ Most recent detection papers (2023â€“2025) frame DHCP starvation mitigation
 | DHCP message-type distribution tracking (DISCOVER/OFFER/REQUEST/ACK/DECLINE) | `collector/net_dhcp_check.go` | **Missing — add this** |
 | Hellinger-distance-based distribution anomaly check | `collector/net_dhcp_check.go` | **Missing — add this** |
 | DECLINE-to-ACK ratio tracking (Induced DHCP Starvation indicator) | `collector/net_dhcp_check.go` | **Missing — add this** |
-| Explicit note that SDN-specific mitigation literature does not transfer to this non-SDN agent | `collector/ROADMAP.md` Phase 3 | **Missing — add this** |
+| Explicit note that SDN-specific mitigation literature does not transfer to this non-SDN agent | `docs/collector/ROADMAP.md` Phase 3 | **Missing — add this** |
 
 ---
 
