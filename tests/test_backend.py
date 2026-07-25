@@ -240,6 +240,49 @@ class BackendTest(unittest.TestCase):
         ids = {n["id"] for n in g["nodes"]}
         self.assertIn("self", ids)
 
+    # --- device classification + manual tags (#39) -----------------------------
+    def _node(self, graph, nid):
+        return next((n for n in graph["nodes"] if n["id"] == nid), None)
+
+    def test_map_classifies_host_from_vendor(self):
+        appmod.history.get_hosts = lambda limit=500: [
+            {"address": "192.168.50.77", "mac": "aa:bb:cc:dd:ee:ff",
+             "vendor": "Hewlett Packard", "name": "", "last_kind": "discovery",
+             "last_seen": None, "sources": ["discovery"]},
+        ]
+        n = self._node(self.c.get("/api/map").get_json(), "192.168.50.77")
+        self.assertIsNotNone(n)
+        self.assertEqual(n["kind"], "printer")
+        self.assertEqual(n["detail"].get("class_source"), "vendor")
+
+    def test_manual_tag_overrides_classification(self):
+        appmod.history.get_hosts = lambda limit=500: [
+            {"address": "192.168.50.78", "mac": "", "vendor": "Hewlett Packard",
+             "name": "", "last_kind": "discovery", "last_seen": None, "sources": []},
+        ]
+        try:
+            put = self.c.put("/api/map/tags/192.168.50.78",
+                             json={"kind": "server", "label": "Print server", "tags": "lab, dmz"})
+            self.assertEqual(put.status_code, 200)
+            n = self._node(self.c.get("/api/map").get_json(), "192.168.50.78")
+            self.assertEqual(n["kind"], "server")           # tag beats vendor "printer"
+            self.assertEqual(n["label"], "Print server")
+            self.assertEqual(n["confidence"], "confirmed")
+            self.assertTrue(n["tagged"])
+            self.assertIn("lab", n["detail"]["tags"])
+        finally:
+            self.c.delete("/api/map/tags/192.168.50.78")
+
+    def test_map_tag_rejects_unknown_kind(self):
+        r = self.c.put("/api/map/tags/192.168.50.79", json={"kind": "toaster"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_map_tag_delete_reverts(self):
+        self.c.put("/api/map/tags/10.0.0.5", json={"kind": "server"})
+        self.assertIn("10.0.0.5", self.c.get("/api/map/tags").get_json()["tags"])
+        self.assertTrue(self.c.delete("/api/map/tags/10.0.0.5").get_json()["ok"])
+        self.assertNotIn("10.0.0.5", self.c.get("/api/map/tags").get_json()["tags"])
+
 
 if __name__ == "__main__":
     unittest.main()

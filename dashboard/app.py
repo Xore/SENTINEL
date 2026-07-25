@@ -30,6 +30,7 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import ids_adapter
     from dashboard import reconcile
     from dashboard import auth
+    from dashboard import classify
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
@@ -38,6 +39,7 @@ except ImportError:  # run from inside the dashboard directory
     import ids_adapter
     import reconcile
     import auth
+    import classify
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # let us import the monitor/* helpers as a namespace pkg
@@ -2861,6 +2863,42 @@ def network_map():
         if ip in nodes:
             nodes[ip]["status"] = "up" if st["up"] else "down"
             nodes[ip]["detail"].update({"loss_pct": st["loss_pct"], "rtt_ms": st["rtt_ms"]})
+
+    # --- device classification (#39): infer a kind for still-generic nodes,
+    # then let an operator's manual tag override everything. -----------------
+    gw_ips = set(wan_gateways)
+    for nid, n in nodes.items():
+        proposal = classify.classify(
+            current_kind=n.get("kind", "unknown"),
+            vendor=n.get("vendor", ""),
+            hostname=n.get("label", "") if n.get("label") != nid else "",
+            services=n.get("detail", {}).get("services"),
+            sys_descr=n.get("detail", {}).get("snmp_descr", ""),
+            is_gateway=nid in gw_ips,
+            is_ap=n.get("kind") == "ap",
+        )
+        if proposal:
+            if _KIND_RANK.get(proposal["kind"], 0) > _KIND_RANK.get(n["kind"], 0):
+                n["kind"] = proposal["kind"]
+            n["detail"]["class_source"] = proposal["source"]
+            n["detail"]["class_reason"] = proposal["reason"]
+
+    tags = settings_store.get_device_tags()
+    for nid, tag in tags.items():
+        n = nodes.get(nid)
+        if n is None:
+            continue
+        if tag.get("kind"):
+            n["kind"] = tag["kind"]
+        if tag.get("label"):
+            n["label"] = tag["label"]
+        n["confidence"] = "confirmed"
+        n["tagged"] = True
+        if tag.get("notes"):
+            n["detail"]["notes"] = tag["notes"]
+        if tag.get("tags"):
+            n["detail"]["tags"] = tag["tags"]
+
     for cidr, meta in subnets.items():
         meta["count"] = sum(1 for n in nodes.values() if n.get("subnet") == cidr)
 
@@ -2873,6 +2911,41 @@ def network_map():
         "wan_gateways": sorted(wan_gateways),
         "interfaces": iface_detail,
     })
+
+
+@app.get("/api/map/tags")
+def map_tags_list():
+    """All operator device tags (manual map classifications), plus the kinds a
+    tag may use so the UI can offer a fixed picker."""
+    return jsonify(tags=settings_store.get_device_tags(),
+                   kinds=sorted(settings_store.TAG_KINDS))
+
+
+@app.put("/api/map/tags/<path:node_id>")
+def map_tag_set(node_id: str):
+    """Create or update one node's manual tag. Any subset of kind/label/notes/
+    tags may be given; clearing every field removes the tag."""
+    payload = request.get_json(silent=True) or {}
+    raw_tags = payload.get("tags")
+    if isinstance(raw_tags, str):
+        raw_tags = [t for t in re.split(r"[,\s]+", raw_tags) if t]
+    try:
+        entry = settings_store.set_device_tag(
+            node_id,
+            kind=str(payload.get("kind", "")),
+            label=str(payload.get("label", "")),
+            notes=str(payload.get("notes", "")),
+            tags=raw_tags if isinstance(raw_tags, list) else None,
+        )
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(node_id=node_id, tag=entry)
+
+
+@app.delete("/api/map/tags/<path:node_id>")
+def map_tag_delete(node_id: str):
+    """Remove one node's manual tag (revert to the inferred classification)."""
+    return jsonify(ok=settings_store.delete_device_tag(node_id))
 
 
 @app.get("/api/monitor/throughput")

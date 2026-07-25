@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -57,6 +58,11 @@ DEFAULTS: dict = {
         "role": "standalone",                 # standalone | collector
         "accept_external_collectors": False,
     },
+    # Operator device tags for the network map (task #39): manual overrides that
+    # win over the automatic classifier. Keyed by map node id (an IP, "mac:..",
+    # etc). Each value: {"kind","label","notes","tags":[...]}. Any subset of
+    # fields may be set; empty/omitted fields fall back to the inferred value.
+    "device_tags": {},
 }
 
 # Dotted paths whose values are secrets: never returned to the browser in the
@@ -116,6 +122,68 @@ def redacted() -> dict:
         parent[f"{key}_set"] = bool(parent.get(key))
         parent[key] = ""
     return data
+
+
+# Map-node ids are IPs, "mac:..", "subnet:..", "lldp:..", "internet", "self".
+_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/\-]{0,127}$")
+# Kinds an operator may assign by hand (mirrors the map's node kinds).
+TAG_KINDS = {
+    "router", "switch", "ap", "firewall", "server", "workstation",
+    "printer", "phone", "camera", "iot", "host", "unknown",
+}
+
+
+def get_device_tags() -> dict:
+    """All operator device tags, keyed by node id."""
+    tags = load().get("device_tags", {})
+    return tags if isinstance(tags, dict) else {}
+
+
+def set_device_tag(node_id: str, *, kind: str = "", label: str = "",
+                   notes: str = "", tags=None) -> dict:
+    """Create or update one node's manual tag. Empty fields are dropped so a
+    partially-tagged node still falls back to inferred values. Returns the
+    stored entry. Raises ValueError on a bad node id or unknown kind."""
+    node_id = (node_id or "").strip()
+    if not _NODE_ID_RE.match(node_id):
+        raise ValueError("invalid node id")
+    kind = (kind or "").strip().lower()
+    if kind and kind not in TAG_KINDS:
+        raise ValueError("unknown device kind")
+    entry: dict = {}
+    if kind:
+        entry["kind"] = kind
+    if (label or "").strip():
+        entry["label"] = label.strip()[:80]
+    if (notes or "").strip():
+        entry["notes"] = notes.strip()[:500]
+    clean_tags = [t.strip()[:40] for t in (tags or []) if isinstance(t, str) and t.strip()]
+    if clean_tags:
+        entry["tags"] = clean_tags[:20]
+
+    current = load()
+    store = current.get("device_tags")
+    if not isinstance(store, dict):
+        store = {}
+    if entry:
+        store[node_id] = entry
+    else:
+        store.pop(node_id, None)  # clearing every field removes the tag
+    current["device_tags"] = store
+    save(current)
+    return entry
+
+
+def delete_device_tag(node_id: str) -> bool:
+    """Remove one node's manual tag. Returns True if something was removed."""
+    current = load()
+    store = current.get("device_tags")
+    if not isinstance(store, dict) or node_id not in store:
+        return False
+    store.pop(node_id, None)
+    current["device_tags"] = store
+    save(current)
+    return True
 
 
 def apply_update(incoming: dict) -> dict:
