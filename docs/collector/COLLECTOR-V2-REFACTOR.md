@@ -120,10 +120,10 @@ collector/
 
 ```
 # OTLP export
-opentelemetry-sdk==1.25.0
-opentelemetry-exporter-otlp-proto-grpc==1.25.0
-grpcio==1.64.1
-grpcio-status==1.64.1
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-grpc==1.44.0
+grpcio==1.83.0
+grpcio-status==1.83.0
 
 # Config validation
 pydantic==2.7.4

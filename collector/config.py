@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import os
 import signal
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError
