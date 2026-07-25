@@ -4,6 +4,11 @@ name: Release Candidate
 # If ALL gates pass (Pylint >= 8.0, Go vet+build+test, pytest) a pre-release
 # tag  rc-YYYY.MM.DD-<short-sha>  is created automatically, with compiled
 # Go binaries attached as release assets.
+#
+# Artifact attestation (actions/attest-build-provenance) generates a
+# Sigstore-backed provenance bundle for every binary and attaches it to the
+# release.  Consumers can verify offline with:
+#   gh attestation verify <binary> --repo Xore/analyseLaptop
 
 on:
   push:
@@ -28,9 +33,9 @@ jobs:
     name: Pylint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
@@ -58,9 +63,9 @@ jobs:
       run:
         working-directory: collector
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
           cache-dependency-path: collector/go.sum
@@ -99,9 +104,9 @@ jobs:
     name: pytest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
@@ -136,11 +141,17 @@ jobs:
     name: Create RC Tag & Release
     needs: [pylint, go, pytest]
     runs-on: ubuntu-latest
+
+    # id-token   : required by Sigstore OIDC to mint the short-lived signing cert
+    # attestations: required by actions/attest-build-provenance to write the bundle
+    # contents   : required to push the tag and create the GitHub release
     permissions:
       contents: write
+      id-token: write
+      attestations: write
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -157,11 +168,38 @@ jobs:
           name: go-binaries
           path: dist/
 
-      - name: Push RC tag
+      # ------------------------------------------------------------------
+      # Artifact attestation — Sigstore/OIDC, no GPG key required.
+      # Generates a SLSA provenance bundle for each binary and uploads it
+      # to the repo's attestation store (visible under Actions → Attestations).
+      # Verify later with: gh attestation verify <file> --repo Xore/analyseLaptop
+      # ------------------------------------------------------------------
+      - name: Attest linux/amd64
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/collector-linux-amd64
+
+      - name: Attest linux/arm64
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/collector-linux-arm64
+
+      - name: Attest windows/amd64
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/collector-windows-amd64.exe
+
+      - name: Attest windows/arm64
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/collector-windows-arm64.exe
+
+      - name: Push RC tag (annotated)
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.tag.outputs.name }}
+          git tag -a ${{ steps.tag.outputs.name }} \
+            -m "RC ${{ steps.tag.outputs.name }} — all CI gates passed"
           git push origin ${{ steps.tag.outputs.name }}
 
       - name: Write release notes
@@ -184,6 +222,13 @@ jobs:
           | `collector-linux-arm64` | Linux | ARM64 (Raspberry Pi 4/5) |
           | `collector-windows-amd64.exe` | Windows | x86-64 |
           | `collector-windows-arm64.exe` | Windows | ARM64 |
+
+          ### Provenance attestation
+          Each binary has a Sigstore-backed SLSA provenance bundle attached to
+          this repository. Verify any binary offline with:
+          ```
+          gh attestation verify <binary> --repo Xore/analyseLaptop
+          ```
           EOF
 
       - name: Create GitHub pre-release with binaries
