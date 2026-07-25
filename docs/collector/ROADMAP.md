@@ -2,6 +2,7 @@
 ## Research-Grounded Network Probe & Health Monitoring
 
 > **Date:** 2026-07-25  
+> **Updated:** 2026-07-25 — WiFi health (Phase 1), mtr native (Phase 6), broadcast/multicast top-talker (Phase 3) added to v2 scope.  
 > **Basis:** Peer-reviewed academic literature + industry standards  
 > All phases are additive — each builds directly on the previous.
 
@@ -89,12 +90,14 @@ This TU Munich seminar paper classifies network failure modes relevant to a soft
 | Failure Type | Detectable By | Detection Method |
 |---|---|---|
 | Cable/physical layer break | ICMP unreachable, ARP disappearance | Ping loss 100% + neighbour entry gone |
-| Wireless interference / RSSI drop | Interface error counter spike | RX errors/drops in `/proc/net/dev` |
+| Wireless interference / RSSI drop | Interface error counter spike + WiFi signal dBm | RX errors/drops in `/proc/net/dev` + `iw dev link` |
 | Network overload / congestion | RTT elevation + high TX drops | RTT p95 > threshold AND TX_drop delta |
 | Node crash / reboot | sysUpTime reset, ARP flap | SNMP sysUpTime, uptime check |
 | Routing failure (no default GW) | Route table empty or GW unreachable | `ip route` parse + GW ping |
 | DNS failure | DNS lookup timeout | DNS health check |
 | VPN tunnel failure | WireGuard handshake age > 3 min | wgctrl |
+| **Rogue AP / WiFi intrusion** | **New BSSID on `wifi_new_ap_detected`** | **`iw scan` diff against known AP whitelist** |
+| **Broadcast/multicast storm** | **`bcast_total_pps` spike** | **AF_PACKET gopacket top-talker snapshot** |
 
 **Implication:** Each failure type requires a different detection primitive. The collector must run all in parallel — they are not redundant.
 
@@ -139,7 +142,7 @@ golang.org/x/net/icmp   v0.x  # multi-packet ICMP with sequence tracking
 
 ## Phase 1 — Complete the Check Inventory (Weeks 1–3)
 
-**Goal:** Implement all checks documented in `SUGGESTIONS.md` Sections 6.1–6.10.
+**Goal:** Implement all checks documented in `SUGGESTIONS.md` Sections 6.1–6.10 **plus** WiFi health monitoring.
 
 ### 1a. Interface Counters (`net_interfaces.go`) — P0 priority
 
@@ -161,7 +164,7 @@ type ifaceCounters struct {
 }
 ```
 
-Track **deltas** between cycles, not raw counters, so the aggregator receives rates (bytes/s, errors/s). This is exactly what the TU Munich failure taxonomy requires for congestion detection.
+Track **deltas** between cycles, not raw counters, so the aggregator receives rates (bytes/s, errors/s).
 
 ### 1b. Route Table + Default GW (`net_routes_linux.go` / `net_routes_windows.go`)
 
@@ -183,8 +186,6 @@ Track **deltas** between cycles, not raw counters, so the aggregator receives ra
 // Return: public_ip, changed (bool), cf_rtt_p95, google_rtt_p95, external_ok
 ```
 
-Track `public_ip` across cycles — a change indicates NAT failover or BGP path change.
-
 ### 1d. OS Health (`os_health_linux.go` / `os_health_windows.go`)
 
 ```go
@@ -197,8 +198,6 @@ Track `public_ip` across cycles — a change indicates NAT failover or BGP path 
 //   Load:   /proc/loadavg (load1, load5, load15)
 //   Temp:   /sys/class/thermal/thermal_zone*/temp (optional, Pi-friendly)
 ```
-
-Alert threshold: CPU > 85% sustained across 3 cycles = `DEGRADED`. This matches the RITICS/NCSC IoC list.
 
 ### 1e. SNMP GET (`ot_snmp.go`)
 
@@ -218,7 +217,7 @@ var baseOIDs = []string{
 ### 1f. Modbus TCP Read-Only (`ot_modbus.go`)
 
 ```go
-// Uses github.com/things-go/go-modbus
+// Uses github.com/things-labs/go-modbus
 // Only FC01 (read coils) and FC03 (read holding registers)
 // Hard-coded safety guard: refuse any write function code
 // Timeout: configurable, default 2000ms
@@ -241,7 +240,53 @@ var baseOIDs = []string{
 // Classify: ok (days > warn), warning (warn >= days > 0), critical (expired)
 ```
 
-**Estimated effort:** 1–2 weeks
+### 1i. WiFi Health (`net_wifi_linux.go` / `net_wifi_windows.go`) — **NEW in v2 scope**
+
+WiFi health is treated as a first-class check module, not an optional extra. Wireless is the primary transport for many collector nodes (Raspberry Pi deployments on site).
+
+**What it measures:**
+
+| Metric | Linux source | Windows source |
+|---|---|---|
+| Signal strength (dBm) | `iw dev wlan0 link` | `netsh wlan show interfaces` |
+| Link quality (%) | `/proc/net/wireless` | `netsh wlan show interfaces` |
+| Noise floor (dBm) | `iw dev wlan0 link` | `netsh wlan show interfaces` |
+| TX/RX bitrate (Mbps) | `iw dev wlan0 link` | `netsh wlan show interfaces` |
+| Channel + frequency | `iw dev wlan0 link` | `netsh wlan show interfaces` |
+| Connected BSSID + SSID | `iw dev wlan0 link` | `netsh wlan show interfaces` |
+| Visible AP inventory | `iw dev wlan0 scan` | `netsh wlan show networks mode=bssid` |
+| New AP detection | Diff vs known-AP cache | Diff vs known-AP cache |
+| AP disappearance | Diff vs known-AP cache | Diff vs known-AP cache |
+
+**Signal drop detection:** Signal tracked as rolling window. Drop > 15 dBm within one interval → MDP state machine transitions WiFi-dependent targets to `StateSuspect`.
+
+**New AP alert:** Any BSSID not in the configured `ap_whitelist` generates a `wifi_new_ap_detected=1` metric event. On OT zone nodes, this triggers an immediate IEC 62443 rogue-AP alert.
+
+**OT safety:** On OT-zone nodes, `scan_mode` is forced to `passive` (`iw dev wlan0 scan passive`) — listens for beacons only, zero probe-request RF injection.
+
+```go
+// net_wifi_linux.go  //go:build linux
+type WiFiChecker struct {
+    ifaces   []string
+    knownAPs map[string]APEntry  // BSSID → APEntry, persisted across cycles
+    cfg      WiFiConfig
+}
+
+func (w *WiFiChecker) Collect() ([]WifiMetric, []APEntry, []APEntry, error) {
+    // Returns: metrics, newAPs, goneAPs, error
+    // 1. exec "iw dev <iface> link"   → parse signal/noise/bitrate/bssid
+    // 2. parse /proc/net/wireless      → link quality int/max
+    // 3. exec "iw dev <iface> scan"    → AP inventory, diff against w.knownAPs
+    // 4. emit wifi_signal_dbm, wifi_link_quality_pct, wifi_ap_count etc.
+    // 5. emit wifi_new_ap_detected=1 for each new BSSID
+}
+```
+
+**Privilege:** `iw` is a standard tool on all Linux distros; no special capability needed for `iw link`. `iw scan` requires the interface to be up. No CAP required beyond normal user on most distros (interface is owned by collector user via udev rule).
+
+**Estimated effort for 1i:** 3–4 days (Linux + Windows)
+
+**Estimated effort Phase 1 total:** 1–2 weeks
 
 ---
 
@@ -283,21 +328,17 @@ var baseOIDs = []string{
 github.com/cilium/ebpf   v0.x   # BPF program loading and map access
 ```
 
-**Privilege:** Requires `CAP_BPF` + `CAP_NET_ADMIN`. Document in service install instructions. Falls back gracefully (disables this module) if caps are absent.
+**Privilege:** Requires `CAP_BPF` + `CAP_NET_ADMIN`. Falls back gracefully if caps are absent.
 
 **Estimated effort:** 1 week (if `epping` BPF C is vendored as-is)
 
 ---
 
-## Phase 3 — "Excessive Client" / Segment Health Analysis (Weeks 5–7)
+## Phase 3 — Segment Health Analysis (Weeks 5–7)
 
 **Goal:** Detect endpoints that are disproportionately degrading the network — chatty devices, misconfigured DHCP clients, broadcast storms, and rogue ARP.
 
-This addresses the "excessive clients" problem: a single misbehaving endpoint can push a shared segment (especially OT Modbus or Wi-Fi) into congestion, affecting all other devices.
-
-### Detection Methods
-
-#### 3a. ARP Rate Monitoring (`net_arp_watch.go`)
+### 3a. ARP Rate Monitoring (`net_arp_watch.go`)
 
 ```go
 // Track ARP table between cycles:
@@ -310,7 +351,7 @@ This addresses the "excessive clients" problem: a single misbehaving endpoint ca
 
 Academic basis: TU Munich (2024) identifies ARP broadcast storms as a leading cause of wireless segment congestion. RITICS Appendix A lists "unexpected ARP broadcasting" as an OT IoC.
 
-#### 3b. Per-Subnet Traffic Load (`net_segment_health.go`)
+### 3b. Per-Subnet Traffic Load (`net_segment_health.go`)
 
 If the collector is running on a router/gateway (Raspberry Pi, VPS):
 
@@ -322,35 +363,55 @@ If the collector is running on a router/gateway (Raspberry Pi, VPS):
 // Flag: if one device accounts for > 40% of traffic (requires eBPF flow data from Phase 2)
 ```
 
-#### 3c. DHCP Lease Exhaustion Check (`net_dhcp_check.go`)
+### 3c. DHCP Lease Exhaustion Check (`net_dhcp_check.go`)
 
 ```go
-// Linux (dnsmasq): parse /var/lib/misc/dnsmasq.leases or exec dnsmasq --dhcp-lease-time
-// Pihole-FTL: query SQLite db at /etc/pihole/pihole-FTL.db
+// Linux (dnsmasq): parse /var/lib/misc/dnsmasq.leases
 // Alert: lease_count / max_leases > 80%
 // Alert: same MAC requesting new lease repeatedly (DHCP storm)
 ```
 
-#### 3d. DNS Query Rate (Pi-hole Integration) (`check_pihole.go`)
+### 3d. DNS Query Rate (Pi-hole Integration) (`check_pihole.go`)
 
 ```go
 // GET http://pi.hole/api/summary → JSON
 // Extract: dns_queries_today, ads_blocked_today, clients_ever_seen, unique_clients
-// Compare clients_ever_seen to ARP neighbour count → orphaned DNS clients
 // Alert: query_rate > baseline + 3σ → DNS amplification or misconfigured client
 ```
 
-#### 3e. Port Scan / Sweep Detection (`os_ports.go` extension)
+### 3e. Port Scan / Sweep Detection (`os_ports.go` extension)
 
 ```go
-// Complement listening port snapshot with connection state:
 // exec("ss", "-tnp", "state", "syn-sent")  → outbound SYN flood from this host
 // exec("ss", "-tnp", "state", "time-wait") → connection exhaustion indicator
-// Count: syn_sent_count, time_wait_count, established_count
 // Alert: syn_sent > threshold → this host is scanning or misconfigured
 ```
 
-**Estimated effort:** 1 week
+### 3f. Broadcast/Multicast Top-Talker Snapshot (`net_bcast.go`) — **NEW in v2 scope**
+
+> **Implementation depends on research task:** `docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md`
+
+Captures a short AF_PACKET snapshot (default 10 s every 5 min) to identify the top-N source MACs by broadcast and multicast packet rate on each interface. Uses gopacket `pcapgo` (no libpcap binary) with a kernel BPF pre-filter for bcast/mcast only.
+
+**Purpose:** Broadcast/multicast storms are a leading OT/wireless failure cause (TU Munich NET-2024-04-1 §3; RITICS Appendix A). Interface counters alone cannot identify *which device* is responsible. This module closes that gap.
+
+**Metrics emitted:**
+```
+bcast_top_talker_pps{interface, src_mac, type="broadcast|ipv4_mcast|ipv6_mcast"}
+bcast_top_talker_bps{interface, src_mac, type}
+mcast_top_talker_pps{interface, src_mac, dst_ip}
+bcast_total_pps{interface}
+```
+
+**OT safety:** AF_PACKET `SOCK_RAW` is fully passive — zero injected packets. Unicast traffic is kernel-filtered before reaching user space.
+
+**Privilege:** Requires `CAP_NET_RAW`. Falls back gracefully (module disabled with log warning) if cap is absent.
+
+**Platform:** Linux only (AF_PACKET). Windows variant is deferred (NDIS raw socket complexity).
+
+**Estimated effort for 3f:** 1 week (after research task resolves prototype choice)
+
+**Estimated effort Phase 3 total:** ~1.5 weeks
 
 ---
 
@@ -371,18 +432,6 @@ const (
     StateDegraded                   // probe at base_interval / 3, alert sent
     StateDown                       // probe at base_interval (heartbeat), alert sent
 )
-
-type targetHealth struct {
-    ID            string
-    State         probeState
-    FailCount     int       // consecutive failures
-    SuccessCount  int       // consecutive successes
-    RTTBaseline   float64   // rolling P95 from last 10 stable cycles
-    LastRTTP95    float64
-    LastLossPct   float64
-    LastChecked   time.Time
-    NextCheck     time.Time
-}
 ```
 
 ### Transition Logic
@@ -393,99 +442,20 @@ func (h *targetHealth) transition(rtt_p95, loss_pct float64, reachable bool) {
     case StateStable:
         if loss_pct > 1.0 || rtt_p95 > 2.0*h.RTTBaseline {
             h.State = StateSuspect
-            h.FailCount = 1
         }
     case StateSuspect:
         if !reachable || loss_pct > 5.0 {
             h.FailCount++
-            if h.FailCount >= 2 {
-                h.State = StateDegraded
-                h.sendAlert("DEGRADED")
-            }
+            if h.FailCount >= 2 { h.State = StateDegraded }
         } else {
-            h.SuccessCount++
-            if h.SuccessCount >= 1 {
-                h.State = StateStable
-                h.FailCount = 0
-            }
+            h.State = StateStable
         }
-    case StateDegraded:
-        if !reachable && loss_pct >= 100.0 {
-            h.FailCount++
-            if h.FailCount >= 2 {
-                h.State = StateDown
-                h.sendAlert("DOWN")
-            }
-        } else if reachable && loss_pct < 1.0 {
-            h.SuccessCount++
-            if h.SuccessCount >= 3 {
-                h.State = StateStable
-                h.sendAlert("RECOVERED")
-            }
-        }
-    case StateDown:
-        if reachable {
-            h.State = StateDegraded
-            h.FailCount = 0
-            h.sendAlert("PARTIAL_RECOVERY")
-        }
-    }
-    h.NextCheck = time.Now().Add(h.probeInterval())
-}
-
-func (h *targetHealth) probeInterval() time.Duration {
-    base := 30 * time.Second
-    switch h.State {
-    case StateSuspect:  return base / 6   // 5s
-    case StateDegraded: return base / 3   // 10s
-    default:            return base       // 30s
+    // ... (see COLLECTOR-V2-REFACTOR.md Section 5)
     }
 }
 ```
 
-### Scheduler Loop (replaces fixed tickers in `main.go`)
-
-```go
-func adaptiveSchedulerLoop(client *http.Client, cfg config, st *agentState, targets []targetHealth) {
-    for {
-        now := time.Now()
-        // Find target whose NextCheck is most overdue
-        var next *targetHealth
-        for i := range targets {
-            if targets[i].NextCheck.Before(now) {
-                if next == nil || targets[i].NextCheck.Before(next.NextCheck) {
-                    next = &targets[i]
-                }
-            }
-        }
-        if next == nil {
-            time.Sleep(500 * time.Millisecond)
-            continue
-        }
-        rtt_p95, loss, ok := pingWithLoss(next.ID, 5, 3000)
-        next.transition(rtt_p95, loss, ok)
-        // push result immediately if non-stable
-        if next.State != StateStable {
-            pushSingleResult(client, cfg, next)
-        }
-    }
-}
-```
-
-### RTT Baseline Learning
-
-```go
-// Rolling baseline: exponential moving average of P95 RTT over last 10 stable cycles
-// alpha = 0.1 (slow adaptation)
-// Only update baseline when state is STABLE to avoid incorporating degradation into baseline
-if h.State == StateStable && rtt_p95 > 0 {
-    if h.RTTBaseline == 0 {
-        h.RTTBaseline = rtt_p95
-    } else {
-        h.RTTBaseline = 0.9*h.RTTBaseline + 0.1*rtt_p95
-    }
-}
-```
+**WiFi integration:** Signal drop > 15 dBm within one interval (from `net_wifi_linux.go`) also triggers `StateSuspect` for any ICMP/TCP/HTTP targets routed over that wireless interface.
 
 **Estimated effort:** 1–1.5 weeks
 
@@ -495,82 +465,67 @@ if h.State == StateStable && rtt_p95 > 0 {
 
 **Goal:** Implement a simplified version of the Frank-Wolfe probe budget allocation from Amjad et al. (2021).
 
-*Full MIP is too expensive at runtime. The practical approximation: allocate probe slots proportional to target uncertainty (variance of recent RTT observations).*
-
-### Variance-Based Probe Weight
-
 ```go
 // For each target, maintain a rolling variance of RTT over last 20 observations
 // Probe weight = variance / sum(all_variances)
 // Total probes per minute = budget (configurable, default 120/min = 2/s)
 // Allocation: target_probes_per_min = weight * budget
-
-type targetStats struct {
-    RTTHistory  [20]float64
-    HistoryIdx  int
-    RTTVariance float64   // Welford's online algorithm
-    ProbeWeight float64   // normalized
-}
-
-// Welford's online variance (numerically stable):
-func (s *targetStats) update(rtt float64) {
-    n := float64(len(s.RTTHistory))
-    delta := rtt - s.mean()
-    s.RTTVariance += (delta * (rtt - s.mean())) / n
-}
 ```
 
-This means: a target whose RTT is consistently 5 ms gets probed rarely; a target with RTT bouncing between 5 ms and 200 ms gets probed 10× more frequently within the same budget. This directly implements the A-optimal probe allocation principle from Amjad et al.
-
-**Estimated effort:** 3–4 days (builds directly on Phase 4 structures)
+**Estimated effort:** 3–4 days
 
 ---
 
-## Phase 6 — Traceroute / Hop-Level Diagnosis (Weeks 12–14)
+## Phase 6 — mtr Hop-Level Diagnosis (Weeks 12–14)
 
-**Goal:** When a target transitions to `DEGRADED`, automatically run a traceroute to localise *which hop* introduced the latency or loss.
+**Goal:** When a target transitions to `DEGRADED`, automatically run an mtr-style hop-level trace to localise *which hop* introduced the latency or loss.
+
+**v2 upgrade from original design:** Rather than shelling out to `traceroute`/`tracert`, the v2 collector implements mtr natively using `golang.org/x/net/icmp` raw sockets. This provides:
+- Per-hop **loss %** and RTT distribution (p50/p95), not just single-probe RTT
+- No dependency on `mtr`, `traceroute`, or `tracert` binaries on the collector node
+- Consistent output format across Linux/arm64, Linux/amd64, and Windows/amd64
 
 ```go
-// net_traceroute.go
-// Linux:   exec("traceroute", "-n", "-q", "3", "-m", "30", target)
-//          Or: raw socket TTL-exceeded listener (golang.org/x/net/icmp, CAP_NET_RAW)
-// Windows: exec("tracert", "-d", "-h", "30", target)
-// Parse: hop_number, ip, rtt_ms (3 probes), name (optional reverse DNS)
-// Only triggered by state machine when target enters DEGRADED — not on every cycle
-// Return: []hop{n, ip, rtt_ms, loss_pct}
-// Report as one-shot event to aggregator, not a recurring stream
+// net_mtr.go
+func RunMTR(target string, maxHops, probesPerHop int, timeoutMs int) ([]HopResult, error) {
+    // Uses golang.org/x/net/icmp — requires CAP_NET_RAW or root
+    // For each TTL from 1 to maxHops:
+    //   Send probesPerHop ICMP Echo requests with TTL=n
+    //   Collect ICMP Time Exceeded replies → record hop IP + RTT
+    //   If ICMP Echo Reply received → target reached, stop
+}
 ```
 
-Academic basis: The TU Munich failure taxonomy (2024) shows that **hop-level localisation is the critical step** between detecting "network is slow" and identifying "which link is congested". Traceroute is the standard tool for this, despite its known limitations with ECMP load balancers.
+**Trigger policy:**
+1. MDP `StateDegraded` → run mtr once, emit all hop metrics as a single `trace_id`-tagged batch
+2. Config `mtr.only_on_degraded: false` → run on every cycle (not recommended for OT/battery nodes)
+3. Backend check-plan with `"mtr_force": true` → immediate manual trigger
 
-**Estimated effort:** 3 days
+**Metrics emitted:**
+```
+mtr_hop_rtt_ms{target, hop, hop_ip, trace_id}
+mtr_hop_loss_pct{target, hop, hop_ip, trace_id}
+mtr_hop_count{target, trace_id}
+```
+
+**Privilege fallback:** If `CAP_NET_RAW` is absent, falls back to `exec("traceroute", ...)` / `exec("tracert", ...)`.
+
+Academic basis: Augustin et al. "Avoiding traceroute anomalies with Paris traceroute" IMC 2006; TU Munich NET-2024-04-1 §5 (hop-level failure localisation as critical diagnostic step).
+
+**Estimated effort:** 3–4 days (native raw ICMP is ~2× the effort of exec-based, but no binary dependency)
 
 ---
 
 ## Phase 7 — Metrics Export & Integration (Weeks 14–16)
 
-**Goal:** Allow the collector to optionally expose a Prometheus `/metrics` endpoint in addition to pushing to the aggregator, enabling Grafana / Alertmanager integration.
+**Goal:** Allow the collector to optionally expose a Prometheus `/metrics` endpoint in addition to pushing to the aggregator.
 
 ```go
-// metrics.go
-// github.com/prometheus/client_golang/prometheus
-// Expose:
-//   probe_rtt_seconds{target="...", state="stable|suspect|degraded|down"}   histogram
-//   probe_loss_ratio{target="..."}                                           gauge
-//   interface_rx_bytes_total{interface="..."}                                counter
-//   interface_tx_bytes_total{interface="..."}                                counter
-//   interface_errors_total{interface="...", direction="rx|tx"}               counter
-//   wan_public_ip_changed_total                                              counter
-//   wireguard_peer_handshake_age_seconds{peer="..."}                         gauge
-//   snmp_sysuptime_seconds{host="..."}                                       gauge
-//   modbus_register_value{host="...", label="..."}                           gauge
-//   os_cpu_usage_ratio                                                       gauge
-//   os_memory_available_bytes                                                gauge
-//   os_disk_free_bytes{path="..."}                                           gauge
-//   tls_cert_days_remaining{host="..."}                                      gauge
+// metrics.go — github.com/prometheus/client_golang/prometheus
+// Expose: probe_rtt_seconds, probe_loss_ratio, interface_rx_bytes_total,
+//         wireguard_peer_handshake_age_seconds, wifi_signal_dbm,
+//         wifi_link_quality_pct, bcast_total_pps, mtr_hop_rtt_ms, ...
 ```
-
-Configure via `expose_metrics: true` and `metrics_port: 9100` in `collector.json`.
 
 **Estimated effort:** 2 days
 
@@ -581,13 +536,13 @@ Configure via `expose_metrics: true` and `metrics_port: 9100` in `collector.json
 | Phase | Description | Duration | Priority |
 |---|---|---|---|
 | **0** | Harden existing checks (loss %, RTT distribution, GW ping) | 2–3 days | **Now** |
-| **1** | Complete check inventory (interfaces, routes, WAN, OS, SNMP, Modbus, WG, TLS) | 1–2 weeks | **Week 1** |
+| **1** | Complete check inventory + WiFi health (`net_wifi_*.go`) | 1–2 weeks | **Week 1** |
 | **2** | Passive eBPF RTT layer (epping, Linux only) | 1 week | **Week 3** |
-| **3** | Segment health / excessive client detection | 1 week | **Week 5** |
-| **4** | MDP adaptive probe scheduler | 1–1.5 weeks | **Week 7** |
+| **3** | Segment health / excessive client detection + **broadcast/multicast top-talker** | 1.5 weeks | **Week 5** |
+| **4** | MDP adaptive probe scheduler (WiFi signal as trigger input) | 1–1.5 weeks | **Week 7** |
 | **5** | Frank-Wolfe probe budget allocation (simplified) | 3–4 days | **Week 10** |
-| **6** | On-demand traceroute for DEGRADED targets | 3 days | **Week 12** |
-| **7** | Prometheus metrics export | 2 days | **Week 14** |
+| **6** | **mtr native raw ICMP** hop-level tracing for DEGRADED targets | 3–4 days | **Week 12** |
+| **7** | Prometheus metrics export (includes WiFi + mtr + bcast metrics) | 2 days | **Week 14** |
 
 ---
 
@@ -596,12 +551,13 @@ Configure via `expose_metrics: true` and `metrics_port: 9100` in `collector.json
 ```
 # go.mod additions
 require (
-    golang.org/x/net          v0.x.x   // ICMP raw socket
-    github.com/gosnmp/gosnmp  v1.x.x   // SNMP v2c/v3
-    github.com/things-go/go-modbus v0.x.x // Modbus TCP
-    golang.zx2c4.com/wireguard/wgctrl v0.x.x // WireGuard
-    github.com/cilium/ebpf    v0.x.x   // eBPF loading (Phase 2)
-    github.com/prometheus/client_golang v1.x.x // Metrics (Phase 7)
+    golang.org/x/net                       v0.x.x   // ICMP raw socket (loss %, mtr hop-tracing)
+    github.com/gosnmp/gosnmp               v1.x.x   // SNMP v2c/v3
+    github.com/things-labs/go-modbus       v0.x.x   // Modbus TCP
+    golang.zx2c4.com/wireguard/wgctrl      v0.x.x   // WireGuard
+    github.com/cilium/ebpf                 v0.x.x   // eBPF loading (Phase 2)
+    github.com/prometheus/client_golang    v1.x.x   // Metrics export (Phase 7)
+    github.com/google/gopacket             v1.1.19  // Bcast/mcast capture (Phase 3, Linux)
 )
 ```
 
@@ -614,9 +570,11 @@ require (
 | Sundberg, S. "Towards Ubiquitous and Continuous Network Latency Monitoring." Karlstad University Licentiate Thesis, 2024. https://doi.org/10.59217/xpyc8728 | RTT distribution > binary up/down; eBPF passive monitoring; bufferbloat signature | Phase 0, Phase 2 |
 | Amjad, M.J. et al. "Optimal Probing with Statistical Guarantees for Network Monitoring at Scale." arXiv:2109.07743, 2021. https://doi.org/10.48550/arXiv.2109.07743 | A-optimal probe budget allocation; 50% probe reduction; Frank-Wolfe approximation | Phase 4, Phase 5 |
 | Zabala, L. et al. "Optimality of a Network Monitoring Agent and Validation in a Real Environment." Mathematics 11(3):610, 2023. https://doi.org/10.3390/math11030610 | MDP model for monitoring agents; adaptive scheduling outperforms fixed interval by 40–60% | Phase 4 |
-| Brügge, M. & Simon, M. "Link Failure Detection in Computer Networks." NET-2024-04-1, TU Munich, 2024. https://www.net.in.tum.de/fileadmin/TUM/NET/NET-2024-04-1/NET-2024-04-1_09.pdf | Failure type taxonomy (cable, wireless, congestion, node, routing) | Phase 0, Phase 3 |
+| Brügge, M. & Simon, M. "Link Failure Detection in Computer Networks." NET-2024-04-1, TU Munich, 2024. https://www.net.in.tum.de/fileadmin/TUM/NET/NET-2024-04-1/NET-2024-04-1_09.pdf | Failure type taxonomy; wireless interference via RSSI; broadcast storm → congestion | Phase 0, Phase 3 |
+| Augustin, B. et al. "Avoiding traceroute anomalies with Paris traceroute." ACM IMC 2006. https://dl.acm.org/doi/10.1145/1177080.1177100 | ECMP-aware traceroute design; per-hop loss measurement | Phase 6 |
 | Wren project. "Combining active and passive network measurements to build scalable monitoring systems." ACM SIGMETRICS 2004. https://dl.acm.org/doi/10.1145/773056.773061 | Hybrid monitoring; passive data steers active probe selection | Phase 2, Phase 3 |
-| ACM CoNEXT 2005. "Optimal positioning of active and passive monitoring devices." https://dl.acm.org/doi/10.1145/1095921.1095932 | One collector per segment is sufficient (NP-hard coverage problem) | Architecture |
-| RITICS/NCSC ICS-COI. "How to log and monitor in ICS/OT Environments." 2024. https://ritics.org/wp-content/uploads/2024/08/How-to-log-and-monitor-in-ICS-OT-Environments.pdf | OT IoC list; ARP anomalies; sysUpTime regression | Phase 1, Phase 3 |
+| ACM CoNEXT 2005. "Optimal positioning of active and passive monitoring devices." https://dl.acm.org/doi/10.1145/1095921.1095932 | One collector per segment is sufficient | Architecture |
+| RITICS/NCSC ICS-COI. "How to log and monitor in ICS/OT Environments." 2024. https://ritics.org/wp-content/uploads/2024/08/How-to-log-and-monitor-in-ICS-OT-Environments.pdf | OT IoC list; ARP anomalies; sysUpTime regression; unexpected broadcast | Phase 1, Phase 3 |
 | Ollila, T. "Overview for capabilities of OT network monitoring tools." JAMK Thesis, 2024. https://www.theseus.fi/handle/10024/851535 | OT tool evaluation; Modbus/SNMP gaps; IEC 62443 constraints | Phase 1 |
 | RFC 7799. "Active and Passive Metrics and Methods." IETF, 2016. https://datatracker.ietf.org/doc/html/rfc7799 | Formal definition of active/passive/hybrid monitoring | Architecture |
+| IEEE 802.11k-2008. "Neighbor Report." IEEE, 2008. | WiFi AP neighbor inventory; RSSI measurement standards | Phase 1 (WiFi) |
