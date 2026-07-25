@@ -2,7 +2,7 @@
 
 > **Audience:** Claude Opus 4.8 (or equivalent capable model) acting as the primary coding agent for this repository.
 > **Purpose:** All context, constraints, patterns, and implementation order needed to build and configure the full v2 stack from scratch — no prior conversation history required.
-> **Date:** 2026-07-25
+> **Date:** 2026-07-26
 > **Status:** Living document — update when design decisions change.
 
 ---
@@ -76,11 +76,11 @@ This is the complete file tree for the collector. Files marked `[EXISTS]` are al
 ```
 collector/
 ├── __main__.py               [CREATE]  Entry point
-├── config.py                 [CREATE]  pydantic Settings + YAML loader + SIGHUP
+├── config.py                 [EXISTS]  pydantic Settings + YAML loader + SIGHUP
 ├── scheduler.py              [CREATE]  asyncio priority queue task loop
-├── requirements.txt          [CREATE]  pinned deps (see §4.1)
-├── requirements-dev.txt      [CREATE]  pyinstaller, pytest, mypy, ruff
-├── pyproject.toml            [CREATE]  project metadata + ruff/mypy config
+├── requirements.txt          [EXISTS]  pinned deps (see §4.1)
+├── requirements-dev.txt      [EXISTS]  pyinstaller, pytest, mypy, ruff
+├── pyproject.toml            [EXISTS]  project metadata + ruff/mypy config
 ├── Dockerfile                [CREATE]  multi-stage; iw + iproute2 installed
 │
 ├── transport/
@@ -126,9 +126,13 @@ collector/
 │   ├── hot.py                [CREATE]  lmdb ring buffer (last 30 min)
 │   └── cold.py               [CREATE]  sqlite3 WAL historical
 │
-└── health/
-    ├── __init__.py           [CREATE]
-    └── score.py              [CREATE]  Health score 0–1
+├── health/
+│   ├── __init__.py           [CREATE]
+│   └── score.py              [CREATE]  Health score 0–1
+│
+└── tests/
+    ├── conftest.py           [EXISTS]
+    └── test_config.py        [EXISTS]
 
 deploy/
 ├── collector/
@@ -150,11 +154,13 @@ deploy/
 
 deploy/collector-inventory.json    [CREATE]  Wi-Fi-aware node inventory
 
-.github/workflows/
-├── ci.yml                [EXISTS — IaC-DEPLOYMENT-STRATEGY.md §6]
-├── build-images.yml      [EXISTS — IaC-DEPLOYMENT-STRATEGY.md §6]
-├── deploy-hub.yml        [EXISTS — IaC-DEPLOYMENT-STRATEGY.md §6]
-└── deploy-collectors.yml [EXISTS — IaC-DEPLOYMENT-STRATEGY.md §5.4 + §6]
+.github/
+├── dependabot.yml            [EXISTS — see §13 for current config]
+└── workflows/
+    ├── collector.yml         [EXISTS]  ruff + mypy + pytest on collector/**
+    ├── pylint.yml            [EXISTS]  pylint on collector/**
+    ├── codeql.yml            [EXISTS]  CodeQL (continue-on-error — no GHAS)
+    └── dependabot-auto-merge.yml  [EXISTS]  auto-merge patch/minor; label major
 ```
 
 ---
@@ -656,15 +662,17 @@ def test_bpf_import_failure_graceful(mock_settings, mock_meter):
 
 ### 7.3 CI Requirements
 
-The `ci.yml` workflow runs:
+The `collector.yml` workflow runs on every PR that touches `collector/**`:
 
 ```bash
-pytest collector/tests/ -v --tb=short
-mypy collector/ --ignore-missing-imports
-ruff check collector/
+ruff check .       # linting
+mypy .             # type-checking
+pytest -q          # all tests under collector/tests/
 ```
 
-All three must pass on every PR. `mypy` errors on `bcc` (`# type: ignore[import]` is acceptable since bcc has no type stubs). `ruff` runs at default settings — no `# noqa` suppression without a comment explaining why.
+The `pylint.yml` workflow also runs `pylint` against all `*.py` files.
+
+All four checks must pass on every PR. `mypy` errors on `bcc` (`# type: ignore[import]` is acceptable since bcc has no type stubs). `ruff` runs at default settings — no `# noqa` suppression without a comment explaining why.
 
 ---
 
@@ -759,3 +767,51 @@ collector_health_score{collector_id, site_id}                  gauge — 0.0 to 
 | bcc not in requirements.txt (why) | `COLLECTOR-V2-REFACTOR.md` | §8 |
 | Linux capabilities table | This document | §9 |
 | NFR limits (memory, CPU, binary size) | This document | §8 |
+
+---
+
+## 13. CI & Dependabot Configuration (Current State)
+
+> **Keep this section up to date whenever a workflow or dependabot config is changed.**
+
+### 13.1 Active Workflows
+
+| File | Triggers | What it runs |
+|---|---|---|
+| `collector.yml` | push/PR on `collector/**` | `ruff check .` → `mypy .` → `pytest -q` |
+| `pylint.yml` | push/PR on `collector/**` | `pylint $(git ls-files '*.py')` |
+| `codeql.yml` | push/PR on `main`, weekly Sunday | CodeQL Python + Actions scan (`continue-on-error: true` — GHAS not enabled) |
+| `dependabot-auto-merge.yml` | PR opened/sync/reopened by `dependabot[bot]` | Auto-merge patch/minor; label major with `major-update` + `needs-review` |
+
+### 13.2 Dependabot Config (`.github/dependabot.yml`)
+
+Two ecosystems are monitored:
+
+| Ecosystem | Directory | Schedule | Groups | Major bumps |
+|---|---|---|---|---|
+| `pip` | `/collector` | Weekly Monday 06:00 CET | `pip-patch-minor`, `pip-security` | Ignored — left for manual review |
+| `github-actions` | `/` | Weekly Monday 06:00 CET | `actions-all`, `actions-security` | Allowed (v3→v4→v5 is routine) |
+
+**Removed entries (stale, directories don't exist):**
+- `gomod /collector` — no Go code in collector; Go is hub-side only (not tracked here)
+- `pip /monitor` — v1 stack; frozen on `release/v1.0` branch
+- `pip /dashboard` — v1 stack; frozen on `release/v1.0` branch
+- `pip /tests` — no standalone `tests/` requirements file
+
+### 13.3 Dependency Pinning Rules
+
+- All runtime deps in `collector/requirements.txt` are **exact pins** (`==`). No ranges.
+- All dev deps in `collector/requirements-dev.txt` are **exact pins** (`==`).
+- When bumping `pytest` to a new major version, check `pytest-asyncio` compatibility first.
+  - `pytest-asyncio < 1.3.0` has a hard `pytest<9` upper bound.
+  - `pytest 9.x` requires `pytest-asyncio >= 1.3.0`.
+- OTLP stack must be bumped together: `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-grpc`, `grpcio`, `grpcio-status` must all be compatible (verify with `pip check` after any bump).
+- `scapy` RC versions (e.g. `2.7.0rc1`) should be pinned to a stable release when available. Current pin: `2.6.1`.
+
+### 13.4 Known Compatibility Constraints
+
+| Constraint | Detail |
+|---|---|
+| `opentelemetry-sdk==1.25.0` + `grpcio-status==1.64.1` | **UNSATISFIABLE** — proto<5 vs proto>=5.26.1 conflict. Use `1.44.0` + `grpcio==1.83.0`. |
+| `pytest-asyncio < 1.3.0` | Hard `pytest<9` upper bound. For pytest 9.x, pin `pytest-asyncio>=1.3.0`. |
+| `bcc` | NOT in `requirements.txt`. Install via `apt install python3-bpfcc`. Kernel-version-matched. |

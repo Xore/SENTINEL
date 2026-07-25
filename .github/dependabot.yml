@@ -3,12 +3,12 @@ version: 2
 updates:
 
   # ───────────────────────────────────────────────────────────────────────────
-  # Go — collector/go.mod
-  # • Weekly version updates (Monday 06:00 CET)
-  # • Daily security-only updates (any day, same time window)
-  # • Major bumps excluded from automatic PRs — review manually
+  # pip — collector/requirements.txt + requirements-dev.txt
+  # The only active Python stack. Grouped to produce a single PR per week.
+  # Major bumps are left open for manual review (they often need compatibility
+  # fixes — e.g. pytest-asyncio requires manual version alignment with pytest).
   # ───────────────────────────────────────────────────────────────────────────
-  - package-ecosystem: gomod
+  - package-ecosystem: pip
     directory: /collector
     schedule:
       interval: weekly
@@ -18,107 +18,16 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - dependencies
-      - go
-    commit-message:
-      prefix: "deps(go)"
-    groups:
-      go-patch-minor:
-        applies-to: version-updates
-        update-types:
-          - minor
-          - patch
-      go-security:
-        applies-to: security-updates
-        patterns:
-          - "*"
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
-
-  # ───────────────────────────────────────────────────────────────────────────
-  # pip — monitor/requirements.txt
-  # ───────────────────────────────────────────────────────────────────────────
-  - package-ecosystem: pip
-    directory: /monitor
-    schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-      timezone: Europe/Berlin
-    open-pull-requests-limit: 10
-    labels:
-      - dependencies
       - python
     commit-message:
-      prefix: "deps(pip/monitor)"
+      prefix: "deps(pip)"
     groups:
-      monitor-patch-minor:
+      pip-patch-minor:
         applies-to: version-updates
         update-types:
           - minor
           - patch
-      monitor-security:
-        applies-to: security-updates
-        patterns:
-          - "*"
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
-
-  # ───────────────────────────────────────────────────────────────────────────
-  # pip — dashboard/requirements.txt
-  # ───────────────────────────────────────────────────────────────────────────
-  - package-ecosystem: pip
-    directory: /dashboard
-    schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-      timezone: Europe/Berlin
-    open-pull-requests-limit: 10
-    labels:
-      - dependencies
-      - python
-    commit-message:
-      prefix: "deps(pip/dashboard)"
-    groups:
-      dashboard-patch-minor:
-        applies-to: version-updates
-        update-types:
-          - minor
-          - patch
-      dashboard-security:
-        applies-to: security-updates
-        patterns:
-          - "*"
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
-
-  # ───────────────────────────────────────────────────────────────────────────
-  # pip — tests/requirements.txt
-  # ───────────────────────────────────────────────────────────────────────────
-  - package-ecosystem: pip
-    directory: /tests
-    schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-      timezone: Europe/Berlin
-    open-pull-requests-limit: 5
-    labels:
-      - dependencies
-      - python
-      - testing
-    commit-message:
-      prefix: "deps(pip/tests)"
-    groups:
-      tests-patch-minor:
-        applies-to: version-updates
-        update-types:
-          - minor
-          - patch
-      tests-security:
+      pip-security:
         applies-to: security-updates
         patterns:
           - "*"
@@ -128,9 +37,8 @@ updates:
 
   # ───────────────────────────────────────────────────────────────────────────
   # GitHub Actions — .github/workflows/
-  # Pins floating @vN tags to immutable commit SHAs (fixes Finding 6 in
-  # docs/security/code-scanning-remediation.md).
-  # Major bumps allowed here: v3→v4→v5 for actions are routine and safe.
+  # Pins floating @vN tags to immutable commit SHAs.
+  # Major bumps allowed: v3→v4→v5 for actions are routine and safe.
   # ───────────────────────────────────────────────────────────────────────────
   - package-ecosystem: github-actions
     directory: /
@@ -154,4 +62,3 @@ updates:
         applies-to: security-updates
         patterns:
           - "*"
-    # Allow major bumps for actions — v3→v4→v5 are common and safe
