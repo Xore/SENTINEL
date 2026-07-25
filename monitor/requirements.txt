@@ -1,0 +1,5 @@
+# monitor/ runtime dependencies
+# Pin to minimum versions known to work; bump as needed.
+requests>=2.31.0
+pysnmp>=6.1.0
+scapy>=2.5.0

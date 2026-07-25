@@ -1,0 +1,39 @@
+name: Pylint
+
+on:
+  push:
+    paths:
+      - 'monitor/**'
+      - '.github/workflows/pylint.yml'
+  pull_request:
+    paths:
+      - 'monitor/**'
+      - '.github/workflows/pylint.yml'
+
+jobs:
+  lint:
+    name: Pylint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: monitor/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r monitor/requirements.txt
+          pip install pylint
+
+      - name: Run Pylint
+        run: |
+          pylint monitor/ \
+            --fail-under=8.0 \
+            --disable=C0114,C0115,C0116 \
+            --max-line-length=120
