@@ -1,0 +1,61 @@
+name: Dependabot Auto-Merge
+
+# Automatically merges Dependabot PRs when:
+#   - The update is a patch or minor bump, AND
+#   - The PR was opened by Dependabot (never a human-authored PR), AND
+#   - All required CI checks (pylint, go, pytest) pass.
+#
+# Security updates bypass the weekly schedule and land the same day they are
+# raised. Major bumps are left open for manual review.
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    name: Auto-merge Dependabot patch/minor
+    runs-on: ubuntu-latest
+
+    # Only act on Dependabot PRs
+    if: github.actor == 'dependabot[bot]'
+
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Auto-merge patch and minor updates (both regular and security)
+      - name: Enable auto-merge for patch/minor updates
+        if: |
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Approve patch-only updates automatically (lowest risk)
+      - name: Approve patch updates
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch'
+        run: gh pr review --approve "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Label major-version PRs so they are easy to find
+      - name: Label major updates for manual review
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        run: gh pr edit "$PR_URL" --add-label "major-update,needs-review"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
