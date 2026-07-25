@@ -10,8 +10,9 @@ license = { text = "See repository LICENSE" }
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["collector"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["collector*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -31,3 +32,30 @@ python_version = "3.12"
 ignore_missing_imports = true
 warn_unused_ignores = false
 disallow_untyped_defs = false
+
+[tool.pylint.main]
+# Run from the collector/ directory; both the package and tests are discovered.
+jobs = 1
+recursive = true
+
+[tool.pylint."messages control"]
+disable = [
+    # Docstrings are enforced gradually — not required for every method yet.
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    # Pydantic models and dataclasses routinely have few public methods.
+    "too-few-public-methods",
+    # import-error: pylint can't resolve optional deps (bcc, scapy) that are
+    # guarded by try/except at runtime.
+    "import-error",
+    # fixme: TODO/FIXME comments are intentional during active development.
+    "fixme",
+]
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.design]
+# Collector checks may need more arguments than pylint's default of 5.
+max-args = 8

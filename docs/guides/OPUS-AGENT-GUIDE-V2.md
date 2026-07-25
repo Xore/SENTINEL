@@ -76,11 +76,12 @@ This is the complete file tree for the collector. Files marked `[EXISTS]` are al
 ```
 collector/
 ├── __main__.py               [CREATE]  Entry point
+├── __init__.py               [EXISTS]  Package marker + __version__
 ├── config.py                 [EXISTS]  pydantic Settings + YAML loader + SIGHUP
 ├── scheduler.py              [CREATE]  asyncio priority queue task loop
 ├── requirements.txt          [EXISTS]  pinned deps (see §4.1)
-├── requirements-dev.txt      [EXISTS]  pyinstaller, pytest, mypy, ruff
-├── pyproject.toml            [EXISTS]  project metadata + ruff/mypy config
+├── requirements-dev.txt      [EXISTS]  pinned dev deps incl. pylint, ruff, mypy, pytest
+├── pyproject.toml            [EXISTS]  project metadata + ruff/mypy/pylint config
 ├── Dockerfile                [CREATE]  multi-stage; iw + iproute2 installed
 │
 ├── transport/
@@ -131,8 +132,9 @@ collector/
 │   └── score.py              [CREATE]  Health score 0–1
 │
 └── tests/
-    ├── conftest.py           [EXISTS]
-    └── test_config.py        [EXISTS]
+    ├── __init__.py           [EXISTS]
+    ├── conftest.py           [EXISTS]  Env isolation + settings fixture
+    └── test_config.py        [EXISTS]  Config schema, layered loader, SIGHUP
 
 deploy/
 ├── collector/
@@ -158,7 +160,7 @@ deploy/collector-inventory.json    [CREATE]  Wi-Fi-aware node inventory
 ├── dependabot.yml            [EXISTS — see §13 for current config]
 └── workflows/
     ├── collector.yml         [EXISTS]  ruff + mypy + pytest on collector/**
-    ├── pylint.yml            [EXISTS]  pylint on collector/**
+    ├── pylint.yml            [EXISTS]  pylint on collector package + tests
     ├── codeql.yml            [EXISTS]  CodeQL (continue-on-error — no GHAS)
     └── dependabot-auto-merge.yml  [EXISTS]  auto-merge patch/minor; label major
 ```
@@ -175,9 +177,9 @@ Follow this order strictly. Each phase produces a testable unit before the next 
 
 **Files to create in order:**
 
-1. `collector/pyproject.toml` — project metadata, ruff config, mypy config
+1. `collector/pyproject.toml` — project metadata, ruff config, mypy config, pylint config
 2. `collector/requirements.txt` — pinned deps (see §4.1)
-3. `collector/requirements-dev.txt` — dev-only: pyinstaller, pytest, mypy, ruff
+3. `collector/requirements-dev.txt` — dev-only: pyinstaller, pytest, mypy, ruff, pylint
 4. `collector/config.py` — `CollectorSettings` pydantic model (see §5.1 for pattern)
 5. `collector/pki/enroll.py` — HTTP POST to `/pki/enroll`; write `collector.key` and `collector.crt`
 6. `collector/transport/mtls.py` — load cert/key from PKI dir; return `grpc.ssl_channel_credentials()`
@@ -574,26 +576,31 @@ Docker Compose mounts these as `secrets:` — they appear inside containers at `
 
 ```
 collector/tests/
-├── conftest.py              # pytest fixtures: mock settings, mock meter, mock backend
-├── test_config.py           # pydantic validation, env var parsing, SIGHUP reload
-├── test_scheduler.py        # task ordering, interval accuracy, exception isolation
+├── __init__.py              # Package marker (empty)
+├── conftest.py              # pytest fixtures: env isolation, settings fixture
+├── test_config.py           # pydantic validation, layered loader, SIGHUP reload
+├── test_scheduler.py        # task ordering, interval accuracy, exception isolation [CREATE]
 ├── checks/
-│   ├── test_net_icmp.py     # mock raw socket; verify CheckResult metrics
-│   ├── test_net_tcp.py      # mock asyncio.open_connection
-│   ├── test_net_http.py     # aiohttp mock
-│   ├── test_net_dns.py      # dnspython mock
-│   ├── test_net_wifi_linux.py  # mock asyncio.create_subprocess_exec
-│   └── test_ebpf.py         # ImportError path; BPF_AVAILABLE=False branch
+│   ├── test_net_icmp.py     # mock raw socket; verify CheckResult metrics [CREATE]
+│   ├── test_net_tcp.py      # mock asyncio.open_connection [CREATE]
+│   ├── test_net_http.py     # aiohttp mock [CREATE]
+│   ├── test_net_dns.py      # dnspython mock [CREATE]
+│   ├── test_net_wifi_linux.py  # mock asyncio.create_subprocess_exec [CREATE]
+│   └── test_ebpf.py         # ImportError path; BPF_AVAILABLE=False branch [CREATE]
 ├── transport/
-│   ├── test_otlp.py         # mock gRPC channel; verify metric export
-│   └── test_retry.py        # lmdb buffer write/replay on reconnect
+│   ├── test_otlp.py         # mock gRPC channel; verify metric export [CREATE]
+│   └── test_retry.py        # lmdb buffer write/replay on reconnect [CREATE]
 ├── store/
-│   ├── test_hot.py          # lmdb ring buffer eviction
-│   └── test_cold.py         # sqlite3 WAL write/read
+│   ├── test_hot.py          # lmdb ring buffer eviction [CREATE]
+│   └── test_cold.py         # sqlite3 WAL write/read [CREATE]
 └── pki/
-    ├── test_enroll.py       # mock HTTP POST; verify cert/key written
-    └── test_renew.py        # cert < 14 days triggers renewal
+    ├── test_enroll.py       # mock HTTP POST; verify cert/key written [CREATE]
+    └── test_renew.py        # cert < 14 days triggers renewal [CREATE]
 ```
+
+Tests are added alongside each implementation phase — never write tests that
+fake the behaviour of the module under test (no monkeypatching the module's own
+functions to force a pass). Every test must exercise real code paths.
 
 ### 7.2 Key Test Patterns
 
@@ -644,9 +651,7 @@ import sys
 import importlib
 
 def test_bpf_import_failure_graceful(mock_settings, mock_meter):
-    # Simulate bcc not being installed
     with patch.dict(sys.modules, {"bcc": None}):
-        # Re-import flow_tracker with bcc absent
         if "collector.checks.ebpf.flow_tracker" in sys.modules:
             del sys.modules["collector.checks.ebpf.flow_tracker"]
         import collector.checks.ebpf.flow_tracker as ft
@@ -660,19 +665,46 @@ def test_bpf_import_failure_graceful(mock_settings, mock_meter):
         assert "bcc not available" in result.error
 ```
 
-### 7.3 CI Requirements
+### 7.3 Running Tests Locally
 
-The `collector.yml` workflow runs on every PR that touches `collector/**`:
+From the `collector/` directory:
 
 ```bash
-ruff check .       # linting
-mypy .             # type-checking
-pytest -q          # all tests under collector/tests/
+# Install dev deps
+pip install -r requirements-dev.txt
+
+# All checks at once (mirrors CI exactly)
+ruff check .          # linting
+mypy .                # type-checking
+pylint collector tests  # static analysis
+pytest -q             # unit tests
 ```
 
-The `pylint.yml` workflow also runs `pylint` against all `*.py` files.
+### 7.4 CI Requirements
 
-All four checks must pass on every PR. `mypy` errors on `bcc` (`# type: ignore[import]` is acceptable since bcc has no type stubs). `ruff` runs at default settings — no `# noqa` suppression without a comment explaining why.
+The `collector.yml` workflow runs on every push/PR that touches `collector/**`:
+
+```
+ruff check .    → must pass (zero errors)
+mypy .          → must pass (# type: ignore[import] allowed for bcc/scapy stubs)
+pytest -q       → must pass (all tests green; never delete or fake a test to force green)
+```
+
+The `pylint.yml` workflow also runs on every push/PR that touches `collector/**`:
+
+```
+pylint collector tests  → run from collector/ directory
+                           disabled rules: missing-*-docstring, too-few-public-methods,
+                           import-error (optional runtime deps), fixme
+```
+
+**Fixing CI failures:**
+- `ruff` error → fix the lint issue in the source file; never add `# noqa` without a comment
+- `mypy` error → add a type annotation or `# type: ignore[specific-code]` with a comment
+- `pylint` error → fix the issue in the source; if a rule is genuinely inapplicable project-wide,
+  add it to `[tool.pylint."messages control"]` disable list in `pyproject.toml` with a comment
+- `pytest` failure → fix the code or fix the test to match the corrected behaviour;
+  **never delete or stub out a failing test**
 
 ---
 
@@ -718,6 +750,8 @@ These are hard limits from `COLLECTOR-V2-REFACTOR.md §2.2`. Every implementatio
 | Hardcoding `wlan0` in `net_wifi_linux.py` | Interface name varies per node | Read from `config.wifi.interface` |
 | NumPy/pandas import in the collector | Adds 30–60 MB to the PyInstaller bundle; pushes memory over 80 MB on Pi 3B | ML is hub-side only. Collector does arithmetic in stdlib or simple list operations. |
 | Committing `.env` with real credentials | Exposes secrets in Git history | `.env` is in `.gitignore`. Only `.env.example` (with dummy values) is committed. |
+| Deleting or stubbing out a failing test | Hides real bugs; CI green does not mean working | Fix the code or fix the test to match corrected behaviour |
+| Using `git ls-files '*.py'` in pylint from a subdirectory | `git ls-files` returns repo-root-relative paths; running from a subdirectory makes them unresolvable | Run `pylint collector tests` directly from the package directory |
 
 ---
 
@@ -753,7 +787,7 @@ collector_health_score{collector_id, site_id}                  gauge — 0.0 to 
 | Full collector config schema | `COLLECTOR-V2-REFACTOR.md` | §9 |
 | Full metrics list | `COLLECTOR-V2-REFACTOR.md` | §10 |
 | PyInstaller build + ARM64 cross-compile | `COLLECTOR-V2-REFACTOR.md` | §11 |
-| CI pipeline (pytest + mypy + ruff) | `COLLECTOR-V2-REFACTOR.md` | §12 |
+| CI pipeline (pytest + mypy + ruff + pylint) | `COLLECTOR-V2-REFACTOR.md` | §12 |
 | Phased implementation plan with weeks | `COLLECTOR-V2-REFACTOR.md` | §13 |
 | Hub Docker Compose (full hub stack) | `IaC-DEPLOYMENT-STRATEGY.md` | §4 |
 | Collector bootstrap script | `IaC-DEPLOYMENT-STRATEGY.md` | §5.1 |
@@ -776,14 +810,32 @@ collector_health_score{collector_id, site_id}                  gauge — 0.0 to 
 
 ### 13.1 Active Workflows
 
-| File | Triggers | What it runs |
-|---|---|---|
-| `collector.yml` | push/PR on `collector/**` | `ruff check .` → `mypy .` → `pytest -q` |
-| `pylint.yml` | push/PR on `collector/**` | `pylint $(git ls-files '*.py')` |
-| `codeql.yml` | push/PR on `main`, weekly Sunday | CodeQL Python + Actions scan (`continue-on-error: true` — GHAS not enabled) |
-| `dependabot-auto-merge.yml` | PR opened/sync/reopened by `dependabot[bot]` | Auto-merge patch/minor; label major with `major-update` + `needs-review` |
+| File | Triggers | What it runs | Must pass? |
+|---|---|---|---|
+| `collector.yml` | push/PR on `collector/**` | `ruff check .` → `mypy .` → `pytest -q` | Yes — blocks merge |
+| `pylint.yml` | push/PR on `collector/**` | `pylint collector tests` (from `collector/` dir) | Yes — blocks merge |
+| `codeql.yml` | push/PR on `main`, weekly Sunday | CodeQL Python + Actions scan | No — `continue-on-error: true` (GHAS not enabled) |
+| `dependabot-auto-merge.yml` | PR by `dependabot[bot]` | Auto-merge patch/minor; label major with `major-update` + `needs-review` | N/A |
 
-### 13.2 Dependabot Config (`.github/dependabot.yml`)
+### 13.2 Pylint Configuration
+
+Pylint is configured in `collector/pyproject.toml` under `[tool.pylint.*]`. Key decisions:
+
+| Setting | Value | Reason |
+|---|---|---|
+| `max-line-length` | 100 | Matches ruff `line-length` |
+| `max-args` | 8 | Checks may need up to 8 constructor args |
+| `missing-*-docstring` | disabled | Enforced gradually as the codebase matures |
+| `too-few-public-methods` | disabled | Pydantic models / dataclasses always trigger this |
+| `import-error` | disabled | Optional runtime deps (bcc, scapy) are guarded by try/except; pylint can't resolve them |
+| `fixme` | disabled | TODO/FIXME comments are intentional during active development |
+
+**Workflow fix note:** The original `pylint.yml` used `pylint $(git ls-files '*.py')` from
+`working-directory: collector`. Because `git ls-files` returns repo-root-relative paths, running
+it from a subdirectory caused `FileNotFoundError` for every file outside `collector/`. Fixed to
+`pylint collector tests` which resolves correctly relative to the working directory.
+
+### 13.3 Dependabot Config (`.github/dependabot.yml`)
 
 Two ecosystems are monitored:
 
@@ -792,26 +844,24 @@ Two ecosystems are monitored:
 | `pip` | `/collector` | Weekly Monday 06:00 CET | `pip-patch-minor`, `pip-security` | Ignored — left for manual review |
 | `github-actions` | `/` | Weekly Monday 06:00 CET | `actions-all`, `actions-security` | Allowed (v3→v4→v5 is routine) |
 
-**Removed entries (stale, directories don't exist):**
-- `gomod /collector` — no Go code in collector; Go is hub-side only (not tracked here)
-- `pip /monitor` — v1 stack; frozen on `release/v1.0` branch
-- `pip /dashboard` — v1 stack; frozen on `release/v1.0` branch
-- `pip /tests` — no standalone `tests/` requirements file
+**Removed entries (stale, directories don't exist on main):**
+- `gomod /collector` — no Go code in collector; Go is hub-side only
+- `pip /monitor`, `pip /dashboard`, `pip /tests` — v1 stack frozen on `release/v1.0`
 
-### 13.3 Dependency Pinning Rules
+### 13.4 Dependency Pinning Rules
 
 - All runtime deps in `collector/requirements.txt` are **exact pins** (`==`). No ranges.
 - All dev deps in `collector/requirements-dev.txt` are **exact pins** (`==`).
+- `pylint` is in `requirements-dev.txt` so both `collector.yml` and `pylint.yml` share one cached install.
 - When bumping `pytest` to a new major version, check `pytest-asyncio` compatibility first.
   - `pytest-asyncio < 1.3.0` has a hard `pytest<9` upper bound.
   - `pytest 9.x` requires `pytest-asyncio >= 1.3.0`.
 - OTLP stack must be bumped together: `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-grpc`, `grpcio`, `grpcio-status` must all be compatible (verify with `pip check` after any bump).
-- `scapy` RC versions (e.g. `2.7.0rc1`) should be pinned to a stable release when available. Current pin: `2.6.1`.
 
-### 13.4 Known Compatibility Constraints
+### 13.5 Known Compatibility Constraints
 
 | Constraint | Detail |
 |---|---|
-| `opentelemetry-sdk==1.25.0` + `grpcio-status==1.64.1` | **UNSATISFIABLE** — proto<5 vs proto>=5.26.1 conflict. Use `1.44.0` + `grpcio==1.83.0`. |
+| `opentelemetry-sdk==1.25.0` + `grpcio-status==1.64.1` | **UNSATISFIABLE** — proto<5 vs proto>=5.26.1 conflict. Use `opentelemetry-sdk==1.44.0` + `grpcio==1.83.0`. |
 | `pytest-asyncio < 1.3.0` | Hard `pytest<9` upper bound. For pytest 9.x, pin `pytest-asyncio>=1.3.0`. |
 | `bcc` | NOT in `requirements.txt`. Install via `apt install python3-bpfcc`. Kernel-version-matched. |

@@ -33,11 +33,12 @@ jobs:
           cache: pip
           cache-dependency-path: collector/requirements-dev.txt
 
-      - name: Install dev dependencies
+      - name: Install dev dependencies (includes pylint)
         run: pip install -r requirements-dev.txt
 
-      - name: Install pylint
-        run: pip install pylint
-
-      - name: Run pylint
-        run: pylint $(git ls-files '*.py')
+      - name: Run pylint (collector package + tests)
+        # Scope explicitly to the collector package and its tests.
+        # Do NOT use `git ls-files '*.py'` from working-directory: collector —
+        # git lists paths relative to the repo root so they resolve incorrectly
+        # when the working directory is already inside the repo.
+        run: pylint collector tests
