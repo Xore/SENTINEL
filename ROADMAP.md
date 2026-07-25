@@ -606,12 +606,17 @@ hour_of_week = (now.weekday() * 24 + now.hour)  # 0–167
 Both prior-roadmap items are trend-detection over the collector streams and so
 belong to this phase's detector stack rather than the data plane.
 
-- [ ] **#50 — TCP retransmission/reset + DNS failure trends.** Feed the eBPF
-  `retransmits`/`lost` counters (Phase 2) and the Phase 1 DNS-check
-  success/latency into the CUSUM+EWMA detectors as their own series. Alert on a
-  sustained rise in retransmit ratio or DNS failure/SERVFAIL rate, not a single
-  spike. Emit `tcp_retransmit_ratio` and `dns_failure_rate` as detector inputs;
-  both become Phase 4 RCA symptoms.
+- [x] **#50 — TCP retransmission/reset + DNS failure trends.** _(v1 shipped, commit `33c798b`.)_
+  Passive kernel TCP counters (`monitor/tcp_stat.py` reads `/proc/net/{snmp,netstat}`,
+  no packets) sampled into `tcp_samples`, plus the existing DNS `service_samples`,
+  are differenced into a retransmit-ratio / reset-rate / DNS-failure-% series and
+  run through an EWMA + sustained-vs-spike classifier (`dashboard/trends.py`,
+  `assess_series` → stable/spike/rising/degraded). Surfaced at
+  `/api/monitor/{tcp,dns}` and a Monitor-page "Protocol Trends" panel; 27 tests in
+  `tests/test_trends.py`. _Still to layer on:_ swap the /proc sampler for the eBPF
+  `retransmits`/`lost` counters (Phase 2) once the probe lands, and feed
+  `tcp_retransmit_ratio` / `dns_failure_rate` into the shared CUSUM+EWMA detectors
+  as Phase 4 RCA symptoms rather than the standalone classifier here.
 - [ ] **#51 — Baselines by segment / hour / production state.** Generalise the
   168-bucket hour-of-week control limits above so the residual sigma is keyed by
   `(metric, subnet_segment, hour_of_week, production_state)`. `production_state`
@@ -962,7 +967,7 @@ its phase's *"Folded-in tasks from the prior roadmap"* subsection.
 | Prior item | Folded into | Rationale |
 |---|---|---|
 | **#54** SNMPv3 read + STP observation | Phase 1 | Collector-side data acquisition; STP change becomes a stream field |
-| **#50** TCP retransmission/reset + DNS failure trends | Phase 3 | Trend detection over collector streams via CUSUM+EWMA |
+| **#50** TCP retransmission/reset + DNS failure trends | Phase 3 | ✅ v1 shipped (`33c798b`): /proc TCP counters + DNS trends, EWMA sustained-vs-spike classifier, `/api/monitor/{tcp,dns}`; eBPF+shared-detector wiring still to layer on |
 | **#51** Baselines by segment / hour / production state | Phase 3 | Generalises the 168-bucket adaptive control limits |
 | **#53** Webhook/email alerting on sustained state changes | Phase 6 | Concrete build of the Phase 6 alert-routing bullet |
 | **#48** Session/acceptance report (JSON/CSV/HTML) + hashes | Phase 6 | Operator-facing reporting/export surface |
