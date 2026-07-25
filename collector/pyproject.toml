@@ -1,0 +1,33 @@
+[project]
+name = "analyselaptop-collector"
+version = "2.0.0-dev"
+description = "SENTINEL v2 network collector agent (asyncio, OTLP/gRPC, mTLS)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "See repository LICENSE" }
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["collector"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# Sensible default set; expand as the codebase grows.
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = false
+disallow_untyped_defs = false

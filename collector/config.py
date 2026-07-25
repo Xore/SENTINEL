@@ -1,0 +1,180 @@
+"""Collector configuration — pydantic models + layered loader + SIGHUP reload.
+
+Precedence (highest wins): explicit init kwargs > process env / ``.env`` >
+optional YAML config file > model defaults. Env vars use the ``__`` nested
+delimiter, so ``WIFI__ENABLED=true`` maps to ``settings.wifi.enabled`` and
+``BACKEND__URL=...`` maps to ``settings.backend.url``.
+
+Never read ``os.environ`` directly elsewhere in the collector — always resolve
+configuration through :func:`load_settings` so validation, defaults, and test
+overrides all flow through one place. Schema mirrors
+``docs/collector/COLLECTOR-V2-REFACTOR.md`` §9.
+"""
+from __future__ import annotations
+
+import os
+import signal
+from pathlib import Path
+from typing import Any, Callable, Literal
+
+import yaml
+from pydantic import BaseModel, Field, ValidationError
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+# Env var naming the YAML config file, if the caller doesn't pass one explicitly.
+CONFIG_ENV_VAR = "COLLECTOR_CONFIG"
+
+
+class ConfigError(Exception):
+    """Raised when configuration cannot be loaded or fails validation."""
+
+
+# --------------------------------------------------------------------------- #
+# Sub-configuration models (COLLECTOR-V2-REFACTOR.md §9)
+# --------------------------------------------------------------------------- #
+class BackendConfig(BaseModel):
+    url: str = "https://hub.internal:4317"
+    pki_dir: str = "/var/lib/analyselaptop/pki"
+    retry_max: int = Field(default=10, ge=0)
+    retry_backoff_s: float = Field(default=2.0, gt=0)
+
+
+class WifiConfig(BaseModel):
+    enabled: bool = True
+    interface: str = "wlan0"
+    scan_interval_s: int = Field(default=60, gt=0)
+    ap_change_alert: bool = True
+
+
+class MtrConfig(BaseModel):
+    enabled: bool = True
+    targets: list[str] = Field(default_factory=list)
+    max_hops: int = Field(default=30, ge=1, le=255)
+    probes_per_hop: int = Field(default=3, ge=1)
+    interval_s: int = Field(default=300, gt=0)
+
+
+class BcastMcastConfig(BaseModel):
+    enabled: bool = True
+    interface: str = "eth0"
+    window_s: int = Field(default=30, gt=0)
+    top_n: int = Field(default=10, ge=1)
+    interval_s: int = Field(default=300, gt=0)
+
+
+class EbpfConfig(BaseModel):
+    enabled: bool = True  # auto-disabled at runtime if the bcc import fails
+    flow_track: bool = True
+
+
+# --------------------------------------------------------------------------- #
+# YAML settings source
+# --------------------------------------------------------------------------- #
+class _YamlSettingsSource(PydanticBaseSettingsSource):
+    """A pydantic-settings source that reads a flat/nested mapping from a YAML
+    file. Missing file → empty mapping (the file is optional)."""
+
+    def __init__(self, settings_cls: type[BaseSettings], path: Path | None) -> None:
+        super().__init__(settings_cls)
+        self._data: dict[str, Any] = {}
+        if path and path.is_file():
+            try:
+                loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except yaml.YAMLError as exc:
+                raise ConfigError(f"{path}: invalid YAML: {exc}") from exc
+            if not isinstance(loaded, dict):
+                raise ConfigError(f"{path}: top-level YAML must be a mapping")
+            self._data = loaded
+
+    def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
+        return self._data.get(field_name), field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        return self._data
+
+
+# The YAML path is stashed at module scope so settings_customise_sources (a
+# classmethod pydantic calls with no access to our kwargs) can reach it.
+_yaml_path: Path | None = None
+
+
+class CollectorSettings(BaseSettings):
+    """Top-level collector configuration."""
+
+    collector_id: str
+    site_id: str = "default"
+    scan_level_max: Literal[1, 2, 3] = 2
+    backend: BackendConfig = BackendConfig()
+    wifi: WifiConfig = WifiConfig()
+    mtr: MtrConfig = MtrConfig()
+    bcast_mcast: BcastMcastConfig = BcastMcastConfig()
+    ebpf: EbpfConfig = EbpfConfig()
+    log_level: str = "INFO"
+    data_dir: str = "/var/lib/analyselaptop/data"
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Highest priority first: init kwargs > env > .env > YAML > secrets.
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            _YamlSettingsSource(settings_cls, _yaml_path),
+            file_secret_settings,
+        )
+
+
+def load_settings(
+    config_file: str | os.PathLike[str] | None = None, **overrides: Any
+) -> CollectorSettings:
+    """Load and validate collector settings.
+
+    `config_file` (or the ``COLLECTOR_CONFIG`` env var) points at an optional
+    YAML file; env vars still override its values. `overrides` win over
+    everything and are intended for tests. Raises :class:`ConfigError` on a
+    missing required field or a validation failure so the caller can exit
+    cleanly instead of surfacing a raw pydantic traceback.
+    """
+    global _yaml_path
+    path = config_file or os.environ.get(CONFIG_ENV_VAR)
+    _yaml_path = Path(path) if path else None
+    try:
+        return CollectorSettings(**overrides)
+    except ValidationError as exc:
+        raise ConfigError(f"invalid collector configuration:\n{exc}") from exc
+    finally:
+        _yaml_path = None
+
+
+def install_sighup_reload(on_reload: Callable[[CollectorSettings], None]) -> bool:
+    """Reload settings on SIGHUP and hand the fresh object to `on_reload`.
+
+    Returns True if the handler was installed (POSIX with SIGHUP), False on
+    platforms without SIGHUP (e.g. Windows) so callers can degrade gracefully.
+    The reload reuses whatever ``COLLECTOR_CONFIG`` currently points at.
+    """
+    if not hasattr(signal, "SIGHUP"):
+        return False
+
+    def _handler(_signum: int, _frame: Any) -> None:
+        on_reload(load_settings())
+
+    signal.signal(signal.SIGHUP, _handler)  # type: ignore[attr-defined]
+    return True

@@ -1,0 +1,40 @@
+# analyseLaptop / SENTINEL v2 collector — runtime dependencies.
+# Pinned per docs/collector/COLLECTOR-V2-REFACTOR.md §4. All must be
+# pip-installable and PyInstaller-bundlable. Exception: bcc (eBPF) is installed
+# via the OS package manager on nodes that need it (apt install python3-bpfcc)
+# and guarded by an import check — it is deliberately NOT listed here.
+
+# OTLP export
+opentelemetry-sdk==1.25.0
+opentelemetry-exporter-otlp-proto-grpc==1.25.0
+grpcio==1.64.1
+grpcio-status==1.64.1
+
+# Config validation
+pydantic==2.7.4
+pydantic-settings==2.3.4
+PyYAML==6.0.1
+
+# HTTP probing
+aiohttp==3.9.5
+
+# DNS probing
+dnspython==2.6.1
+
+# SNMP
+pysnmp==6.2.5
+
+# Modbus (OT)
+pymodbus==3.6.9
+
+# Packet capture (broadcast/multicast top-talker)
+scapy==2.5.0
+
+# PKI / TLS
+cryptography==42.0.8
+
+# Local store
+lmdb==1.5.1
+
+# Logging
+structlog==24.2.0

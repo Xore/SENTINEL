@@ -1,0 +1,48 @@
+name: collector
+
+# CI for the SENTINEL v2 collector (Python 3.12 asyncio agent).
+# The frozen v1 stack (Go collector, Flask dashboard, monitor/) lives on the
+# release/v1.0 branch and is not built here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "collector/**"
+      - ".github/workflows/collector.yml"
+  pull_request:
+    paths:
+      - "collector/**"
+      - ".github/workflows/collector.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: collector
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: collector/requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type-check (mypy)
+        run: mypy .
+
+      - name: Tests (pytest)
+        run: pytest -q
