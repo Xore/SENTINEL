@@ -519,7 +519,9 @@ def check_http(target: str) -> tuple[bool, float | None, str]:
         timings["connect"] = (time.monotonic() - started) * 1000
         if url.scheme == "https":
             tls_started = time.monotonic()
-            raw = ssl.create_default_context().wrap_socket(raw, server_hostname=url.hostname)
+            context = ssl.create_default_context()
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            raw = context.wrap_socket(raw, server_hostname=url.hostname)
             timings["tls"] = (time.monotonic() - tls_started) * 1000
         connection = http.client.HTTPConnection(url.hostname, port, timeout=5)
         connection.sock = raw
