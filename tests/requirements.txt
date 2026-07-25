@@ -1,6 +1,6 @@
 # pytest + test-suite dependencies
 pytest>=8.0.0
-pytest-timeout>=2.3.0
+pytest-timeout>=2.4.0
 
 # dashboard runtime deps required by tests that import from dashboard/
 -r ../dashboard/requirements.txt
