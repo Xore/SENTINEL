@@ -11,6 +11,7 @@
 | Symbol | Meaning |
 |---|---|
 | `[ ]` | Not fixed |
+| `[~]` | Partially fixed |
 | `[x]` | Fixed and verified |
 
 ---
@@ -59,8 +60,8 @@ jobs:
 
 ### Checklist
 
-- [ ] CodeQL workflow added to `.github/workflows/codeql.yml`
-- [ ] CodeQL default setup enabled in repo Settings
+- [x] CodeQL workflow added to `.github/workflows/codeql.yml` *(done 2026-07-25 — Go + Python, `security-extended` query suite)*
+- [ ] CodeQL default setup enabled in repo Settings *(optional — workflow approach is active)*
 - [ ] First scan completed with 0 high/critical alerts
 
 ---
@@ -421,7 +422,7 @@ Update all internal imports after renaming.
 
 | # | Finding | Severity | File | Fixed |
 |---|---|---|---|---|
-| 1 | No CodeQL / automated scanning | High | `.github/workflows/` | `[ ]` |
+| 1 | No CodeQL / automated scanning | High | `.github/workflows/` | `[~]` workflow added, first scan pending |
 | 2 | `InsecureSkipVerify: true` in HTTP client | High | `collector/main.go` | `[ ]` |
 | 3 | Secrets potentially leaked to stdout | Medium | `collector/main.go` | `[ ]` |
 | 4 | Subprocess command injection via config strings | Medium | `monitor/outage_monitor.py` | `[ ]` |
