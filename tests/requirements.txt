@@ -1,0 +1,4 @@
+# pytest + test-suite dependencies
+pytest>=8.0.0
+pytest-timeout>=2.3.0
+requests>=2.31.0
