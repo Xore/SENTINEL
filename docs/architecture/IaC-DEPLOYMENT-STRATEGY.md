@@ -1,7 +1,7 @@
 # Infrastructure as Code — Deployment Strategy
 
 > **Date:** 2026-07-25
-> **Updated:** 2026-07-25 — Simplified to Docker Compose + GitHub Actions only. Terraform and Ansible removed.
+> **Updated:** 2026-07-25 — Added Wi-Fi analysis Docker Compose configuration (§5.4).
 > **Status:** Proposed
 > **Scope:** Full v2 stack — backend hub (ingest / analyse / api / nginx / federation-agent), storage (VictoriaMetrics + PostgreSQL), frontend (SvelteKit static), and collector fleet (50+ nodes, each running the Python collector as a Docker container).
 > **Collector v2 design:** See [`../collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) for the full Python collector feature set and `requirements.txt`.
@@ -41,9 +41,11 @@ analyseLaptop/
 │   │   └── .env.example              # All required vars with dummy values — committed
 │   │
 │   ├── collector/                    # Collector node stack
-│   │   ├── docker-compose.yml        # Single-service: analyselaptop-collector
-│   │   ├── docker-compose.prod.yml   # Production overrides (capabilities, resource limits)
-│   │   └── .env.example              # BACKEND_URL, COLLECTOR_ID, SITE_ID, SCAN_LEVEL_MAX
+│   │   ├── docker-compose.yml        # Base: analyselaptop-collector (all nodes)
+│   │   ├── docker-compose.wifi.yml   # Wi-Fi override: NET_ADMIN cap + WIFI_INTERFACE env
+│   │   ├── docker-compose.prod.yml   # Production overrides (resource limits, log drivers)
+│   │   └── .env.example              # BACKEND_URL, COLLECTOR_ID, SITE_ID, SCAN_LEVEL_MAX,
+│   │                                 # WIFI_ENABLED, WIFI_INTERFACE
 │   │
 │   └── scripts/
 │       ├── bootstrap-hub.sh          # One-time: install Docker, create dirs, write secrets
@@ -319,7 +321,7 @@ echo "Secrets rotated. Re-enroll collectors if PKI CA was also rotated."
 
 Every collector node runs the Python collector as a single Docker container managed by `docker compose`. Docker must be installed on each node (handled by `bootstrap-collector.sh`).
 
-### One-time node bootstrap
+### 5.1 One-time node bootstrap
 
 ```bash
 # deploy/scripts/bootstrap-collector.sh
@@ -327,9 +329,10 @@ Every collector node runs the Python collector as a single Docker container mana
 #!/usr/bin/env bash
 set -euo pipefail
 
-COLLECTOR_ID="${1:?Usage: bootstrap-collector.sh <collector-id> <backend-url> <site-id>}"
+COLLECTOR_ID="${1:?Usage: bootstrap-collector.sh <collector-id> <backend-url> <site-id> [wifi-iface]}"
 BACKEND_URL="${2:?}"
 SITE_ID="${3:?}"
+WIFI_IFACE="${4:-}"   # optional; pass wlan0 / wlan1 if the node has a Wi-Fi adapter
 
 # Install Docker (idempotent)
 if ! command -v docker &>/dev/null; then
@@ -348,14 +351,19 @@ BACKEND_URL=${BACKEND_URL}
 SITE_ID=${SITE_ID}
 SCAN_LEVEL_MAX=2
 IMAGE_TAG=latest
+# Wi-Fi — set WIFI_ENABLED=true and WIFI_INTERFACE=<iface> on nodes with a wireless adapter
+WIFI_ENABLED=${WIFI_IFACE:+true}
+WIFI_ENABLED=${WIFI_IFACE:-false}
+WIFI_INTERFACE=${WIFI_IFACE:-wlan0}
 EOF
 chmod 600 /var/lib/analyselaptop/.env
 
-echo "Node bootstrap complete. Run deploy-collectors workflow or:"
-echo "  docker compose -f /opt/analyselaptop/docker-compose.yml up -d"
+echo "Node bootstrap complete."
+echo "  Wi-Fi probe: ${WIFI_IFACE:-disabled (no iface given)}"
+echo "  Run: docker compose -f /opt/analyselaptop/docker-compose.yml up -d"
 ```
 
-### Collector compose file
+### 5.2 Base collector compose file
 
 ```yaml
 # deploy/collector/docker-compose.yml
@@ -376,12 +384,15 @@ services:
       SCAN_LEVEL_MAX:  ${SCAN_LEVEL_MAX:-2}
       PKI_DIR:         /var/lib/analyselaptop/pki
       DATA_DIR:        /var/lib/analyselaptop/data
+      WIFI_ENABLED:    ${WIFI_ENABLED:-false}
+      WIFI_INTERFACE:  ${WIFI_INTERFACE:-wlan0}
     cap_add:
       - NET_RAW       # ICMP raw sockets, AF_PACKET (broadcast/multicast capture)
-      - NET_ADMIN     # Wi-Fi interface control, eBPF socket filters
       - BPF           # eBPF program loading
       - PERFMON       # eBPF perf events
       - SYS_PTRACE    # /proc/<pid> access for process metrics
+    # NET_ADMIN is NOT in the base compose — it is added only via docker-compose.wifi.yml
+    # on nodes that have a wireless adapter. See §5.4.
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -391,6 +402,10 @@ services:
       timeout: 5s
       retries: 3
 ```
+
+> **`network_mode: host`** is required because the collector uses raw sockets (ICMP), AF_PACKET (broadcast capture), and reads `/proc/net/dev` for interface metrics. Bridge networking would block these. The container does **not** expose any inbound ports — all traffic is outbound to `BACKEND_URL:4317`.
+
+### 5.3 Production override
 
 ```yaml
 # deploy/collector/docker-compose.prod.yml
@@ -406,7 +421,199 @@ services:
       options: { max-size: "20m", max-file: "3" }
 ```
 
-> **`network_mode: host`** is required because the collector uses raw sockets (ICMP), AF_PACKET (broadcast capture), and reads `/proc/net/dev` for interface metrics. Bridge networking would block these. The container does **not** expose any inbound ports — all traffic is outbound to `BACKEND_URL:4317`.
+---
+
+### 5.4 Wi-Fi Analysis — Docker Compose Configuration
+
+The collector's Wi-Fi analysis module (`checks/net_wifi_linux.py`) uses the `iw` CLI tool to read link state and perform passive AP scans. This requires specific Linux capabilities and the `iw` package inside the container image. This section documents all configuration requirements for Wi-Fi-enabled collector nodes.
+
+#### Why NET_ADMIN is required for Wi-Fi
+
+`iw` communicates with the kernel via **nl80211** (netlink family 802.11). The kernel requires `CAP_NET_ADMIN` for nl80211 operations that change interface state (`iw dev wlan0 scan`) or read protected wireless attributes. Without it, `iw scan` returns `Operation not permitted` even when running as root inside the container.
+
+| `iw` operation | Capability needed | What it reads |
+|---|---|---|
+| `iw dev wlan0 link` | none (read-only link state) | BSSID, SSID, signal (dBm), bitrate |
+| `iw dev wlan0 scan` | **CAP_NET_ADMIN** | Active AP list, RSSI per AP, channel, security |
+| `iw dev wlan0 station dump` | **CAP_NET_ADMIN** | Peer station stats (mesh / AP mode only) |
+| Monitor mode (`iw dev wlan0 set type monitor`) | **CAP_NET_ADMIN** | Passive 802.11 frame capture (not used by default) |
+
+Active scanning (`iw scan`) transmits probe request frames on each channel. It is the standard method for discovering all visible APs and their RSSI. This is the default mode used by `net_wifi_linux.py`.
+
+#### Wi-Fi compose override file
+
+Rather than adding `NET_ADMIN` to the base compose (which would give it to all nodes including wired-only ones), it is applied as a named override file that is only included on Wi-Fi-capable nodes.
+
+```yaml
+# deploy/collector/docker-compose.wifi.yml
+# Applied on nodes with a Wi-Fi adapter:
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.wifi.yml \
+#     -f docker-compose.prod.yml \
+#     up -d
+services:
+  collector:
+    cap_add:
+      - NET_ADMIN     # Required for: iw scan (nl80211), iw station dump, monitor mode setup
+    environment:
+      WIFI_ENABLED:   "true"
+      WIFI_INTERFACE: ${WIFI_INTERFACE:-wlan0}   # Override in .env per node
+```
+
+#### `iw` in the collector Dockerfile
+
+The `iw` package must be present in the collector image. It is a small (~150 KB) CLI tool and should be installed unconditionally — nodes without Wi-Fi simply never invoke it.
+
+```dockerfile
+# collector/Dockerfile  — relevant excerpt
+FROM python:3.12-slim
+
+# System tools required by collector checks
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      iw            `# Wi-Fi: iw dev <iface> link + scan (net_wifi_linux.py)` \
+      iproute2      `# ip link, ip route reads` \
+      iputils-ping  `# fallback ping (ICMP check uses raw socket; this is for diagnostics)` \
+      libcap2-bin   `# setcap (applied at image build for capability drops)` \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . /app
+WORKDIR /app
+
+ENTRYPOINT ["python3", "-m", "collector"]
+```
+
+#### Per-node `.env` for Wi-Fi nodes
+
+```bash
+# /var/lib/analyselaptop/.env  — Wi-Fi-capable node example
+COLLECTOR_ID=probe-site-a
+BACKEND_URL=https://hub.internal:4317
+SITE_ID=site-a
+SCAN_LEVEL_MAX=2
+IMAGE_TAG=latest
+
+# Wi-Fi
+WIFI_ENABLED=true
+WIFI_INTERFACE=wlan0      # Run `iw dev` on the node to confirm the interface name
+                           # Common values: wlan0 (Pi built-in), wlan1 (USB dongle)
+```
+
+```bash
+# /var/lib/analyselaptop/.env  — wired-only node example
+COLLECTOR_ID=probe-ot-floor1
+BACKEND_URL=https://hub.internal:4317
+SITE_ID=ot-floor1
+SCAN_LEVEL_MAX=2
+IMAGE_TAG=latest
+
+# Wi-Fi disabled — NET_ADMIN not added (docker-compose.wifi.yml not used)
+WIFI_ENABLED=false
+WIFI_INTERFACE=wlan0      # Value ignored when WIFI_ENABLED=false
+```
+
+#### Collector inventory JSON — Wi-Fi flag
+
+Add `"wifi_iface"` to each entry in `deploy/collector-inventory.json`. The deploy workflow uses this field to decide whether to include `docker-compose.wifi.yml` in the compose command:
+
+```json
+[
+  { "id": "probe-site-a",   "host": "192.168.1.50", "user": "pi",        "arch": "arm64", "wifi_iface": "wlan0"  },
+  { "id": "probe-site-b",   "host": "10.20.1.5",    "user": "ubuntu",    "arch": "amd64", "wifi_iface": "wlan1"  },
+  { "id": "probe-ot-floor1","host": "10.10.0.20",   "user": "collector", "arch": "arm64", "wifi_iface": null    }
+]
+```
+
+`wifi_iface: null` → wired-only node → `docker-compose.wifi.yml` is NOT included → `NET_ADMIN` is NOT granted.
+
+#### Updated deploy-collectors.yml — Wi-Fi-aware compose command
+
+The SSH deploy step must detect `wifi_iface` and conditionally include the Wi-Fi override:
+
+```yaml
+# .github/workflows/deploy-collectors.yml — updated deploy step
+- name: Deploy to collector nodes
+  env:
+    IMAGE_TAG: ${{ github.sha }}
+    TARGET_ID: ${{ github.event.inputs.collector_id }}
+  run: |
+    jq -c '.[]' deploy/collector-inventory.json | while IFS= read -r node; do
+      ID=$(echo "$node"         | jq -r '.id')
+      HOST=$(echo "$node"       | jq -r '.host')
+      USER=$(echo "$node"       | jq -r '.user')
+      WIFI=$(echo "$node"       | jq -r '.wifi_iface // empty')
+
+      [ -n "$TARGET_ID" ] && [ "$ID" != "$TARGET_ID" ] && continue
+
+      # Build the compose file list: base + optional wifi override + prod
+      COMPOSE_FILES="-f /opt/analyselaptop/docker-compose.yml"
+      [ -n "$WIFI" ] && COMPOSE_FILES="$COMPOSE_FILES -f /opt/analyselaptop/docker-compose.wifi.yml"
+      COMPOSE_FILES="$COMPOSE_FILES -f /opt/analyselaptop/docker-compose.prod.yml"
+
+      echo "=== Deploying to $ID ($HOST) wifi=${WIFI:-none} ==="
+      ssh -i ~/.ssh/deploy_key "$USER@$HOST" bash -s <<REMOTE
+        set -euo pipefail
+
+        IMAGE_TAG=${IMAGE_TAG} docker compose ${COMPOSE_FILES} pull collector
+        IMAGE_TAG=${IMAGE_TAG} docker compose ${COMPOSE_FILES} up -d --no-deps collector
+
+        for i in \$(seq 1 6); do
+          STATUS=\$(docker inspect --format='{{.State.Health.Status}}' \
+            "\$(docker compose ${COMPOSE_FILES} ps -q collector)" 2>/dev/null || echo "starting")
+          [ "\$STATUS" = "healthy" ] && echo "  ✓ Healthy" && exit 0
+          echo "  Waiting (\$i/6) — \$STATUS"; sleep 5
+        done
+        echo "  ✗ Health check failed on ${ID}" >&2; exit 1
+REMOTE
+      echo "=== $ID done ==="
+    done
+```
+
+#### Wi-Fi check behaviour in net_wifi_linux.py
+
+The collector reads `WIFI_ENABLED` at startup. When `false`, the Wi-Fi check module is never loaded:
+
+```python
+# collector/config.py — WifiConfig (from COLLECTOR-V2-REFACTOR.md §9, extended)
+class WifiConfig(BaseModel):
+    enabled: bool = False          # Disabled by default; set via WIFI_ENABLED=true in .env
+    interface: str = "wlan0"       # Set via WIFI_INTERFACE in .env
+    scan_interval_s: int = 60      # Active scan every 60 s (transmits probe requests)
+    ap_change_alert: bool = True   # Emit wifi_ap_changes_total counter on BSSID change
+    rssi_warn_dbm: int = -75       # wifi_rssi_dbm < rssi_warn_dbm → log warning
+```
+
+Metrics emitted when Wi-Fi is enabled (see COLLECTOR-V2-REFACTOR.md §10):
+
+```
+wifi_rssi_dbm{collector_id, site_id, interface, bssid, ssid}   gauge   # Signal strength dBm
+wifi_link_speed_mbps{collector_id, site_id, interface}         gauge   # Negotiated PHY rate
+wifi_channel{collector_id, site_id, interface, bssid}          gauge   # Current channel number
+wifi_ap_changes_total{collector_id, site_id, interface}        counter # BSSID/roaming events
+wifi_scan_aps_visible{collector_id, site_id, interface}        gauge   # APs seen in last scan
+```
+
+#### Monitor mode — NOT used by default
+
+Passive 802.11 frame capture (monitor mode) is **not** enabled in the default configuration. It would require:
+1. Putting the adapter into monitor mode: `iw dev wlan0 set type monitor` (`CAP_NET_ADMIN`)
+2. Bringing the monitor interface up: `ip link set wlan0mon up` (`CAP_NET_ADMIN`)
+3. Capturing with scapy or tcpdump on the monitor interface (`CAP_NET_RAW`)
+
+Monitor mode disconnects the adapter from its associated AP, meaning the node loses its Wi-Fi network path. This is only viable if the node has a **second** Wi-Fi adapter dedicated to monitoring, or if it is connected to the hub via Ethernet. It is tracked as a future capability in [`../collector/ROADMAP.md`](../collector/ROADMAP.md).
+
+#### Capability summary for collector nodes
+
+| Capability | Base compose | + wifi override | Why |
+|---|---|---|---|
+| `NET_RAW` | ✅ | ✅ | ICMP raw sockets, AF_PACKET broadcast capture (scapy) |
+| `NET_ADMIN` | ❌ | ✅ | `iw scan` nl80211, eBPF socket filters, monitor mode setup |
+| `BPF` | ✅ | ✅ | eBPF program loading (flow_tracker.py) |
+| `PERFMON` | ✅ | ✅ | eBPF perf event maps |
+| `SYS_PTRACE` | ✅ | ✅ | `/proc/<pid>/` access for process metrics |
 
 ---
 
@@ -508,6 +715,7 @@ on:
     tags: ['v*']
 
 env:
+
   REGISTRY: ghcr.io
   OWNER:    ${{ github.repository_owner }}
 
@@ -632,116 +840,9 @@ jobs:
         run: docker image prune -f --filter "until=48h"
 ```
 
-### `deploy-collectors.yml` — SSH-based collector fleet update
+### `deploy-collectors.yml` — see §5.4 for the Wi-Fi-aware version
 
-Collector nodes are updated by SSHing directly from GitHub Actions using a deploy key. No Ansible required — the workflow iterates the collector inventory (a JSON file in the repo) and runs `docker compose pull && up -d` on each node.
-
-```yaml
-# .github/workflows/deploy-collectors.yml
-name: Deploy Collectors
-on:
-  workflow_run:
-    workflows: ["Build and Push Images"]
-    types: [completed]
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      collector_id:
-        description: "Single collector ID to update (leave empty for all)"
-        required: false
-
-jobs:
-  deploy:
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    environment: production
-    concurrency:
-      group: collector-deploy
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.COLLECTOR_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          echo "StrictHostKeyChecking no" >> ~/.ssh/config
-
-      - name: Deploy to collector nodes
-        env:
-          IMAGE_TAG: ${{ github.sha }}
-          TARGET_ID: ${{ github.event.inputs.collector_id }}
-        run: |
-          # deploy/collector-inventory.json:
-          # [{"id":"probe-site-a","host":"192.168.1.50","user":"pi","arch":"arm64"}, ...]
-          jq -c '.[]' deploy/collector-inventory.json | while IFS= read -r node; do
-            ID=$(echo "$node" | jq -r '.id')
-            HOST=$(echo "$node" | jq -r '.host')
-            USER=$(echo "$node" | jq -r '.user')
-
-            # Skip if targeting a specific collector
-            [ -n "$TARGET_ID" ] && [ "$ID" != "$TARGET_ID" ] && continue
-
-            echo "=== Deploying to $ID ($HOST) ==="
-            ssh -i ~/.ssh/deploy_key "$USER@$HOST" bash -s <<REMOTE
-              set -euo pipefail
-              cd /opt/analyselaptop
-
-              # Pull new image
-              IMAGE_TAG=${IMAGE_TAG} docker compose \
-                -f /opt/analyselaptop/docker-compose.yml \
-                -f /opt/analyselaptop/docker-compose.prod.yml \
-                pull collector
-
-              # Restart
-              IMAGE_TAG=${IMAGE_TAG} docker compose \
-                -f /opt/analyselaptop/docker-compose.yml \
-                -f /opt/analyselaptop/docker-compose.prod.yml \
-                up -d --no-deps collector
-
-              # Health check (30s timeout)
-              for i in \$(seq 1 6); do
-                STATUS=\$(docker inspect --format='{{.State.Health.Status}}' \
-                  "\$(docker compose ps -q collector)" 2>/dev/null || echo "starting")
-                [ "\$STATUS" = "healthy" ] && echo "  ✓ Healthy" && exit 0
-                echo "  Waiting (\$i/6) — \$STATUS"; sleep 5
-              done
-              echo "  ✗ Health check failed on $ID" >&2; exit 1
-REMOTE
-            echo "=== $ID done ==="
-          done
-```
-
-**`deploy/collector-inventory.json`** — committed to repo, contains only non-sensitive connection info:
-
-```json
-[
-  { "id": "probe-site-a",   "host": "192.168.1.50", "user": "pi",        "arch": "arm64" },
-  { "id": "probe-site-b",   "host": "10.20.1.5",    "user": "ubuntu",    "arch": "amd64" },
-  { "id": "probe-ot-floor1","host": "10.10.0.20",   "user": "collector", "arch": "arm64" }
-]
-```
-
-The `COLLECTOR_SSH_KEY` GitHub secret holds a private Ed25519 key. The corresponding public key is added to `~/.ssh/authorized_keys` on each collector node during bootstrap.
-
-### Self-hosted runner on the hub (one-time setup)
-
-```bash
-# Run on the hub server — gives GitHub Actions access to docker compose on the hub
-docker run -d \
-  --name github-runner \
-  --restart unless-stopped \
-  -e RUNNER_REPOSITORY_URL=https://github.com/Xore/analyseLaptop \
-  -e GITHUB_ACCESS_TOKEN=${RUNNER_TOKEN} \
-  -e RUNNER_NAME=hub-runner \
-  -e RUNNER_LABELS=self-hosted,hub \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /run/analyselaptop:/run/analyselaptop:ro \
-  ghcr.io/actions/actions-runner:latest
-```
-
-The runner mounts the Docker socket (to run `docker compose` commands) and the secrets directory read-only. It does **not** have write access to secret files.
+The complete `deploy-collectors.yml` workflow, including the conditional `docker-compose.wifi.yml` inclusion based on `wifi_iface` in the inventory, is documented in §5.4 above.
 
 ---
 
@@ -755,11 +856,12 @@ GitHub Actions — build-images.yml
 GitHub Actions — deploy-collectors.yml (auto-triggered on build success)
   For each node in collector-inventory.json (sequentially):
     1. SSH to node
-    2. docker compose pull collector          ← pulls new image from GHCR
-    3. docker compose up -d --no-deps collector  ← zero-downtime restart
-    4. Wait up to 30s for healthcheck=healthy
-    5. On failure: exit 1 — subsequent nodes NOT updated (fail-fast)
-    6. On success: proceed to next node
+    2. Determine compose files: base [+ wifi override] + prod  ← based on wifi_iface field
+    3. docker compose pull collector          ← pulls new image from GHCR
+    4. docker compose up -d --no-deps collector  ← zero-downtime restart
+    5. Wait up to 30s for healthcheck=healthy
+    6. On failure: exit 1 — subsequent nodes NOT updated (fail-fast)
+    7. On success: proceed to next node
 
 Manual single-node update:
   GitHub Actions → deploy-collectors.yml → workflow_dispatch → collector_id=probe-site-a
@@ -802,6 +904,7 @@ Sequential (not parallel) updates ensure at most one collector is unavailable at
 | **Collector host health** | `host_cpu_usage_pct`, `host_mem_available_bytes`, `host_disk_free_bytes` | **Python collector native** |
 | **Collector container state** | `docker inspect` health status via deploy workflow | `healthy` / `unhealthy` |
 | **Collector health score** | `collector_health_score < 0.6` → vmalert `CollectorHealthDegraded` | **Python collector native** |
+| **Wi-Fi probe state** | `wifi_rssi_dbm` absent for >2 intervals → vmalert `WifiProbeStale` | **Python collector native** |
 | Certificate expiry | `collector_cert_days_left < 14` → vmalert `CollectorCertExpiringSoon` | **Python collector native** |
 | GitHub Actions run status | GitHub notifications + optional webhook to alert system | GitHub |
 
@@ -816,3 +919,5 @@ Sequential (not parallel) updates ensure at most one collector is unavailable at
 | Q3 | Air-gapped deployments | Replace GHCR pull with a local Docker registry mirror (`registry:2` container on hub); change `image:` to point at `hub-ip:5000/analyselaptop/collector` |
 | Q4 | TLS for Nginx | Self-signed cert in bootstrap is fine for internal/OT deployments; replace with Let's Encrypt (`certbot`) for public-facing hubs |
 | Q5 | v1 → v2 migration | v1 nodes run standalone Python or binary outside Docker; migrate by running `bootstrap-collector.sh` and enrolling the node in the new PKI. No node_exporter removal needed (v2 collector container bundles all host metrics). |
+| Q6 | Wi-Fi monitor mode | Requires a second Wi-Fi adapter dedicated to passive capture; tracked in ROADMAP.md. Not included in base configuration. |
+| Q7 | Wi-Fi interface name stability | On some Pi OS versions, `wlan0` can become `wlan1` after a kernel update. Use `SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="<mac>", NAME="wlan0"` udev rule to pin the name. Document in bootstrap-collector.sh. |
