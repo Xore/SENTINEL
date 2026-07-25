@@ -1,9 +1,11 @@
 # Infrastructure as Code — Deployment Strategy
 
 > **Date:** 2026-07-25  
+> **Updated:** 2026-07-25 — v2 collector bundles host metrics natively; `node_exporter` removed from collector role.  
 > **Status:** Proposed  
 > **Scope:** Full v2 stack — backend hub (ingest / analyse / api / nginx), storage (VictoriaMetrics + PostgreSQL), frontend (SvelteKit static), and collector fleet (50+ nodes).  
-> This document is the IaC plan. Actual files live under `deploy/`.
+> This document is the IaC plan. Actual files live under `deploy/`.  
+> **Collector v2 design:** See [`../collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) for the full collector feature set and go.mod.
 
 ---
 
@@ -13,13 +15,13 @@ Three tools cover the full stack cleanly. Each one is scoped to what it does bes
 
 | Tool | Scope | Why |
 |---|---|---|
-| **Terraform** | Provision server infrastructure (VM, firewall, DNS, TLS cert) | Declarative; state-tracked; idempotent; de facto standard for infra provisioning in 2025–2026 [web:112][web:119] |
-| **Ansible** | Configure OS, install Docker, deploy collector binaries via systemd on edge nodes | Agentless SSH push; ideal for heterogeneous ARM/amd64 edge nodes without Docker; Ansible + systemd is the documented pattern for edge collector deployment [web:114] |
-| **Docker Compose** | Define and run the backend stack on the hub server | Native dependency graph, healthcheck-aware startup; single-node production is the primary Docker Compose use case [web:116] |
-| **GitHub Actions** | CI/CD — build images, run tests, push to GHCR, trigger deploys | Already in use; self-hosted runner on the hub server handles the `docker compose pull && up -d` step [web:141] |
+| **Terraform** | Provision server infrastructure (VM, firewall, DNS, TLS cert) | Declarative; state-tracked; idempotent; de facto standard for infra provisioning in 2025–2026 |
+| **Ansible** | Configure OS, install Docker, deploy collector binaries via systemd on edge nodes | Agentless SSH push; ideal for heterogeneous ARM/amd64 edge nodes without Docker; Ansible + systemd is the documented pattern for edge collector deployment |
+| **Docker Compose** | Define and run the backend stack on the hub server | Native dependency graph, healthcheck-aware startup; single-node production is the primary Docker Compose use case |
+| **GitHub Actions** | CI/CD — build images, run tests, push to GHCR, trigger deploys | Already in use; self-hosted runner on the hub server handles the `docker compose pull && up -d` step |
 
 **What is explicitly NOT used:**
-- **Kubernetes:** Overkill for a single-hub, 50-collector network probe. k8s adds etcd, CNI, and scheduler complexity with zero benefit at this scale [web:128].
+- **Kubernetes:** Overkill for a single-hub, 50-collector network probe. k8s adds etcd, CNI, and scheduler complexity with zero benefit at this scale.
 - **Helm:** No Kubernetes, no Helm.
 - **Docker Swarm:** Single-server stack does not need Swarm orchestration. `docker compose` is sufficient and simpler.
 - **Pulumi/CDK:** Team is already familiar with Terraform HCL; no advantage in switching to a general-purpose language IaC tool at this scale.
@@ -329,7 +331,7 @@ services:
 
 ### Secrets: file-based, never env vars
 
-Docker Compose file-based secrets mount under `/run/secrets/` — they do not appear in `docker inspect`, in logs, or in crash dumps. [web:133][web:136]
+Docker Compose file-based secrets mount under `/run/secrets/` — they do not appear in `docker inspect`, in logs, or in crash dumps.
 
 ```bash
 # deploy/scripts/bootstrap-hub.sh (excerpt)
@@ -351,7 +353,9 @@ Secret files live in `/run/analyselaptop/secrets/` on the host — outside the r
 
 ## 5. Ansible — Collector Fleet
 
-Collectors are Go static binaries managed by systemd. They do not run inside Docker (Docker on a Pi 3B adds ~30 MB RAM overhead for zero benefit; the binary is 15 MB and self-contained).
+Collectors are **Go static binaries** (~22–26 MB, v2) managed by systemd. They do not run inside Docker (Docker on a Pi 3B adds ~30 MB RAM overhead for zero benefit; the binary is self-contained).
+
+The v2 collector binary bundles all host-metric collection natively (`os_health_linux.go`, `os_health_windows.go`). **`node_exporter` is NOT deployed on collector nodes.** See [`COLLECTOR-FLEET-MONITORING.md`](COLLECTOR-FLEET-MONITORING.md) and [`../collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) Section 6.1.
 
 ### Inventory
 
@@ -391,6 +395,14 @@ all:
     home: /var/lib/analyselaptop
     create_home: true
 
+- name: Create state directory
+  file:
+    path: /var/lib/analyselaptop
+    state: directory
+    owner: collector
+    group: collector
+    mode: '0750'
+
 - name: Deploy collector binary
   copy:
     src: "{{ playbook_dir }}/../../collector/dist/collector-linux-{{ arch }}"
@@ -412,7 +424,7 @@ all:
 - name: Set eBPF capabilities on binary
   capabilities:
     path: /usr/local/bin/analyselaptop-collector
-    capability: "cap_bpf,cap_net_admin,cap_perfmon+eip"
+    capability: "cap_bpf,cap_net_admin,cap_net_raw,cap_perfmon+eip"
     state: present
   when: ebpf_enabled | default(true)
 
@@ -422,6 +434,12 @@ all:
     --id {{ inventory_hostname }}
   args:
     creates: /var/lib/analyselaptop/pki/collector.crt
+
+# NOTE: No node_exporter tasks.
+# The v2 collector binary emits host metrics (CPU, memory, disk, systemd unit
+# state, interface counters) natively via os_health_linux.go / os_health_windows.go.
+# Deploying node_exporter on collector nodes is not required.
+# See: docs/collector/COLLECTOR-V2-REFACTOR.md Section 6.1
 ```
 
 ```ini
@@ -462,7 +480,7 @@ ansible-playbook -i inventory/hosts.yml playbooks/deploy-collector.yml
 
 # Rolling update (one at a time, health-check gated)
 ansible-playbook -i inventory/hosts.yml playbooks/update-collector.yml \
-  --serial 1 --extra-vars "image_tag=v1.2.3"
+  --serial 1 --extra-vars "image_tag=v2.0.0"
 
 # Revoke a collector cert (e.g., decommissioned node)
 ansible-playbook -i inventory/hosts.yml playbooks/revoke-collector.yml \
@@ -614,11 +632,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: '1.23' }
-      - name: Cross-compile collector binaries
+      - name: Cross-compile collector binaries (v2)
         run: |
-          GOOS=linux GOARCH=amd64 go build -o collector/dist/collector-linux-amd64 ./collector
-          GOOS=linux GOARCH=arm64 go build -o collector/dist/collector-linux-arm64 ./collector
+          # Linux/amd64 and arm64: full build including eBPF-excluded files
+          GOOS=linux  GOARCH=amd64 go build -o collector/dist/collector-linux-amd64  ./collector
+          GOOS=linux  GOARCH=arm64 go build -o collector/dist/collector-linux-arm64  ./collector
           GOOS=windows GOARCH=amd64 go build -o collector/dist/collector-windows-amd64.exe ./collector
+          # Note: eBPF files (ebpf/*.go) are build-tagged linux+cgo and excluded from Windows
       - uses: actions/upload-artifact@v4
         with:
           name: collector-binaries
@@ -729,7 +749,7 @@ GitHub Actions build-images.yml
 Operator runs (manually or on schedule):
   ansible-playbook deploy/ansible/playbooks/update-collector.yml \
     --serial 5 \
-    --extra-vars "collector_version=v1.2.3"
+    --extra-vars "collector_version=v2.0.0"
 
   For each collector (5 at a time):
     1. Download binary from GitHub Release or artifact
@@ -737,11 +757,12 @@ Operator runs (manually or on schedule):
     3. systemctl restart analyselaptop-collector
     4. Wait 10s
     5. systemctl is-active analyselaptop-collector  → abort on failure
-    6. Check backend sees collector heartbeat within 60s
-    7. Proceed to next batch
+    6. Check backend sees collector heartbeat within 60s (collector_heartbeat_total)
+    7. Check collector_health_score > 0.8 in VictoriaMetrics
+    8. Proceed to next batch
 ```
 
-`--serial 5` means at most 5 of 50 collectors are offline simultaneously (10%). Adjust to taste.
+`--serial 5` means at most 5 of 50 collectors are offline simultaneously (10%).
 
 ---
 
@@ -752,11 +773,11 @@ Operator runs (manually or on schedule):
 | PostgreSQL password | `/run/analyselaptop/secrets/pg_password` on hub | Docker Compose `secrets:` → `/run/secrets/` | `rotate-secrets.sh` + `docker compose restart postgres api` |
 | JWT signing key | `/run/analyselaptop/secrets/jwt_secret` | Docker Compose `secrets:` | `rotate-secrets.sh` + `docker compose restart api` |
 | PKI CA key | `/run/analyselaptop/secrets/pki/ca.key` (mode 0600) | Bind-mounted into ingest at `/run/secrets/pki/` | Generate new CA + re-enroll all collectors |
-| Collector leaf cert | `/var/lib/analyselaptop/pki/` on each collector | `--pki-dir` flag on collector binary | Auto-renews when `days_remaining < 14` |
+| Collector leaf cert | `/var/lib/analyselaptop/pki/` on each collector | `--pki-dir` flag on collector binary | **Auto-renews when `days_remaining < 14`** (v2 `pki/renew.go`) |
 | GitHub Runner token | GitHub repo secret `RUNNER_TOKEN` | `docker run -e` at runner start | Regenerate in GitHub settings |
 | GHCR push token | `GITHUB_TOKEN` (automatic) | GitHub Actions env | Auto-rotated per workflow run |
 
-**Rules (from Docker Compose secrets research [web:133][web:136][web:139]):**
+**Rules:**
 - No secrets in `.env` files that touch Git. `.env.example` with dummy values is committed; real `.env` is gitignored.
 - No `environment:` blocks for secrets. All sensitive values via `secrets:` → `/run/secrets/` file reads.
 - Secret files: `chmod 600`, owned by root. Applications read the file at startup.
@@ -766,14 +787,19 @@ Operator runs (manually or on schedule):
 
 ## 9. Observability of the IaC Stack Itself
 
-| What to monitor | How |
-|---|---|
-| Docker service health | `docker compose ps` + `docker events` | 
-| VictoriaMetrics self-metrics | `/metrics` endpoint → scrape with node_exporter or VM's own scrape | 
-| PostgreSQL | `pg_stat_activity`, `pg_stat_replication` (future HA) via Postgres exporter |
-| Collector fleet liveness | `collectors` table `last_seen` — alert when `now() - last_seen > 5 min` |
-| Certificate expiry | `pki_certs` table `expires_at` — alert when `expires_at - now() < 14 days` |
-| GitHub Actions run status | GitHub's native notifications + optional webhook to the alert system |
+| What to monitor | How | Metric source |
+|---|---|---|
+| Docker service health | `docker compose ps` + `docker events` | Hub-local |
+| VictoriaMetrics self-metrics | `/metrics` endpoint scraped by VM itself | `vm_app_uptime_seconds`, etc. |
+| PostgreSQL | `pg_stat_activity` via Postgres exporter OR analyse service query | Hub service |
+| **Collector fleet liveness** | `collector_heartbeat_total` stale >5 min → vmalert CollectorSilent | **v2 collector native** |
+| **Collector host health** | `host_cpu_usage_pct`, `host_mem_available_bytes`, `host_disk_free_bytes` | **v2 collector native** (no node_exporter) |
+| **Collector systemd unit state** | `host_systemd_unit_active{unit="analyselaptop-collector.service"}` | **v2 collector native** (no node_exporter) |
+| **Collector health score** | `collector_health_score < 0.6` → vmalert CollectorHealthDegraded | **v2 collector native** |
+| Certificate expiry | `collector_cert_days_left < 14` → vmalert CollectorCertExpiringSoon | **v2 collector native** |
+| GitHub Actions run status | GitHub's native notifications + optional webhook to the alert system | GitHub |
+
+> **node_exporter is not in this table.** All metrics previously sourced from `node_exporter` on collector nodes are now emitted by the v2 collector binary itself. See [`COLLECTOR-FLEET-MONITORING.md`](COLLECTOR-FLEET-MONITORING.md) for the full metric mapping.
 
 ---
 
@@ -785,3 +811,4 @@ Operator runs (manually or on schedule):
 | Q2 | Ansible inventory source: static YAML vs dynamic (PG `collectors` table) | Dynamic inventory script reading PG `collectors` table would auto-register new nodes — worth building at >20 collectors |
 | Q3 | Collector update: GitHub Releases binary download vs Ansible `copy` from CI artifact | GitHub Releases preferred for auditability; artifact download requires GH_TOKEN on each collector |
 | Q4 | Air-gapped deployments: replace GHCR pull with local registry mirror | Straightforward: change `image:` to point at local registry; Terraform can provision a local registry container |
+| Q5 | v1 → v2 collector migration window | During migration (phases M1–M4), v1 nodes still need `node_exporter` for fleet monitoring. See `COLLECTOR-V2-REFACTOR.md` Section 12 for the migration plan. Remove `node_exporter` Ansible tasks after phase M5. |
