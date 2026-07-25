@@ -2,7 +2,8 @@ name: Release Candidate
 
 # Runs on every push to main.
 # If ALL gates pass (Pylint >= 8.0, Go vet+build+test, pytest) a pre-release
-# tag  rc-YYYY.MM.DD-<short-sha>  is created automatically.
+# tag  rc-YYYY.MM.DD-<short-sha>  is created automatically, with compiled
+# Go binaries attached as release assets.
 
 on:
   push:
@@ -70,16 +71,26 @@ jobs:
         run: go vet ./...
 
       - name: Build linux/amd64
-        run: GOOS=linux   GOARCH=amd64 go build -v ./...
+        run: GOOS=linux   GOARCH=amd64 go build -v -o ../dist/collector-linux-amd64    ./...
 
       - name: Build linux/arm64
-        run: GOOS=linux   GOARCH=arm64 go build -v ./...
+        run: GOOS=linux   GOARCH=arm64 go build -v -o ../dist/collector-linux-arm64    ./...
 
       - name: Build windows/amd64
-        run: GOOS=windows GOARCH=amd64 go build -v ./...
+        run: GOOS=windows GOARCH=amd64 go build -v -o ../dist/collector-windows-amd64.exe ./...
+
+      - name: Build windows/arm64
+        run: GOOS=windows GOARCH=arm64 go build -v -o ../dist/collector-windows-arm64.exe ./...
 
       - name: Test
         run: go test -v -race -timeout 60s ./...
+
+      - name: Upload binaries artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-binaries
+          path: dist/
+          retention-days: 1
 
   # -------------------------------------------------------
   # Gate 3 - pytest (tests/)
@@ -122,7 +133,7 @@ jobs:
   # Release Candidate - only runs when ALL gates pass
   # -------------------------------------------------------
   release-candidate:
-    name: Create RC Tag
+    name: Create RC Tag & Release
     needs: [pylint, go, pytest]
     runs-on: ubuntu-latest
     permissions:
@@ -140,6 +151,12 @@ jobs:
           SHORT=${GITHUB_SHA::7}
           echo "name=rc-${DATE}-${SHORT}" >> $GITHUB_OUTPUT
 
+      - name: Download Go binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: go-binaries
+          path: dist/
+
       - name: Push RC tag
         run: |
           git config user.name  "github-actions[bot]"
@@ -150,22 +167,34 @@ jobs:
       - name: Write release notes
         run: |
           cat > /tmp/release-notes.md << 'EOF'
-          Automated release candidate - all CI gates passed.
+          Automated release candidate — all CI gates passed.
 
           **Commit:** ${{ github.sha }}
           **Triggered by:** ${{ github.actor }}
 
           ### Gates
           - Pylint >= 8.0
-          - Go vet + build (linux/amd64, linux/arm64, windows/amd64)
+          - Go vet + build (linux/amd64, linux/arm64, windows/amd64, windows/arm64)
           - pytest (tests/)
+
+          ### Binaries
+          | File | OS | Arch |
+          |------|----|------|
+          | `collector-linux-amd64` | Linux | x86-64 |
+          | `collector-linux-arm64` | Linux | ARM64 (Raspberry Pi 4/5) |
+          | `collector-windows-amd64.exe` | Windows | x86-64 |
+          | `collector-windows-arm64.exe` | Windows | ARM64 |
           EOF
 
-      - name: Create GitHub pre-release
+      - name: Create GitHub pre-release with binaries
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create ${{ steps.tag.outputs.name }} \
             --prerelease \
             --title "RC ${{ steps.tag.outputs.name }}" \
-            --notes-file /tmp/release-notes.md
+            --notes-file /tmp/release-notes.md \
+            dist/collector-linux-amd64 \
+            dist/collector-linux-arm64 \
+            dist/collector-windows-amd64.exe \
+            dist/collector-windows-arm64.exe
