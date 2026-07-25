@@ -52,10 +52,20 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Ensure labels exist before applying them (gh label create is idempotent with --force)
+      - name: Ensure labels exist
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        run: |
+          gh label create "major-update" --color "E4E669" --description "Dependency major version bump - review manually" --force
+          gh label create "needs-review" --color "D93F0B" --description "Requires manual review before merge" --force
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+
       # Label major-version PRs so they are easy to find
       - name: Label major updates for manual review
         if: steps.meta.outputs.update-type == 'version-update:semver-major'
-        run: gh pr edit "$PR_URL" --add-label "major-update,needs-review"
+        run: gh pr edit "$PR_URL" --add-label "major-update" --add-label "needs-review"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
