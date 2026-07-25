@@ -5,10 +5,10 @@
 # and guarded by an import check — it is deliberately NOT listed here.
 
 # OTLP export
-opentelemetry-sdk==1.25.0
-opentelemetry-exporter-otlp-proto-grpc==1.25.0
-grpcio==1.64.1
-grpcio-status==1.64.1
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-grpc==1.44.0
+grpcio==1.83.0
+grpcio-status==1.83.0
 
 # Config validation
 pydantic==2.7.4
@@ -28,7 +28,7 @@ pysnmp==6.2.5
 pymodbus==3.6.9
 
 # Packet capture (broadcast/multicast top-talker)
-scapy==2.7.0rc1
+scapy==2.6.1
 
 # PKI / TLS
 cryptography==48.0.1
