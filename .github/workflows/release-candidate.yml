@@ -1,7 +1,7 @@
 name: Release Candidate
 
 # Runs on every push to main.
-# If ALL gates pass (Pylint ≥ 8.0, Go vet+build+test, pytest) a pre-release
+# If ALL gates pass (Pylint >= 8.0, Go vet+build+test, pytest) a pre-release
 # tag  rc-YYYY.MM.DD-<short-sha>  is created automatically.
 
 on:
@@ -19,9 +19,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ────────────────────────────────────────────────────
-  # Gate 1 – Pylint
-  # ────────────────────────────────────────────────────
+
+  # -------------------------------------------------------
+  # Gate 1 - Pylint
+  # -------------------------------------------------------
   pylint:
     name: Pylint
     runs-on: ubuntu-latest
@@ -46,9 +47,9 @@ jobs:
             --disable=C0114,C0115,C0116 \
             --max-line-length=120
 
-  # ────────────────────────────────────────────────────
-  # Gate 2 – Go vet + cross-compile + test
-  # ────────────────────────────────────────────────────
+  # -------------------------------------------------------
+  # Gate 2 - Go vet + cross-compile + test
+  # -------------------------------------------------------
   go:
     name: Go Build & Test
     runs-on: ubuntu-latest
@@ -80,9 +81,9 @@ jobs:
       - name: Test
         run: go test -v -race -timeout 60s ./...
 
-  # ────────────────────────────────────────────────────
-  # Gate 3 – pytest (tests/)
-  # ────────────────────────────────────────────────────
+  # -------------------------------------------------------
+  # Gate 3 - pytest (tests/)
+  # -------------------------------------------------------
   pytest:
     name: pytest
     runs-on: ubuntu-latest
@@ -112,22 +113,21 @@ jobs:
         run: |
           bash tests/test_setup_sh.sh
           bash tests/test_lab_access_sh.sh
-        continue-on-error: false
 
-  # ────────────────────────────────────────────────────
-  # Release Candidate – only runs when ALL gates pass
-  # ────────────────────────────────────────────────────
+  # -------------------------------------------------------
+  # Release Candidate - only runs when ALL gates pass
+  # -------------------------------------------------------
   release-candidate:
     name: Create RC Tag
     needs: [pylint, go, pytest]
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed to push the tag
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history so the tag push works cleanly
+          fetch-depth: 0
 
       - name: Compute RC tag
         id: tag
@@ -143,6 +143,20 @@ jobs:
           git tag ${{ steps.tag.outputs.name }}
           git push origin ${{ steps.tag.outputs.name }}
 
+      - name: Write release notes
+        run: |
+          cat > /tmp/release-notes.md << 'EOF'
+          Automated release candidate - all CI gates passed.
+
+          **Commit:** ${{ github.sha }}
+          **Triggered by:** ${{ github.actor }}
+
+          ### Gates
+          - Pylint >= 8.0
+          - Go vet + build (linux/amd64, linux/arm64, windows/amd64)
+          - pytest (tests/)
+          EOF
+
       - name: Create GitHub pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -150,12 +164,4 @@ jobs:
           gh release create ${{ steps.tag.outputs.name }} \
             --prerelease \
             --title "RC ${{ steps.tag.outputs.name }}" \
-            --notes "Automated release candidate — all CI gates passed.
-
-**Commit:** ${{ github.sha }}
-**Triggered by:** ${{ github.actor }}
-
-### Gates
-- ✅ Pylint ≥ 8.0
-- ✅ Go vet + build (linux/amd64, linux/arm64, windows/amd64)
-- ✅ pytest (tests/)"
+            --notes-file /tmp/release-notes.md
