@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -28,6 +29,7 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import monitor_config
     from dashboard import ids_adapter
     from dashboard import reconcile
+    from dashboard import auth
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
@@ -35,6 +37,7 @@ except ImportError:  # run from inside the dashboard directory
     import monitor_config
     import ids_adapter
     import reconcile
+    import auth
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # let us import the monitor/* helpers as a namespace pkg
@@ -103,32 +106,65 @@ def supervise(name: str, fn, *, restart: bool = True, min_backoff: float = 1.0,
     thread.start()
     return thread
 
-AUTH_TOKEN_FILE = Path(os.environ.get("PROBE_AUTH_TOKEN_FILE", "/etc/network-probe/dashboard-token"))
+# --- session auth (configurable username/password; sessions die on restart) ----
+# Auth is ON by default (store bootstraps to admin/admin). Set PROBE_AUTH_DISABLED=1
+# for localhost dev / the test suite. Legacy token Basic auth is gone; any file at
+# PROBE_AUTH_TOKEN_FILE is ignored now.
+AUTH_DISABLED = os.environ.get("PROBE_AUTH_DISABLED", "").strip() in {"1", "true", "yes"}
+SESSION_COOKIE = "np_session"
+SESSION_TTL = int(os.environ.get("PROBE_SESSION_TTL", str(12 * 3600)))
+# In-memory only -> a dashboard restart invalidates every session by design.
+SESSIONS: dict[str, dict] = {}
+_sessions_lock = threading.Lock()
+# Routes reachable without a session: the SPA shell (so the login UI can render),
+# health, the login/logout/status endpoints, static assets, and collector ingest
+# (which authenticates with its own per-collector key in _require_ingest).
+_OPEN_PATHS = {"/", "/healthz", "/api/login", "/api/logout", "/api/auth/status"}
 
 
-def auth_token() -> str:
-    """Non-empty token = HTTP Basic auth required (any username). The install
-    script generates the token; an empty/missing file disables auth, which is
-    acceptable only when the dashboard binds to 127.0.0.1."""
-    try:
-        return AUTH_TOKEN_FILE.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+def _new_session(username: str) -> str:
+    token = secrets.token_urlsafe(32)
+    with _sessions_lock:
+        SESSIONS[token] = {"user": username, "created": time.time(), "seen": time.time()}
+    return token
+
+
+def _session_user() -> str | None:
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return None
+    now = time.time()
+    with _sessions_lock:
+        sess = SESSIONS.get(token)
+        if not sess:
+            return None
+        if now - sess["created"] > SESSION_TTL:
+            SESSIONS.pop(token, None)
+            return None
+        sess["seen"] = now
+        return sess["user"]
+
+
+def _drop_session() -> None:
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        with _sessions_lock:
+            SESSIONS.pop(token, None)
 
 
 @app.before_request
-def require_token():
-    token = auth_token()
-    # Collector ingest authenticates with a per-collector key (see _require_ingest),
-    # not the rotating dashboard token, so it is exempt from this gate.
-    if not token or request.path == "/healthz" or request.path.startswith("/api/ingest/"):
+def require_session():
+    path = request.path
+    if AUTH_DISABLED or path in _OPEN_PATHS or path.startswith("/static/") \
+            or path.startswith("/api/ingest/"):
         return None
-    supplied = request.authorization
-    if supplied and supplied.password == token:
+    if _session_user() is not None:
         return None
-    return app.response_class(
-        "Authentication required.\n", 401, {"WWW-Authenticate": 'Basic realm="network-probe"'}
-    )
+    # Unauthenticated: APIs get a clean 401 (the SPA shows a login modal); any
+    # non-API path falls through to the shell, which renders the same modal.
+    if path.startswith("/api/"):
+        return jsonify(error="authentication required", login_required=True), 401
+    return None
 
 
 def run(command: list[str], timeout: int = 15) -> tuple[int, str]:
@@ -998,6 +1034,76 @@ def confirm_network():
     except OSError as exc:
         return jsonify(error=f"could not confirm: {exc}"), 500
     return jsonify(reconcile.snapshot(NETWORK_RESOURCE))
+
+
+# --- login / logout / account --------------------------------------------------
+@app.get("/api/auth/status")
+def auth_status():
+    """Whether auth is on, and (if logged in) who as + whether a password change
+    is still pending. Drives the SPA's login modal."""
+    if AUTH_DISABLED:
+        return jsonify(auth_enabled=False, authenticated=True, username=None,
+                       must_change=False)
+    user = _session_user()
+    body = {"auth_enabled": True, "authenticated": user is not None, "username": user}
+    if user is not None:
+        body["must_change"] = auth.status().get("must_change", False)
+    return jsonify(body)
+
+
+@app.post("/api/login")
+def login():
+    payload = request.get_json(silent=True) or {}
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", ""))
+    if AUTH_DISABLED:
+        return jsonify(ok=True, auth_enabled=False)
+    if not auth.verify(username, password):
+        return jsonify(error="invalid username or password"), 401
+    token = _new_session(username)
+    resp = jsonify(ok=True, username=username, must_change=auth.status().get("must_change", False))
+    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="Lax",
+                    max_age=SESSION_TTL, path="/")
+    return resp
+
+
+@app.post("/api/logout")
+def logout():
+    _drop_session()
+    resp = jsonify(ok=True)
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/auth/password")
+def change_password():
+    """Change username and/or password. Requires the current password. Clears the
+    must_change flag and invalidates all OTHER sessions (keeps the caller's)."""
+    if AUTH_DISABLED:
+        return jsonify(error="auth is disabled on this instance"), 400
+    if _session_user() is None:
+        return jsonify(error="authentication required"), 401
+    payload = request.get_json(silent=True) or {}
+    current = str(payload.get("current_password", ""))
+    new_password = str(payload.get("new_password", ""))
+    new_username = str(payload.get("username", "")).strip() or auth.status()["username"]
+    if not auth.verify(auth.status()["username"], current):
+        return jsonify(error="current password is incorrect"), 403
+    try:
+        auth.set_credentials(new_username, new_password, must_change=False)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except OSError as exc:
+        return jsonify(error=f"could not save credentials: {exc}"), 500
+    # Re-issue a session for the caller, drop every other one (password changed).
+    keep = _new_session(new_username)
+    with _sessions_lock:
+        for tok in [t for t in SESSIONS if t != keep]:
+            SESSIONS.pop(tok, None)
+    resp = jsonify(ok=True, username=new_username)
+    resp.set_cookie(SESSION_COOKIE, keep, httponly=True, samesite="Lax",
+                    max_age=SESSION_TTL, path="/")
+    return resp
 
 
 @app.get("/api/settings")

@@ -14,51 +14,29 @@ Run:  python -m unittest discover -s tests   (or scripts/run-tests.sh)
 from __future__ import annotations
 
 import hashlib
-import hmac
-import json
 import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
-# --- isolate ALL state before importing the app --------------------------------
-_TMP = Path(tempfile.mkdtemp(prefix="probe-tests-"))
-_DIST = _TMP / "dist"
-_DIST.mkdir()
-# A fake release the aggregator can "hand out" and sign for.
-_BIN = _DIST / "collector-linux-amd64"
-_BIN.write_bytes(b"\x7fELF fake collector binary for tests")
-(_DIST / "manifest.json").write_text(json.dumps(
-    {"version": "9.9.9", "files": {"linux/amd64": "collector-linux-amd64"}}))
-
-os.environ.update({
-    "PROBE_WEB_DB": str(_TMP / "web.db"),
-    "PROBE_SETTINGS_FILE": str(_TMP / "settings.json"),
-    "PROBE_MONITOR_DB": str(_TMP / "monitor.db"),
-    "PROBE_MONITOR_CONFIG": str(_TMP / "monitor-config.json"),
-    "PROBE_COLLECTOR_DIST": str(_DIST),
-    "PROBE_AUTH_TOKEN_FILE": str(_TMP / "no-such-token"),  # -> auth disabled
-    "PROBE_RECONCILE_DESIRED_DIR": str(_TMP / "reconcile-desired"),
-    "PROBE_RECONCILE_STATE_DIR": str(_TMP / "reconcile-state"),
-})
+# Shared isolation env MUST be set before importing the app (paths are read at
+# import time). _isolation is imported first by every test module so they all
+# agree on the same throwaway state tree regardless of discovery order.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _isolation  # noqa: E402,F401
+from _isolation import DIST as _DIST, BIN as _BIN, sign  # noqa: E402,F401
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dashboard import app as appmod  # noqa: E402
 
-# reconcile caches its dirs at import; pin them to ours regardless of the order
-# test modules got imported in (test_reconciler uses a different temp tree).
+# reconcile caches its dirs at import; pin them to ours regardless of import order.
 appmod.reconcile.DESIRED_DIR = Path(os.environ["PROBE_RECONCILE_DESIRED_DIR"])
 appmod.reconcile.STATE_DIR = Path(os.environ["PROBE_RECONCILE_STATE_DIR"])
 
 
-def sign(secret: str, version: str, os_arch: str, sha256hex: str) -> str:
-    msg = f"{version}\n{os_arch}\n{sha256hex}".encode()
-    return hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
-
-
 class BackendTest(unittest.TestCase):
     def setUp(self):
+        appmod.AUTH_DISABLED = True  # re-assert per test (import order can flip it)
         self.c = appmod.app.test_client()
         # State lives in shared temp files, so isolate each test: start every one
         # with the master switch off (tests that need it on flip it explicitly).

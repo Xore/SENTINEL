@@ -28,23 +28,21 @@ install -d -o root -g "$service_user" -m 0750 "$config_dir"
 if [[ ! -e $config_dir/targets.csv ]]; then install -o root -g "$service_user" -m 0640 "$repo_dir/config/targets.example.csv" "$config_dir/targets.csv"; fi
 
 # Bind address: loopback by default; PROBE_EXPOSE=lan binds the current IPv4
-# address of the default-route (LAN) interface. LAN exposure requires the
-# generated access token (HTTP Basic auth, any username).
+# address of the default-route (LAN) interface. Auth is a configurable
+# username/password login (default admin/admin, stored as a salted hash in the
+# state dir; sessions are in-memory so a restart signs everyone out). We keep it
+# ON for LAN exposure and OFF for loopback-only (local desktop) by default.
 bind_address=127.0.0.1
+auth_disabled=1
 if [[ ${PROBE_EXPOSE:-} == lan ]]; then
   lan_iface=$(ip route show default | awk '{print $5; exit}')
   bind_address=$(ip -4 -brief address show dev "$lan_iface" | awk '{print $3}' | cut -d/ -f1)
   [[ -n $bind_address ]] || { echo "Could not determine the LAN address on ${lan_iface:-?}." >&2; exit 2; }
-  token_file=$config_dir/dashboard-token
-  if [[ ! -s $token_file ]]; then
-    umask 077
-    openssl rand -hex 16 > "$token_file"
-    umask 022
-    chown root:"$service_user" "$token_file"
-    chmod 640 "$token_file"
-    echo "Generated dashboard access token in $token_file"
-  fi
+  auth_disabled=0
 fi
+# The credential store must live where the unprivileged service can write it
+# (ProtectSystem=strict keeps /etc read-only; only the state dir is writable).
+auth_file=$state_dir/dashboard-auth.json
 
 python3 -m venv "$venv_dir"
 "$venv_dir/bin/pip" install --upgrade pip
@@ -66,14 +64,12 @@ SupplementaryGroups=wireshark
 WorkingDirectory=$repo_dir
 Environment=PROBE_BIND=$bind_address
 Environment=PROBE_PORT=8088
-Environment=PROBE_AUTH_TOKEN_FILE=$config_dir/dashboard-token
+Environment=PROBE_AUTH_FILE=$auth_file
+Environment=PROBE_AUTH_DISABLED=$auth_disabled
 Environment=PROBE_CAPTURE_DIR=$state_dir/captures
 Environment=PROBE_SNAPSHOT_DIR=$state_dir/snapshots
 Environment=PROBE_TARGET_FILE=$config_dir/targets.csv
 Environment=PROBE_SETTINGS_FILE=$state_dir/settings.json
-# Rotate the access token on every (re)start: old sessions are deauthenticated.
-# The '+' prefix runs this as root, before the unprivileged service starts.
-ExecStartPre=+$repo_dir/scripts/rotate-dashboard-token.sh $config_dir/dashboard-token $service_user
 ExecStart=$venv_dir/bin/waitress-serve --listen=$bind_address:8088 dashboard.app:app
 Restart=on-failure
 RestartSec=3
@@ -95,8 +91,11 @@ systemctl restart network-probe-dashboard.service
 sleep 2
 systemctl --no-pager --full status network-probe-dashboard.service || true
 echo "Dashboard installed at http://$bind_address:8088"
-if [[ $bind_address != 127.0.0.1 ]]; then
-  echo "LAN exposure is active: sign in with any username and the token from $config_dir/dashboard-token."
+if [[ $auth_disabled == 0 ]]; then
+  echo "LAN exposure is active: sign in with the default credentials admin / admin,"
+  echo "then change the password under Settings -> Account. Credentials hash lives in $auth_file."
   echo "Note: HTTP only - use it on trusted management networks; do not port-forward to the internet."
+else
+  echo "Bound to loopback: auth is disabled for local access (set PROBE_EXPOSE=lan to require login)."
 fi
 echo "Edit approved targets in $config_dir/targets.csv, then restart the service."

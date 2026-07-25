@@ -43,6 +43,15 @@ sys.path.insert(0, str(_ROOT / "scripts"))
 reconciler = importlib.import_module("reconciler")  # scripts/reconciler.py
 from dashboard import reconcile as webside  # noqa: E402
 
+# Both modules cache their dirs from env at import; another test module may have
+# imported them first with different dirs, so pin them to OURS explicitly.
+reconciler.DESIRED_DIR = _DESIRED
+reconciler.STATE_DIR = _STATE
+reconciler.APPLIER_DIR = _APPLIERS
+reconciler.SNAP_ROOT = _STATE / "snapshots"
+webside.DESIRED_DIR = _DESIRED
+webside.STATE_DIR = _STATE
+
 _POSIX = os.name == "posix"
 
 # A fake applier: on `apply` it drops a marker file in the resource's actual

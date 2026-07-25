@@ -271,7 +271,13 @@
         <div class="form-row"><button class="primary" onclick="saveMonitorConfig()">Save monitor config</button><span id="mcSaveStatus" class="hint"></span></div>
         <div id="mcErrors" class="hint"></div>
       </div>
-      <div class="panel"><p class="eyebrow">ACCESS</p><h2>Dashboard token</h2><p class="hint">The access token rotates on every dashboard restart, so a restart signs everyone out. Read the current token on the probe with <code>sudo cat /etc/network-probe/dashboard-token</code>.</p></div>
+      <div class="panel" id="accountPanel"><div class="panel-head"><div><p class="eyebrow">ACCESS</p><h2>Account &amp; password</h2></div><button onclick="logout()">Sign out</button></div>
+        <p class="hint">Sign in with a username and password (default <code>admin</code> / <code>admin</code> on a fresh install — change it below). The password is stored only as a salted hash. Sessions are held in memory, so <strong>restarting the dashboard signs everyone out</strong>. <span id="acctWho" class="hint"></span></p>
+        <div class="form-row"><input id="acctUser" placeholder="username" aria-label="username" autocomplete="username"></div>
+        <div class="form-row"><input id="acctCur" type="password" placeholder="current password" aria-label="current password" autocomplete="current-password"></div>
+        <div class="form-row"><input id="acctNew" type="password" placeholder="new password (min 6 chars)" aria-label="new password" autocomplete="new-password"><input id="acctNew2" type="password" placeholder="repeat new password" aria-label="repeat new password" autocomplete="new-password"></div>
+        <div class="form-row"><button class="primary" onclick="changePassword()">Update credentials</button><span id="acctStatus" class="hint"></span></div>
+      </div>
     </section>
     <section id="collectors" class="view">
       <div class="panel"><div class="panel-head"><div><p class="eyebrow">MULTI-NODE</p><h2>This node</h2></div><button onclick="loadCollectors()">Refresh</button></div>
@@ -298,6 +304,17 @@
   </div>
   <footer class="main-footer"><strong>Fieldline Network Probe</strong> · passive-first field diagnostics<span class="float-right d-none d-sm-inline">AdminLTE shell</span></footer>
 </div>
+  <div id="loginOverlay" class="modal" style="display:none;z-index:2000">
+    <div class="modal-box" style="max-width:22rem">
+      <div class="panel-head"><h2>Sign in</h2></div>
+      <p class="hint">Fieldline Network Probe. Default credentials are <code>admin</code> / <code>admin</code>.</p>
+      <form id="loginForm" onsubmit="return doLogin(event)">
+        <div class="form-row"><input id="loginUser" placeholder="username" aria-label="username" autocomplete="username" value="admin"></div>
+        <div class="form-row"><input id="loginPass" type="password" placeholder="password" aria-label="password" autocomplete="current-password"></div>
+        <div class="form-row"><button class="primary" type="submit">Sign in</button><span id="loginStatus" class="hint"></span></div>
+      </form>
+    </div>
+  </div>
   <div id="toast" role="status"></div>
   <script src="/static/vendor/jquery/jquery.min.js"></script>
   <script src="/static/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>

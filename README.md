@@ -95,7 +95,7 @@ dead for 1–2 minutes while 1.1.1.1 still answers":
   the WAN gateway) and **hop-quality cards** — one card per hop toward the
   WAN, each showing that hop's latency, jitter and loss.
 
-### Dashboard exposure and access token
+### Dashboard exposure and login
 
 By default the dashboard binds to `127.0.0.1` (SSH tunnel to view). To expose
 it on the management-LAN address instead, install with:
@@ -104,12 +104,12 @@ it on the management-LAN address instead, install with:
 sudo PROBE_EXPOSE=lan /opt/analyseLaptop/scripts/install-dashboard-service.sh --apply
 ```
 
-This binds to the current IPv4 address of the default-route interface and
-generates an access token in `/etc/network-probe/dashboard-token` (shown once
-by the installer; readable with sudo). Sign in with **any username** and the
-token as password. The transport is plain HTTP: acceptable on a trusted
-management network, never through a port-forward to the internet. If the LAN
-address changes (DHCP), re-run the installer.
+This binds to the current IPv4 address of the default-route interface and turns
+on the username/password login. Sign in with the default **admin / admin**, then
+set a real password under **Settings → Account** (stored as a salted hash;
+sessions are in-memory, so a restart signs everyone out). The transport is plain
+HTTP: acceptable on a trusted management network, never through a port-forward to
+the internet. If the LAN address changes (DHCP), re-run the installer.
 
 Install after the dashboard service:
 
@@ -245,7 +245,7 @@ It cannot see traffic that does not cross the monitored link, encrypted applicat
 - `monitor/snmp_probe.py` — read-only single-host SNMP probe (v2c/v3, system group + interface list)
 - `scripts/install-neighbors.sh` — installs lldpd receive-only for LLDP/CDP neighbour discovery
 - `scripts/install-ntopng.sh` — installs ntopng (passive flow analysis, own web UI on port 3000)
-- `scripts/rotate-dashboard-token.sh` — rotates the dashboard access token (wired as a restart hook)
+- `dashboard/auth.py` — username/password login store (salted PBKDF2-SHA256 hash, in-memory sessions; default admin/admin)
 - `dashboard/settings.py` — persistent, dashboard-editable settings store (SNMP creds, capture overrides, approved scope, traffic allow-list; secrets 0600)
 - `dashboard/services.py` — known IT/OT service catalog driving the Actions dropdowns
 - `dashboard/history.py` — web-writable SQLite store: host inventory, scan/action log, persistent jobs, LLDP inventory + change log

@@ -6,8 +6,8 @@
 # It needs no arguments. Starting an inactive service needs privilege, so it
 # uses pkexec (a graphical password prompt) only when a service is actually
 # down; if the services are already running (the normal case, they start at
-# boot) it just opens the browser. It never reads or displays the access token
-# - retrieve that once with `sudo cat /etc/network-probe/dashboard-token`.
+# boot) it just opens the browser. When exposed on the LAN, sign in with the
+# default admin/admin and change the password under Settings -> Account.
 set -uo pipefail
 
 PORT=8088
