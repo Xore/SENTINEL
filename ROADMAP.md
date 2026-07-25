@@ -279,7 +279,7 @@ Probe interval by state:
 ### Folded-in tasks from the prior roadmap
 
 - [x] **#53 — Webhook/email alerting on sustained state changes.** *(v1 shipped.)* Edge-triggered on #50 sustained-vs-spike classifier; webhook+SMTP delivery; Settings panel; `/api/alerts*`; 34 tests.
-- [ ] **#48 — Session/acceptance report (JSON/CSV/HTML + SHA-256 hashes).** One-click export: targets, uptime, anomaly events with RCA verdicts, baseline deviations, config in effect. Tamper-evident via content hash.
+- [x] **#48 — Session/acceptance report (JSON/CSV/HTML + SHA-256 hashes).** *v1 shipped.* Pure assembler + renderers in `dashboard/report.py` (`build_report` → per-target uptime/loss/RTT p50·p95, per-service reliability, outage events with failed-target context, TCP/DNS trend verdicts, redacted config-in-effect, roll-up acceptance verdict pass/attention/insufficient_data). Three renderers (canonical JSON, multi-section CSV, self-contained HTML) each stamped with a SHA-256 `meta.digest` computed over the report's canonical JSON (digest slot blanked, so it is recomputable/verifiable — `report.verify()`). Endpoint `GET /api/report/session?format=json|csv|html&minutes=|since=&until=` returns the artefact with `X-Report-SHA256` + `Content-Disposition`. One-click export panel in Settings (HTML/JSON/CSV + window selector). 29 tests in `tests/test_report.py` (pure assembly, digest stability/tamper-detection, renderer escaping/self-containment, endpoint formats + 400/no-DB paths). Full suite 220 OK.
 - [ ] **#47 (trigger) — Freeze-evidence action.** Dashboard button snapshots current stream buffers + active anomaly/RCA context into timestamped, hashed evidence bundle. JSON telemetry only — no full PCAP.
 
 ---
@@ -522,7 +522,7 @@ scripts/
 | **#50** TCP retransmission/reset + DNS failure trends | Phase 3 | ✅ v1 shipped (`33c798b`): /proc TCP counters + DNS trends, EWMA sustained-vs-spike, `/api/monitor/{tcp,dns}`; eBPF+shared-detector wiring still to layer on |
 | **#51** Baselines by segment / hour / production state | Phase 3 | Generalises the 168-bucket adaptive control limits |
 | **#53** Webhook/email alerting on sustained state changes | Phase 6 | ✅ v1 shipped: edge-triggered on #50 classifier, webhook+SMTP, Settings panel, `/api/alerts*`, 34 tests |
-| **#48** Session/acceptance report (JSON/CSV/HTML) + hashes | Phase 6 | Operator-facing reporting/export surface |
+| **#48** Session/acceptance report (JSON/CSV/HTML) + hashes | Phase 6 | ✅ shipped — `dashboard/report.py` + `/api/report/session` + Settings export panel; SHA-256 digest, tamper-evident |
 | **#47** Freeze-evidence action + disk reserve/capture policy | Phase 6 (trigger) + Phase 8 (policy) | Dashboard action snapshots JSON telemetry; disk-reserve is config/hardening |
 | **PCAP / full packet capture** | Phase 11 | Moved from out-of-scope: eBPF TC hook captures flow metadata only (no payload). GDPR-compliant on contracted internal networks. |
 | **Full Q-learning / deep RL for MDP** | Phase 12 | Moved from out-of-scope: failure corpus accumulates automatically from Phase 5 MDP logs. Finite-state MDP remains production scheduler until DQN reaches parity. |

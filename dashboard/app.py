@@ -20,7 +20,7 @@ import traceback
 import uuid
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
 try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import settings as settings_store
@@ -36,6 +36,7 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import dangerous
     from dashboard import trends
     from dashboard import alerts
+    from dashboard import report
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
@@ -50,6 +51,7 @@ except ImportError:  # run from inside the dashboard directory
     import dangerous
     import trends
     import alerts
+    import report
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # let us import the monitor/* helpers as a namespace pkg
@@ -2504,6 +2506,109 @@ def alerts_evaluate_now():
     """Run one evaluation cycle immediately (for operators who don't want to wait
     for the poll interval)."""
     return jsonify(_alert_evaluate_once())
+
+
+# --- Session / acceptance report (task #48) ----------------------------------
+# One-click export summarising a monitoring session (targets, uptime, anomaly
+# events, baseline/trend verdicts, config-in-effect) as JSON/CSV/HTML, each
+# stamped with a SHA-256 digest over its canonical data so the artefact is
+# tamper-evident for an acceptance hand-off. Read-only: composes the same
+# read-only monitor DB the /metrics and trend endpoints use — never probes.
+
+def _report_window() -> tuple[float, float]:
+    """(start_ts, end_ts) from ?since/?until epoch seconds, else ?minutes back
+    from now (default 24h). Raises ValueError on non-numeric input."""
+    now = time.time()
+    if request.args.get("since") or request.args.get("until"):
+        start = float(request.args.get("since", now - 86400))
+        end = float(request.args.get("until", now))
+        if end <= start:
+            raise ValueError("until must be after since")
+        return start, end
+    minutes = int(request.args.get("minutes", 1440))
+    if minutes <= 0:
+        raise ValueError("minutes must be positive")
+    minutes = min(minutes, 90 * 1440)  # cap at 90 days
+    return now - minutes * 60, now
+
+
+def _build_session_report(start: float, end: float) -> dict:
+    """Assemble (and finalize the digest of) the session report from the
+    read-only monitor DB. Missing DB still yields a valid, empty report."""
+    ping_rows: list[dict] = []
+    service_rows: list[dict] = []
+    event_rows: list[dict] = []
+    wifi_rows: list[dict] = []
+    tcp_samples: list[dict] = []
+    dns_rows: list[dict] = []
+
+    db = monitor_db()
+    if db is not None:
+        try:
+            ping_rows = [dict(r) for r in db.execute(
+                "SELECT ts, target, ok, rtt_ms FROM ping_samples "
+                "WHERE ts >= ? AND ts <= ?", (start, end)).fetchall()]
+            service_rows = [dict(r) for r in db.execute(
+                "SELECT ts, name, kind, ok, duration_ms FROM service_samples "
+                "WHERE ts >= ? AND ts <= ?", (start, end)).fetchall()]
+            event_rows = [dict(r) for r in db.execute(
+                "SELECT id, started, ended, kind, failed_targets FROM events "
+                "WHERE started <= ? AND (ended IS NULL OR ended >= ?) "
+                "ORDER BY started", (end, start)).fetchall()]
+            tcp_samples = [dict(r) for r in db.execute(
+                "SELECT ts, in_segs, out_segs, retrans_segs, out_rsts, attempt_fails, "
+                "estab_resets, tcp_syn_retrans, tcp_lost_retransmit FROM tcp_samples "
+                "WHERE ts >= ? AND ts <= ? ORDER BY ts", (start, end)).fetchall()]
+            dns_rows = [dict(r) for r in db.execute(
+                "SELECT ts, ok FROM service_samples WHERE kind = 'dns' "
+                "AND ts >= ? AND ts <= ? ORDER BY ts", (start, end)).fetchall()]
+            try:
+                wifi_rows = [dict(r) for r in db.execute(
+                    "SELECT ts, connected, signal_dbm FROM wifi_samples "
+                    "WHERE ts >= ? AND ts <= ?", (start, end)).fetchall()]
+            except sqlite3.OperationalError:
+                wifi_rows = []  # older monitor schemas may lack wifi_samples
+        finally:
+            db.close()
+
+    trend_verdicts = {
+        "tcp": trends.tcp_trend(tcp_samples).get("verdict", {}) if tcp_samples else {},
+        "dns": trends.dns_trend(dns_rows).get("verdict", {}) if dns_rows else {},
+    }
+    cfg = settings_store.redacted()
+    config_in_effect = {k: cfg.get(k) for k in ("monitor", "alerting", "multinode") if k in cfg}
+
+    rep = report.build_report(
+        window_start=start, window_end=end,
+        host=socket.gethostname(),
+        version=os.environ.get("PROBE_VERSION", "dev"),
+        role=(settings_store.load().get("multinode") or {}).get("role", "standalone"),
+        ping_rows=ping_rows, service_rows=service_rows, event_rows=event_rows,
+        trend_verdicts=trend_verdicts, wifi_rows=wifi_rows, config=config_in_effect,
+    )
+    return report.finalize(rep)
+
+
+@app.get("/api/report/session")
+def report_session():
+    """Session acceptance report as ?format=json|csv|html (default json).
+    ?since=&until= (epoch) or ?minutes= (default 1440) selects the window.
+    The response carries X-Report-SHA256 (digest over the report's data)."""
+    try:
+        start, end = _report_window()
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    fmt = (request.args.get("format") or "json").lower()
+    if fmt not in ("json", "csv", "html"):
+        return jsonify(error="format must be one of json, csv, html"), 400
+
+    rep = _build_session_report(start, end)
+    text, content_type, filename = report.render(rep, fmt)
+    disposition = "inline" if fmt == "html" else "attachment"
+    resp = Response(text, content_type=content_type)
+    resp.headers["X-Report-SHA256"] = rep["meta"]["digest"]
+    resp.headers["Content-Disposition"] = f'{disposition}; filename="{filename}"'
+    return resp
 
 
 @app.get("/api/monitor/routes")

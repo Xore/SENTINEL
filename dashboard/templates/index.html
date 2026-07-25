@@ -340,6 +340,22 @@
         <div id="alSignals" class="hint">—</div>
         <div id="alHistory" class="table-wrap"></div>
       </div>
+      <div class="panel" id="reportPanel"><div class="panel-head"><div><p class="eyebrow">ACCEPTANCE</p><h2>Session report</h2></div></div>
+        <p class="hint">Export a one-click summary of the monitoring session — per-target uptime &amp; RTT, outage events, protocol-trend verdicts and the config in effect. Each artefact carries a SHA-256 digest over its data (also in the <code>X-Report-SHA256</code> response header) so it is tamper-evident for an acceptance hand-off.</p>
+        <div class="form-row inline">
+          <label>Window
+            <select id="rpWindow" aria-label="report window">
+              <option value="60">last hour</option>
+              <option value="360">last 6 hours</option>
+              <option value="1440" selected>last 24 hours</option>
+              <option value="10080">last 7 days</option>
+            </select>
+          </label>
+          <button class="primary" onclick="downloadReport('html')" title="Open a self-contained HTML report in a new tab">HTML</button>
+          <button onclick="downloadReport('json')">JSON</button>
+          <button onclick="downloadReport('csv')">CSV</button>
+        </div>
+      </div>
       <div class="panel" id="accountPanel"><div class="panel-head"><div><p class="eyebrow">ACCESS</p><h2>Account &amp; password</h2></div><button onclick="logout()">Sign out</button></div>
         <p class="hint">Sign in with a username and password (default <code>admin</code> / <code>admin</code> on a fresh install — change it below). The password is stored only as a salted hash. Sessions are held in memory, so <strong>restarting the dashboard signs everyone out</strong>. <span id="acctWho" class="hint"></span></p>
         <div class="form-row"><input id="acctUser" placeholder="username" aria-label="username" autocomplete="username"></div>
