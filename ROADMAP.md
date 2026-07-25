@@ -39,19 +39,19 @@
 
 ## Academic Research Basis
 
-This roadmap is grounded in the following peer-reviewed sources. Each phase cites the specific papers that justify its design.
-
 | Paper | Key Contribution |
 |---|---|
-| Sundberg et al. **"Efficient Continuous Latency Monitoring with eBPF"** PAM 2023, Springer LNCS 13882. https://doi.org/10.1007/978-3-031-28486-1_9 | ePPing eBPF design; 1 Mpps / 10 Gbps on a single core; TCP timestamp matching for passive RTT |
+| Sundberg et al. **"Efficient Continuous Latency Monitoring with eBPF"** PAM 2023, LNCS 13882. https://doi.org/10.1007/978-3-031-28486-1_9 | ePPing eBPF design; 1 Mpps / 10 Gbps on a single core; TCP timestamp matching for passive RTT |
 | Rezvani et al. **"Characterizing In-Kernel Observability of Latency-Sensitive Workloads"** ISPASS 2024. https://danielwong.org/files/eBPF-ISPASS2024.pdf | Per-request latency breakdown (kernel stack, scheduler delay, NIC queue) using eBPF kprobes |
 | Red Hat / Sundberg **"netstacklat: eBPF-powered network stack latency"** 2026. https://developers.redhat.com/articles/2026/04/29/ | In-kernel per-packet latency at each network stack layer — identifies *where* latency is introduced |
-| Münz, G. **"Traffic Anomaly Detection and Cause Identification Using Flow-Level Measurements"** TU Munich Dissertation, NET-2010-06-1. https://www.net.in.tum.de/fileadmin/TUM/NET/NET-2010-06-1.pdf | CUSUM + Shewhart control charts; PCA multi-metric anomaly detection; automated cause identification algorithms for scans, port sweeps, brute-force |
-| Christodoulou et al. **"A Combination of CUSUM-EWMA for Anomaly Detection in Time Series"** DSAA 2015. https://pure.ulster.ac.uk/en/publications/a-combination-of-cusum-ewma | Combined CUSUM-EWMA outperforms either alone on complex anomalies; reduces false positives |
-| Tikumporn et al. **"Automated Root Cause Analysis of Network Failures in IP Networks"** IEEE Access 2025. https://doi.org/10.1109/ACCESS.2025.11053841 | Causal graph (DAG) based RCA; symptom-to-cause mapping; 92% accuracy on real failure corpus |
-| Zabala et al. **"Optimality of a Network Monitoring Agent"** Mathematics 11(3):610, 2023. https://doi.org/10.3390/math11030610 | MDP optimal scheduling; adaptive intervals outperform fixed by 40–60% in detection latency |
+| Bertrone et al. **"COP2: Continuously Observing Protocol Performance"** arXiv:1902.04280, 2019. https://arxiv.org/abs/1902.04280 | eBPF kprobes on Linux TCP stack internals; extracts `srtt_us`, retransmit count, cwnd from `tcp_sock`; negligible overhead |
+| Münz, G. **"Traffic Anomaly Detection and Cause Identification Using Flow-Level Measurements"** TU Munich, NET-2010-06-1. https://www.net.in.tum.de/fileadmin/TUM/NET/NET-2010-06-1.pdf | CUSUM + Shewhart control charts; PCA anomaly detection; automated cause identification |
+| Christodoulou et al. **"A Combination of CUSUM-EWMA for Anomaly Detection in Time Series"** DSAA 2015. https://pure.ulster.ac.uk/en/publications/a-combination-of-cusum-ewma | Combined CUSUM-EWMA outperforms either alone; reduces false positives |
+| Tikumporn et al. **"Automated Root Cause Analysis of Network Failures in IP Networks"** IEEE Access 2025. https://doi.org/10.1109/ACCESS.2025.11053841 | Causal DAG RCA; symptom-to-cause mapping; 92% accuracy on real failure corpus |
+| Zabala et al. **"Optimality of a Network Monitoring Agent"** Mathematics 11(3):610, 2023. https://doi.org/10.3390/math11030610 | MDP optimal scheduling; adaptive intervals outperform fixed by 40–60% |
 | Amjad et al. **"Optimal Probing with Statistical Guarantees"** arXiv:2109.07743, 2021. https://doi.org/10.48550/arXiv.2109.07743 | A-optimal probe budget; Frank-Wolfe approximation; 50% probe reduction |
-| Hinz et al. **"TCP's Third Eye: Leveraging eBPF for Telemetry-Powered Congestion Control"** ACM SIGCOMM Workshop 2023. https://dl.acm.org/doi/10.1145/3609021.3609295 | eBPF-extracted TCP congestion signals (cwnd, rtt_var, retransmit rate) for per-flow diagnosis |
+| Hinz et al. **"TCP's Third Eye: eBPF for Telemetry-Powered Congestion Control"** ACM SIGCOMM 2023. https://dl.acm.org/doi/10.1145/3609021.3609295 | eBPF-extracted TCP congestion signals (cwnd, rtt_var, retransmit rate) |
+| Zhao et al. **"Wasm-bpf: Streamlining eBPF Deployment in Cloud Environments"** arXiv:2408.04856, 2024. https://arxiv.org/abs/2408.04856 | eBPF in containerised environments; BTF CO-RE portability; minimal overhead vs native |
 
 ---
 
@@ -94,29 +94,171 @@ Every check cycle produces a structured JSON envelope pushed to the `monitor/` a
 ## Phase 2 — eBPF Passive Latency Layer (Weeks 5–7)
 
 **Component:** `collector/` (Linux nodes only)  
-**Academic basis:** Sundberg et al. PAM 2023; Rezvani et al. ISPASS 2024; Red Hat netstacklat 2026
+**Academic basis:** Sundberg PAM 2023; Rezvani ISPASS 2024; Bertrone COP2 2019; Red Hat netstacklat 2026
 
-### 2a. ePPing — Passive TCP RTT per Flow
+### 2a. eBPF Kprobes for TCP RTT — Go Implementation
 
-ePPing attaches a BPF program to the Linux TC (traffic control) ingress hook. It matches TCP timestamp option pairs (TSval / TSecr) across both directions of each TCP flow to compute round-trip time **without injecting a single byte** of synthetic traffic.
+The `cilium/ebpf` library (the standard Go eBPF toolchain) provides two complementary approaches for TCP RTT extraction. The following is the concrete implementation path, grounded in the COP2 paper (Bertrone 2019) and the `cilium/ebpf` `tcp_close` example.
 
+#### Approach A: Kprobe on `tcp_close` (RTT at connection end)
+
+This kprobe fires when a TCP connection closes and reads the smoothed RTT (`srtt_us`) directly from the kernel's `tcp_sock` struct. It is the approach used in the `cilium/ebpf` official examples and in COP2.
+
+**BPF C program** (`collector/ebpf/tcprtt.c`):
+
+```c
+// +build ignore
+#include <linux/bpf.h>
+#include <linux/tcp.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_core_read.h>   // CO-RE: portable across kernel versions
+
+// Ring buffer for user-space consumption
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
+} events SEC(".maps");
+
+// Event struct shared with Go
+struct rtt_event {
+    __u32 saddr;      // source IP (network byte order)
+    __u32 daddr;      // dest IP
+    __u16 sport;
+    __u16 dport;
+    __u32 srtt_us;    // smoothed RTT in microseconds (kernel value is srtt_us >> 3)
+    __u32 retransmits;
+    __u32 lost;
+};
+
+SEC("kprobe/tcp_close")
+int BPF_KPROBE(tcp_close, struct sock *sk) {
+    struct tcp_sock *ts = (struct tcp_sock *)sk;
+    struct rtt_event *e;
+
+    // Only IPv4 for now
+    if (BPF_CORE_READ(sk, sk_family) != AF_INET)
+        return 0;
+
+    e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) return 0;
+
+    e->saddr      = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+    e->daddr      = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    e->sport      = BPF_CORE_READ(sk, __sk_common.skc_num);
+    e->dport      = BPF_CORE_READ(sk, __sk_common.skc_dport);
+    // srtt_us stores 8x the actual smoothed RTT — right-shift by 3 to get µs
+    e->srtt_us    = BPF_CORE_READ(ts, srtt_us) >> 3;
+    e->retransmits = BPF_CORE_READ(ts, total_retrans);
+    e->lost       = BPF_CORE_READ(ts, lost_out);
+
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+char LICENSE[] SEC("license") = "GPL";
 ```
-Kernel TC hook (ingress)
-  ├── parse TCP TSval  →  store {flow_tuple + TSval → timestamp} in BPF hash map
-  └── parse TCP TSecr  →  lookup map → compute RTT = now − stored_ts → push to ring buffer
 
-User-space goroutine reads ring buffer every collection cycle:
-  → aggregate per (src_subnet, dst_subnet) → p50/p95/p99 histograms
-  → emit as "passive_rtt" stream in the push envelope
+**Key design notes (CO-RE):**
+- `BPF_CORE_READ` uses BTF (BPF Type Format) to read struct fields portably across kernel versions without recompilation. This is essential for running the same binary on kernel 5.10 (Raspberry Pi OS Bookworm) and kernel 6.x (Ubuntu 24.04).
+- `BPF_MAP_TYPE_RINGBUF` is preferred over `perf_event_array` for kernel ≥ 5.8: lower overhead, no per-CPU buffers, no event loss on slow consumers.
+
+**Go user-space loader** (`collector/ebpf/tcprtt_loader.go`):
+
+```go
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall" TcpRtt ./tcprtt.c
+
+package ebpf
+
+import (
+    "encoding/binary"
+    "net"
+    "time"
+
+    ciliumebpf "github.com/cilium/ebpf"
+    "github.com/cilium/ebpf/link"
+    "github.com/cilium/ebpf/ringbuf"
+    "github.com/cilium/ebpf/rlimit"
+)
+
+type RTTEvent struct {
+    SrcIP      net.IP
+    DstIP      net.IP
+    SrcPort    uint16
+    DstPort    uint16
+    SrttUs     uint32   // smoothed RTT in microseconds
+    Retransmits uint32
+    Lost       uint32
+    Ts         time.Time
+}
+
+func StartTCPRTTCollector(events chan<- RTTEvent) (stop func(), err error) {
+    // Remove memlock rlimit (required for BPF maps on kernel < 5.11)
+    if err := rlimit.RemoveMemlock(); err != nil {
+        return nil, err
+    }
+
+    // Load pre-compiled BPF objects (generated by bpf2go)
+    objs := TcpRttObjects{}
+    if err := LoadTcpRttObjects(&objs, nil); err != nil {
+        return nil, err
+    }
+
+    // Attach kprobe to tcp_close
+    kp, err := link.Kprobe("tcp_close", objs.TcpClose, nil)
+    if err != nil {
+        objs.Close()
+        return nil, err
+    }
+
+    // Open ring buffer reader
+    rd, err := ringbuf.NewReader(objs.Events)
+    if err != nil {
+        kp.Close()
+        objs.Close()
+        return nil, err
+    }
+
+    go func() {
+        var raw struct {
+            Saddr, Daddr     uint32
+            Sport, Dport     uint16
+            SrttUs           uint32
+            Retransmits, Lost uint32
+        }
+        for {
+            rec, err := rd.Read()
+            if err != nil {
+                return // reader closed
+            }
+            binary.Read(bytes.NewReader(rec.RawSample), binary.LittleEndian, &raw)
+            events <- RTTEvent{
+                SrcIP:       intToIP(raw.Saddr),
+                DstIP:       intToIP(raw.Daddr),
+                SrcPort:     raw.Sport,
+                DstPort:     raw.Dport,
+                SrttUs:      raw.SrttUs,
+                Retransmits: raw.Retransmits,
+                Lost:        raw.Lost,
+                Ts:          time.Now(),
+            }
+        }
+    }()
+
+    return func() { rd.Close(); kp.Close(); objs.Close() }, nil
+}
 ```
 
-**Proven capability (Sundberg 2023):** handles >1 Mpps (>10 Gbps) on a single CPU core with 3× lower overhead than userspace PPing. [web:86]
+**Build pipeline:** `go generate ./collector/ebpf/` runs `bpf2go` which invokes `clang`, compiles `tcprtt.c` to BPF bytecode, and generates `tcprtt_bpfeb.o` + `tcprtt_bpfel.o` + Go bindings. The `.o` files are embedded in the binary via `go:embed` — no external BPF compiler needed at runtime.
 
-**Constraint:** TCP timestamps must be enabled (default on Linux, macOS, Android, iOS — not Windows). For Windows-originating flows, fall back to active ICMP probing.
+#### Approach B: TC Hook for Passive Timestamp-Based RTT (ePPing)
+
+For per-flow RTT on *all* TCP connections (not just those closed on this host), use the TC ingress hook with TCP timestamp matching — this is the ePPing approach covered in `collector/ROADMAP.md` Phase 2. The kprobe approach (Approach A) is complementary: it gives higher-fidelity per-connection RTT including `srtt_us` variance, while ePPing gives lower-overhead aggregate flow RTTs.
+
+**Recommendation:** implement Approach A first (simpler, no BPF C for TC classifier needed), then add ePPing for passive aggregate monitoring.
 
 ### 2b. netstacklat — Per-Layer Stack Latency
 
-The Red Hat `netstacklat` tool (2026) uses eBPF kprobes to measure **where inside the kernel** latency is added: [web:80]
+The Red Hat `netstacklat` tool (2026) uses eBPF kprobes to measure where inside the kernel latency is added:
 
 | Measurement point | What it reveals |
 |---|---|
@@ -124,213 +266,509 @@ The Red Hat `netstacklat` tool (2026) uses eBPF kprobes to measure **where insid
 | Socket buffer → `tcp_rcv` | Kernel scheduler preemption delay |
 | `tcp_rcv` → `recvmsg()` return | Application wakeup latency (epoll delay) |
 
-This breaks the "the network is slow" problem into: **is it the wire, the kernel, or the application?**
-
 **Implementation:** vendor `netstacklat` BPF C program; load via `cilium/ebpf`; expose per-layer histograms as `stack_latency` stream.
 
 ### 2c. High-Latency Client Detection
 
-Using the per-flow RTT data from ePPing, the collector can identify **which specific client IPs** are experiencing anomalously high latency relative to the subnet baseline:
+Using the per-flow RTT events from the kprobe collector (Phase 2a), detect clients with anomalously high RTT relative to the subnet baseline:
 
 ```go
-// For each observed flow:
-//   if flow_rtt_p95 > subnet_baseline_p95 * threshold_multiplier (default 3.0):
-//     emit high_latency_client event with: src_ip, dst_ip, rtt_p95, baseline, ratio
-// Subnet baseline: rolling EMA of all flows in that /24 over last 5 minutes
+// Maintain per-subnet rolling EMA of SrttUs over last 5 minutes
+// For each RTTEvent:
+//   ratio = event.SrttUs / subnet_baseline_us
+//   if ratio > 3.0: emit HighLatencyClientEvent{SrcIP, DstIP, SrttUs, Baseline, Ratio}
+// Aggregated and forwarded to monitor/ in the push envelope as "high_latency_clients" stream
 ```
 
-This directly answers "which clients are degrading or experiencing degraded service" without any active probing of those clients.
+### 2d. eBPF in Containerized and Kubernetes Environments
+
+**Academic basis:** Zhao et al., Wasm-bpf, arXiv:2408.04856, 2024; DevConf.CZ 2024 (bpfman); Tigera eBPF for Kubernetes guide.
+
+Deploying eBPF agents alongside containerized workloads requires specific patterns that differ from bare-metal deployment.
+
+#### Capability Requirements (Minimum Privilege)
+
+```yaml
+# Kubernetes DaemonSet securityContext — minimum required for eBPF collector
+securityContext:
+  capabilities:
+    add:
+      - CAP_BPF        # load/query BPF programs and maps (kernel >= 5.8)
+      - CAP_NET_ADMIN  # attach TC/XDP hooks
+      - CAP_PERFMON    # perf_event_open for kprobes (kernel >= 5.8)
+    drop:
+      - ALL            # drop everything else
+  readOnlyRootFilesystem: true
+  runAsNonRoot: false  # BPF loading still requires uid 0 on most kernels
+```
+
+On kernels < 5.8: `CAP_SYS_ADMIN` was required for all BPF operations (blunt instrument). On ≥ 5.8: the split `CAP_BPF` + `CAP_PERFMON` allows least-privilege deployment.
+
+#### BTF CO-RE: Write Once, Run Anywhere
+
+The critical portability mechanism for containerized deployment is **BTF CO-RE (BPF Type Format, Compile Once – Run Everywhere)**:
+
+```
+Traditional BPF (pre-CO-RE):         CO-RE BPF:
+  Compile on target kernel     vs.     Compile once with clang + libbpf
+  Brittle: breaks on upgrade           BTF records field offsets in .o file
+  Requires kernel headers              Kernel exposes BTF at /sys/kernel/btf/vmlinux
+  Cannot ship pre-compiled binary      Loader relocates field accesses at load time
+                                       Same .o runs on kernels 5.4 – 6.x
+```
+
+For the collector, this means:
+- Build `tcprtt.o` once in CI (Ubuntu 24.04 + clang 17)
+- Embed in Go binary with `go:embed`
+- Binary runs on Raspberry Pi OS (kernel 6.1), Ubuntu 22.04 (kernel 5.15), Debian 12 (kernel 6.1) without recompilation
+- Verify BTF availability at runtime: `os.Stat("/sys/kernel/btf/vmlinux")` — disable eBPF module gracefully if absent
+
+#### Docker Deployment Pattern
+
+```dockerfile
+# collector/Dockerfile
+FROM golang:1.22-alpine AS build
+RUN apk add --no-cache clang llvm libbpf-dev linux-headers
+WORKDIR /src
+COPY . .
+RUN go generate ./collector/ebpf/    # compile BPF C → bytecode
+RUN CGO_ENABLED=0 go build -o /collector ./collector/
+
+FROM debian:bookworm-slim
+# Mount host /sys and /proc for BPF and metrics access
+COPY --from=build /collector /collector
+ENTRYPOINT ["/collector"]
+```
+
+```yaml
+# docker-compose.yml — host network + minimal caps
+services:
+  collector:
+    image: analyselaptop/collector:latest
+    network_mode: host          # required: BPF maps are per-netns; host-ns needed for TC hooks
+    pid: host                   # required: kprobes observe host kernel, not container kernel
+    volumes:
+      - /sys/kernel/btf:/sys/kernel/btf:ro   # BTF type information
+      - /sys/fs/bpf:/sys/fs/bpf              # BPF pinned objects (optional)
+      - /proc:/proc:ro                       # /proc/net/dev, /proc/net/arp etc.
+    cap_add:
+      - CAP_BPF
+      - CAP_NET_ADMIN
+      - CAP_PERFMON
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+```
+
+**Critical constraints:**
+- `network_mode: host` is mandatory — TC hooks and kprobes attach to the host kernel's network namespace. A containerized network namespace would only see container-internal traffic.
+- `pid: host` is mandatory for kprobes — they observe kernel symbols in the host PID namespace.
+- `/sys/kernel/btf` must be mounted read-only for CO-RE relocation to work.
+
+#### Kubernetes DaemonSet Pattern
+
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: analyselaptop-collector
+spec:
+  template:
+    spec:
+      hostNetwork: true          # same as network_mode: host
+      hostPID: true              # same as pid: host
+      containers:
+      - name: collector
+        image: analyselaptop/collector:latest
+        securityContext:
+          privileged: false      # never use privileged if avoidable
+          capabilities:
+            add: [CAP_BPF, CAP_NET_ADMIN, CAP_PERFMON]
+            drop: [ALL]
+        volumeMounts:
+        - name: btf
+          mountPath: /sys/kernel/btf
+          readOnly: true
+        - name: bpffs
+          mountPath: /sys/fs/bpf
+        - name: proc
+          mountPath: /proc
+          readOnly: true
+      volumes:
+      - name: btf
+        hostPath: { path: /sys/kernel/btf }
+      - name: bpffs
+        hostPath: { path: /sys/fs/bpf, type: DirectoryOrCreate }
+      - name: proc
+        hostPath: { path: /proc }
+```
+
+#### Graceful Degradation Strategy
+
+The collector must run usefully even when eBPF is unavailable (older kernels, restricted environments, Windows nodes):
+
+```go
+func (c *Collector) initEBPF() {
+    if runtime.GOOS != "linux" {
+        log.Info("eBPF disabled: non-Linux OS")
+        return
+    }
+    if _, err := os.Stat("/sys/kernel/btf/vmlinux"); err != nil {
+        log.Info("eBPF disabled: BTF not available (kernel too old or CONFIG_DEBUG_INFO_BTF not set)")
+        return
+    }
+    if err := rlimit.RemoveMemlock(); err != nil {
+        log.Info("eBPF disabled: cannot remove memlock rlimit (missing CAP_BPF?)")
+        return
+    }
+    // All checks passed — start eBPF collector
+    stop, err := ebpf.StartTCPRTTCollector(c.rttEvents)
+    if err != nil {
+        log.Warnf("eBPF startup failed: %v — falling back to active ICMP", err)
+        return
+    }
+    c.ebpfStop = stop
+    log.Info("eBPF TCP RTT collector active")
+}
+```
 
 ---
 
 ## Phase 3 — Monitor: Time-Series Anomaly Detection (Weeks 7–11)
 
-**Component:** `monitor/`  
+**Component:** `monitor/` (Python)  
 **Academic basis:** Münz TU Munich 2010; Christodoulou et al. DSAA 2015
 
-The `monitor/` process receives the JSON stream from all collectors and runs statistical change detection on every metric time series. **No ML training required** — these are parameter-light control chart methods proven on real ISP data.
+The `monitor/` process receives JSON from all collectors and runs statistical change detection on every metric time series. No ML training required — these are parameter-light control chart methods proven on real ISP data.
 
 ### 3a. Metric Time-Series Pipeline
 
 ```
-Raw JSON stream
-  │
-  ▼
-┌─────────────────────────────────────────────────────────┐
-│  Time-Series Conversion (monitor/timeseries.go)         │
-│  • bucket into fixed intervals (default: 60s)           │
-│  • compute per-metric aggregates: mean, p95, rate       │
-│  • 8 traffic metrics tracked per collector stream:      │
-│    volume (bytes/s), packet rate, flow count,           │
-│    distinct src_ips, distinct dst_ips,                  │
-│    error rate, loss rate, RTT p95                       │
-└─────────────────────────────────────────────────────────┘
-  │
-  ▼
-┌─────────────────────────────────────────────────────────┐
-│  Residual Generation (monitor/residuals.go)             │
-│  Remove seasonal variation and trend before detection   │
-│                                                         │
-│  Method: Holt-Winters exponential smoothing             │
-│  • α = 0.2 (level), β = 0.1 (trend), γ = 0.3 (season) │
-│  • Season period: 24h (daily pattern)                   │
-│  • Residual = observed − Holt-Winters forecast          │
-│  • Robust to non-stationarity (proven: Münz 2010)       │
-└─────────────────────────────────────────────────────────┘
-  │
-  ▼
-┌─────────────────────────────────────────────────────────┐
-│  Change Detection (monitor/detector.go)                 │
-│  Applied to residual series, not raw values             │
-│                                                         │
-│  Layer 1 — Shewhart chart (fast, single-point):         │
-│    alarm if |residual| > k·σ (default k=3)              │
-│    detects sudden large shifts immediately              │
-│                                                         │
-│  Layer 2 — CUSUM chart (cumulative, drift-sensitive):   │
-│    C+ = max(0, C+_prev + residual − slack)              │
-│    C- = max(0, C-_prev − residual − slack)              │
-│    alarm if C+ > h or C- > h (h = decision interval)   │
-│    detects slow gradual degradation (e.g. memory leak)  │
-│                                                         │
-│  Layer 3 — EWMA chart (smoothed trend):                 │
-│    Z_t = λ·x_t + (1−λ)·Z_{t-1}   (λ = 0.2)            │
-│    alarm if |Z_t − μ| > L·σ·√(λ/(2−λ))                │
-│    reduces false positives vs Shewhart (proven 2015)    │
-│                                                         │
-│  Combined: alarm only if CUSUM + EWMA both trigger      │
-│  (reduces false positives significantly — Christodoulou)│
-└─────────────────────────────────────────────────────────┘
+Raw JSON stream → timeseries.py (60s bucketing, 8 metrics per stream)
+  → residuals.py (Holt-Winters seasonal decomposition: α=0.2, β=0.1, γ=0.3, period=24h)
+  → detector.py  (3-layer: Shewhart k=3 | CUSUM h=5, slack=0.5 | EWMA λ=0.2, L=3)
+  → alarm only if CUSUM + EWMA both trigger (Christodoulou 2015: reduces false positives)
 ```
 
-### 3b. Multi-Metric PCA Anomaly Detection
+### 3b. CUSUM + EWMA Implementation (Python)
 
-For cases where anomalies appear across *multiple* metrics simultaneously but are individually below the Shewhart/CUSUM threshold (e.g., a slow scan that slightly increases flow count, distinct IPs, and error rate together):
+```python
+# monitor/detector.py
+import numpy as np
+from dataclasses import dataclass, field
 
+@dataclass
+class ControlChartState:
+    """Stateful detector per metric per source. Call update() each interval."""
+    # CUSUM parameters (Münz 2010: h=5*sigma, slack=0.5*sigma typical for network metrics)
+    cusum_h: float = 5.0       # decision interval (in units of sigma)
+    cusum_slack: float = 0.5   # allowance (k) — half of detectable shift size
+    # EWMA parameters (Christodoulou 2015: lambda=0.2 balances responsiveness vs noise)
+    ewma_lambda: float = 0.2
+    ewma_L: float = 3.0        # control limit width (sigma multiplier)
+    # Shewhart
+    shewhart_k: float = 3.0
+
+    # State (updated each call)
+    mu: float = 0.0            # rolling mean of residuals (updated during stable periods)
+    sigma: float = 1.0         # rolling std of residuals
+    cusum_pos: float = 0.0     # C+
+    cusum_neg: float = 0.0     # C-
+    ewma_z: float = 0.0        # Z_t
+    n_stable: int = 0          # consecutive stable intervals (for baseline update)
+    alarm_history: list = field(default_factory=list)
+
+    def update(self, residual: float) -> dict:
+        """Returns alarm dict if triggered, else empty dict."""
+        alarms = {}
+
+        # Shewhart: immediate large-shift detection
+        if abs(residual) > self.shewhart_k * self.sigma:
+            alarms['shewhart'] = True
+
+        # CUSUM: cumulative drift detection
+        slack = self.cusum_slack * self.sigma
+        h = self.cusum_h * self.sigma
+        self.cusum_pos = max(0, self.cusum_pos + residual - slack)
+        self.cusum_neg = max(0, self.cusum_neg - residual - slack)
+        if self.cusum_pos > h or self.cusum_neg > h:
+            alarms['cusum'] = True
+            # Reset after alarm (Page 1954 recommendation)
+            self.cusum_pos = 0.0
+            self.cusum_neg = 0.0
+
+        # EWMA: smoothed trend
+        lam = self.ewma_lambda
+        self.ewma_z = lam * residual + (1 - lam) * self.ewma_z
+        ewma_limit = self.ewma_L * self.sigma * np.sqrt(lam / (2 - lam))
+        if abs(self.ewma_z) > ewma_limit:
+            alarms['ewma'] = True
+
+        # Combined alarm: only fire if CUSUM + EWMA both triggered
+        # Shewhart fires independently (instantaneous large anomaly)
+        triggered = alarms.get('shewhart') or (
+            alarms.get('cusum') and alarms.get('ewma')
+        )
+
+        # Update baseline only during stable periods (prevent contamination)
+        if not triggered:
+            self.n_stable += 1
+            if self.n_stable > 10:  # update after 10 stable intervals
+                alpha = 0.05  # slow adaptation of baseline
+                self.mu = (1 - alpha) * self.mu + alpha * residual
+                # Welford online variance update for sigma
+                delta = residual - self.mu
+                self.sigma = max(0.001, (1 - alpha) * self.sigma + alpha * abs(delta))
+        else:
+            self.n_stable = 0
+
+        return {'triggered': triggered, 'alarms': alarms} if triggered else {}
 ```
-Metric vector per interval: x = [vol, pkt_rate, flow_cnt, src_ips, dst_ips, err_rate, loss_pct, rtt_p95]
 
-PCA:
-  1. Compute covariance matrix Σ from last 7 days of stable data (training window)
-  2. Decompose: Σ = VΛVᵀ (eigendecomposition)
-  3. Keep top k principal components explaining 90% of variance
-  4. Project residual vector onto PC space: scores = Vᵀ · residual
-  5. Hotelling's T² statistic: T² = scoresᵀ · Λ⁻¹ · scores
-  6. Alarm if T² > χ²(k, α=0.001) critical value
+### 3c. Multi-Metric PCA Anomaly Detection
 
-Incremental PCA update (Münz 2010):
-  • Recompute Σ incrementally — no full batch retraining
-  • Use M-estimators for robustness: replace mean with Huber location estimator
-    to prevent anomalies in training data from biasing the baseline
+```python
+# monitor/pca_detector.py — incremental PCA for multi-metric correlation
+from sklearn.decomposition import IncrementalPCA
+from scipy.stats import chi2
+import numpy as np
+
+class PCADetector:
+    """
+    Hotelling T² anomaly detection on 8-dimensional metric vector.
+    Incremental PCA update (no full retraining).
+    Academic basis: Münz TU Munich 2010, Chapter 9.
+    """
+    def __init__(self, n_components=3, alpha=0.001):
+        self.pca = IncrementalPCA(n_components=n_components)
+        self.threshold = chi2.ppf(1 - alpha, df=n_components)
+        self.fitted = False
+        self.n_seen = 0
+
+    def update(self, x: np.ndarray) -> bool:
+        """x: shape (8,) — one metric vector. Returns True if anomaly detected."""
+        self.n_seen += 1
+        if self.n_seen < 100:  # accumulate 100 samples before detecting
+            self.pca.partial_fit(x.reshape(1, -1))
+            return False
+        self.fitted = True
+        scores = self.pca.transform(x.reshape(1, -1))[0]
+        lambdas = self.pca.explained_variance_
+        t2 = float(np.sum((scores ** 2) / lambdas))
+        if t2 > self.threshold:
+            return True  # multivariate anomaly
+        self.pca.partial_fit(x.reshape(1, -1))  # update only on non-anomalous samples
+        return False
 ```
 
-**Why PCA here, not the collector:** PCA requires a multi-node, multi-stream view. The collector only sees its local node. The `monitor/` process aggregates all collectors and can correlate across the full network topology.
+### 3d. Adaptive Per-Slot Control Limits
 
-### 3c. Adaptive Control Limits
-
-Rather than fixed σ thresholds, implement **time-varying control limits** that widen during periods of known high variance (peak hours, backup windows) and tighten during quiet periods:
-
-```go
-// Per metric, per hour-of-week slot:
-//   track σ_slot = rolling stddev of residuals in that slot
-// Control limit = k * σ_slot (rather than global σ)
-// This eliminates the vast majority of peak-hour false positives
-// while maintaining sensitivity during off-peak
+```python
+# Per metric, per hour-of-week bucket (168 buckets = 7 days × 24 hours)
+# sigma_slot[hour_of_week] = rolling stddev of residuals in that slot
+# Control limit = k * sigma_slot — eliminates peak-hour false positives
+hour_of_week = (now.weekday() * 24 + now.hour)  # 0–167
 ```
 
 ---
 
 ## Phase 4 — Monitor: Automated Root Cause Analysis (Weeks 11–14)
 
-**Component:** `monitor/`  
-**Academic basis:** Tikumporn et al. IEEE Access 2025; Münz TU Munich 2010 (Chapter 10)
+**Component:** `monitor/` (Python)  
+**Academic basis:** Tikumporn et al. IEEE Access 2025; Münz TU Munich 2010 Chapter 10
 
-### 4a. Causal Graph (DAG) Architecture
+### 4a. Causal DAG Architecture — Python Implementation
 
-Root cause analysis (RCA) answers: *given that anomaly detector fired on metric M at node N, what is the most probable cause?*
-
-The Tikumporn 2025 system achieves 92% RCA accuracy on real IP network failure data using a **causal DAG** where:
-- **Nodes** are observable symptoms (metric anomaly fires)
-- **Edges** encode causal relationships with conditional probabilities
-- **Root nodes** are actionable causes (link failure, misconfigured host, congestion, etc.)
+The `monitor/` service is Python-based. The RCA engine uses `networkx` for the DAG and `pgmpy` (or plain dict-based conditional probability tables) for belief propagation.
 
 ```
 monitor/rca/
-├── graph.go       — DAG definition and traversal
-├── symptoms.go    — maps anomaly detector outputs to symptom nodes
-├── causes.go      — actionable cause definitions + remediation hints
-└── engine.go      — Bayesian belief propagation
+├── __init__.py
+├── graph.py        — NetworkX DiGraph definition: symptom nodes → cause nodes
+├── symptoms.py     — maps anomaly detector output dicts to symptom node IDs
+├── causes.py       — cause definitions: id, label, remediation_hint, prior_prob
+└── engine.py       — Bayesian belief propagation + decision tree for dropped connections
+```
+
+**DAG construction** (`monitor/rca/graph.py`):
+
+```python
+import networkx as nx
+
+def build_rca_graph() -> nx.DiGraph:
+    """
+    Causal DAG: edges go FROM causes TO symptoms.
+    Belief propagation traverses in reverse (symptoms → causes).
+    Based on Tikumporn et al. 2025 causal chain taxonomy.
+    """
+    G = nx.DiGraph()
+
+    # --- Cause nodes (root nodes — no incoming edges) ---
+    causes = [
+        ("BUFFERBLOAT",       {"label": "Bufferbloat / AQM issue",            "prior": 0.10}),
+        ("WAN_CONGESTION",    {"label": "Upstream WAN congestion",             "prior": 0.15}),
+        ("PHYSICAL_FAULT",    {"label": "Physical layer fault",               "prior": 0.10}),
+        ("HOST_OVERLOAD",     {"label": "Target host overloaded",             "prior": 0.10}),
+        ("DEVICE_REBOOT",     {"label": "Device reboot / crash",              "prior": 0.08}),
+        ("NEW_DEVICE",        {"label": "New/rogue device on segment",        "prior": 0.05}),
+        ("PORT_SCAN",         {"label": "Port scan / brute-force",            "prior": 0.05}),
+        ("DNS_FAILURE",       {"label": "DNS resolver failure",               "prior": 0.08}),
+        ("WG_TUNNEL_DROP",    {"label": "WireGuard tunnel dropped",           "prior": 0.07}),
+        ("CERT_EXPIRY",       {"label": "TLS certificate expiring",           "prior": 0.05}),
+        ("POWER_LOSS",        {"label": "Target powered off / cable pull",   "prior": 0.12}),
+        ("ROUTING_FAILURE",   {"label": "Routing / default GW failure",       "prior": 0.05}),
+    ]
+    for node_id, attrs in causes:
+        G.add_node(node_id, node_type="cause", **attrs)
+
+    # --- Symptom nodes (leaf nodes — observed) ---
+    symptoms = [
+        "SYM_RTT_HIGH", "SYM_LOSS_HIGH", "SYM_LOSS_TOTAL",
+        "SYM_ARP_GONE", "SYM_UPTIME_REGRESS", "SYM_RX_ERRORS",
+        "SYM_NEW_SRC_IPS", "SYM_DST_CONCENTRATION",
+        "SYM_DNS_LATENCY", "SYM_WG_STALE", "SYM_CERT_EXPIRING",
+        "SYM_GW_UNREACHABLE", "SYM_WAN_UNREACHABLE",
+    ]
+    for s in symptoms:
+        G.add_node(s, node_type="symptom")
+
+    # --- Causal edges with P(symptom | cause) ---
+    edges = [
+        # BUFFERBLOAT: RTT very high, loss zero, BW normal
+        ("BUFFERBLOAT",     "SYM_RTT_HIGH",          {"p": 0.90}),
+        # WAN_CONGESTION: RTT up + loss up, affects all targets
+        ("WAN_CONGESTION",  "SYM_RTT_HIGH",          {"p": 0.80}),
+        ("WAN_CONGESTION",  "SYM_LOSS_HIGH",         {"p": 0.75}),
+        ("WAN_CONGESTION",  "SYM_WAN_UNREACHABLE",   {"p": 0.40}),
+        # PHYSICAL_FAULT: error rate spike
+        ("PHYSICAL_FAULT", "SYM_RX_ERRORS",         {"p": 0.85}),
+        ("PHYSICAL_FAULT", "SYM_RTT_HIGH",           {"p": 0.50}),
+        ("PHYSICAL_FAULT", "SYM_LOSS_HIGH",          {"p": 0.60}),
+        # POWER_LOSS: total loss + ARP gone
+        ("POWER_LOSS",     "SYM_LOSS_TOTAL",         {"p": 0.95}),
+        ("POWER_LOSS",     "SYM_ARP_GONE",           {"p": 0.90}),
+        # DEVICE_REBOOT: sysUpTime regression
+        ("DEVICE_REBOOT",  "SYM_UPTIME_REGRESS",     {"p": 0.99}),
+        ("DEVICE_REBOOT",  "SYM_LOSS_HIGH",          {"p": 0.30}),
+        # NEW_DEVICE: new src IPs on segment
+        ("NEW_DEVICE",     "SYM_NEW_SRC_IPS",        {"p": 0.85}),
+        # PORT_SCAN: high flow count to single dst
+        ("PORT_SCAN",      "SYM_DST_CONCENTRATION",  {"p": 0.90}),
+        ("PORT_SCAN",      "SYM_NEW_SRC_IPS",        {"p": 0.40}),
+        # DNS_FAILURE
+        ("DNS_FAILURE",    "SYM_DNS_LATENCY",        {"p": 0.95}),
+        # WG_TUNNEL_DROP
+        ("WG_TUNNEL_DROP", "SYM_WG_STALE",           {"p": 0.99}),
+        # CERT_EXPIRY
+        ("CERT_EXPIRY",    "SYM_CERT_EXPIRING",      {"p": 1.00}),
+        # ROUTING_FAILURE
+        ("ROUTING_FAILURE","SYM_GW_UNREACHABLE",     {"p": 0.90}),
+        ("ROUTING_FAILURE","SYM_LOSS_HIGH",          {"p": 0.70}),
+    ]
+    G.add_edges_from([(u, v, d) for u, v, d in edges])
+    return G
+```
+
+**Belief propagation engine** (`monitor/rca/engine.py`):
+
+```python
+from dataclasses import dataclass
+from typing import List
+import networkx as nx
+
+@dataclass
+class RCAResult:
+    cause: str
+    label: str
+    confidence: float
+    evidence_chain: List[str]
+    remediation_hint: str
+
+REMEDIATION = {
+    "BUFFERBLOAT":    "Enable fq_codel / CAKE AQM on router. Check buffer size settings.",
+    "WAN_CONGESTION": "Check ISP status. Run traceroute to identify congested hop.",
+    "PHYSICAL_FAULT": "Check cable, SFP, switch port. Check wireless RSSI.",
+    "POWER_LOSS":     "Check device power, PDU, UPS. Verify cable connection.",
+    "DEVICE_REBOOT":  "Check device logs for crash reason. Check UPS/power stability.",
+    "NEW_DEVICE":     "Verify device against whitelist. Check DHCP logs.",
+    "PORT_SCAN":      "Check firewall logs. Block source if unauthorized.",
+    "DNS_FAILURE":    "Restart resolver. Check /etc/resolv.conf. Test alternate DNS.",
+    "WG_TUNNEL_DROP": "Check WireGuard logs. Verify endpoint reachability and PSK.",
+    "CERT_EXPIRY":    "Renew TLS certificate immediately. Check auto-renewal (certbot).",
+    "ROUTING_FAILURE":"Run 'ip route'. Check default GW. Verify DHCP lease.",
+    "HOST_OVERLOAD":  "Check CPU/memory on target. Kill runaway process.",
+}
+
+class RCAEngine:
+    def __init__(self, graph: nx.DiGraph, confidence_threshold: float = 0.6):
+        self.G = graph
+        self.threshold = confidence_threshold
+
+    def analyse(self, active_symptoms: List[str]) -> RCAResult:
+        """
+        Naive Bayes belief propagation over causal DAG.
+        P(cause | symptoms) ∝ P(cause) × ∏ P(symptom | cause)
+        """
+        cause_nodes = [n for n, d in self.G.nodes(data=True) if d.get('node_type') == 'cause']
+        scores = {}
+
+        for cause in cause_nodes:
+            prior = self.G.nodes[cause].get('prior', 0.1)
+            likelihood = 1.0
+            for sym in active_symptoms:
+                if self.G.has_edge(cause, sym):
+                    p = self.G.edges[cause, sym].get('p', 0.5)
+                else:
+                    p = 0.05  # low base probability of symptom given unrelated cause
+                likelihood *= p
+            scores[cause] = prior * likelihood
+
+        # Normalise to get posterior probabilities
+        total = sum(scores.values()) or 1.0
+        posteriors = {c: s / total for c, s in scores.items()}
+        best_cause = max(posteriors, key=posteriors.get)
+        confidence = posteriors[best_cause]
+
+        return RCAResult(
+            cause=best_cause,
+            label=self.G.nodes[best_cause].get('label', best_cause),
+            confidence=confidence,
+            evidence_chain=[f"{sym} → {best_cause}" for sym in active_symptoms
+                            if self.G.has_edge(best_cause, sym)],
+            remediation_hint=REMEDIATION.get(best_cause, "No automated remediation defined."),
+        )
 ```
 
 ### 4b. Symptom → Cause Mapping Table
 
-The following causal chains are pre-defined based on the TU Munich and IEEE Access research:
-
 | Observed Symptoms | Most Probable Cause | Confidence |
 |---|---|---|
-| RTT p95 ↑ + loss_pct = 0 + bandwidth normal | Bufferbloat / AQM issue | High |
-| RTT p95 ↑ + loss_pct ↑ + affects all targets in subnet | Upstream congestion / WAN link degradation | High |
-| RTT p95 ↑ + loss_pct ↑ + affects ONE target only | Target host overloaded or cable issue | High |
-| loss_pct = 100% + ARP entry gone | Target powered off or cable unplugged | High |
-| sysUpTime regression (SNMP) | Device rebooted (planned or crash) | High |
-| rx_error_rate spike on interface | Physical layer fault (cable, SFP, wireless interference) | Medium |
-| distinct_src_ips ↑ anomaly + flow_count ↑ | New device on network / DHCP storm | Medium |
-| dst_ip concentration → single host, high flow_count | Port scan or brute-force attack | Medium |
-| DNS latency ↑ + WAN RTT normal | Local DNS resolver overloaded | High |
-| WG handshake_age > 3 min | WireGuard tunnel dropped | High |
-| TLS cert days_remaining < 7 | Certificate about to expire | Certain |
-| CPU ratio > 0.85 sustained + high RTT | Collector node itself is the bottleneck | Medium |
+| RTT p95 ↑ + loss = 0 + BW normal | Bufferbloat / AQM | High |
+| RTT p95 ↑ + loss ↑ + all targets | WAN congestion | High |
+| RTT p95 ↑ + loss ↑ + one target | Host overload / cable | High |
+| loss = 100% + ARP gone | Power loss / cable pull | High |
+| sysUpTime regression | Device reboot | High |
+| rx_error spike | Physical layer fault | Medium |
+| new src_ips + flow count ↑ | New/rogue device | Medium |
+| dst_ip concentration + high flows | Port scan | Medium |
+| DNS latency ↑ + WAN RTT normal | DNS resolver failure | High |
+| WG handshake_age > 3 min | WireGuard tunnel drop | High |
+| TLS days_remaining < 7 | Certificate expiry | Certain |
+| GW unreachable + loss ↑ | Routing failure | High |
 
-### 4c. Belief Propagation Algorithm
-
-```go
-// For each triggered anomaly event:
-// 1. Map to symptom node(s) in the DAG
-// 2. Propagate belief upward toward root causes:
-//    belief(cause) = P(cause | symptoms) using Bayes' theorem
-//    P(cause | s1, s2, ...) ∝ P(s1|cause)·P(s2|cause)·P(cause)
-// 3. Select cause with highest posterior belief
-// 4. If belief < confidence_threshold (0.6): emit "UNKNOWN — manual review"
-// 5. Include remediation hint in alert payload
-
-type RCAResult struct {
-    Cause           string
-    Confidence      float64
-    AffectedTargets []string
-    RemediationHint string
-    EvidenceChain   []string  // human-readable causal chain
-}
-```
-
-### 4d. Drop Connection Root Cause (Specific)
-
-For **dropped connections** specifically (TCP RST events, WG tunnel drops, ICMP unreachable bursts), the RCA engine runs a specialised decision tree:
+### 4c. Dropped Connection Decision Tree
 
 ```
 Dropped connection detected
-  │
-  ├─ Is the target's ARP entry still present?
-  │     No  → Physical disconnection / power loss
-  │     Yes → continue
-  │
-  ├─ Is the DEFAULT GATEWAY reachable?
-  │     No  → Routing failure (check GW, check route table)
-  │     Yes → continue
-  │
-  ├─ Is the WAN reachable (external ping)?
-  │     No  → ISP / uplink failure
-  │     Yes → continue
-  │
-  ├─ Is the TARGET reachable from another collector?
-  │     No  → Target-side failure
-  │     Yes → Path-specific failure (asymmetric routing / firewall rule)
-  │
-  └─ RTT elevated before the drop?
-        Yes → Congestion-induced timeout (not a hard failure)
-        No  → Application crash / firewall session timeout
+  ├─ ARP entry still present?  No  → POWER_LOSS
+  ├─ Default GW reachable?     No  → ROUTING_FAILURE
+  ├─ WAN reachable?            No  → WAN_CONGESTION / ISP failure
+  ├─ Target reachable from another collector?  No → HOST failure
+  │                                            Yes → PATH_SPECIFIC (asymmetric routing)
+  └─ RTT elevated before drop? Yes → Congestion-induced timeout (not hard failure)
+                               No  → Application crash / firewall session timeout
 ```
-
-This multi-collector correlation requires the `monitor/` process to cross-reference observations from different agents — the key reason the collector/monitor split architecture is correct.
 
 ---
 
@@ -340,23 +778,22 @@ This multi-collector correlation requires the `monitor/` process to cross-refere
 **Academic basis:** Zabala et al. Mathematics 2023; Amjad et al. arXiv 2021  
 **Detail:** See `collector/ROADMAP.md` Phases 4–5
 
-The `monitor/` process computes the **optimal check plan** for each collector based on the current health state of all targets, and pushes updated plans back to the collectors. This closes the control loop:
+The `monitor/` process computes the optimal check plan and pushes it back to each collector:
 
 ```
 monitor/ (control plane):
   1. Receive probe results from collector
-  2. Update MDP state machine per target (STABLE/SUSPECT/DEGRADED/DOWN)
-  3. Compute probe weight per target (proportional to RTT variance — Amjad 2021)
-  4. Generate updated check_plan.json
-  5. Push check_plan back to collector via /config endpoint
+  2. Update MDP state per target: STABLE → SUSPECT → DEGRADED → DOWN
+  3. Compute probe weight ∝ RTT variance (Welford online, Amjad 2021)
+  4. Generate updated check_plan.json (probe intervals per target)
+  5. POST check_plan to collector /config endpoint
 
-collector/ (data plane):
-  1. Receive updated check_plan
-  2. Adjust probe intervals per target state
-  3. Concentrate probe budget on high-variance / degraded targets
+Probe interval by state:
+  STABLE    → base_interval      (default 30s)
+  SUSPECT   → base_interval / 6  (5s — accelerated)
+  DEGRADED  → base_interval / 3  (10s — sustained)
+  DOWN      → base_interval      (30s — heartbeat only)
 ```
-
-The collector-side implementation detail is in `collector/ROADMAP.md`. The monitor-side is the state aggregator and plan generator.
 
 ---
 
@@ -364,43 +801,10 @@ The collector-side implementation detail is in `collector/ROADMAP.md`. The monit
 
 **Component:** `dashboard/`
 
-### 6a. Topology Map
-
-Real-time network graph rendered from ARP/neighbour data + routing table data collected by all agents:
-
-- Nodes: collector hosts, gateways, OT devices, WireGuard peers
-- Edges: annotated with current RTT p95 and loss % (colour-coded: green/amber/red)
-- Node badges: MDP state (STABLE / SUSPECT / DEGRADED / DOWN)
-- Click-through: per-node time-series charts for all metrics
-
-### 6b. Anomaly Timeline
-
-Horizontal swim-lane chart: one lane per collector, one marker per anomaly event, coloured by severity. RCA result shown in tooltip. Makes it easy to see correlated failures across multiple nodes (e.g., "three collectors all saw WAN RTT spike at 14:23").
-
-### 6c. High-Latency Client Table
-
-Live table of clients currently flagged by the eBPF high-latency detector (Phase 2c):
-
-| Client IP | Subnet | RTT p95 (ms) | Baseline p95 (ms) | Ratio | Since |
-|---|---|---|---|---|---|
-| 192.168.1.42 | 192.168.1.0/24 | 87 | 3.2 | 27× | 14:21 |
-
-Sortable by ratio. Clicking opens the full flow history for that client.
-
-### 6d. Alert Routing
-
-```
-Anomaly event → RCA engine → RCAResult
-  │
-  ├─ confidence > 0.8 → auto-alert with cause + remediation hint
-  ├─ confidence 0.6–0.8 → alert flagged as "probable" + manual review suggested  
-  └─ confidence < 0.6 → alert flagged as "UNKNOWN — raw symptoms only"
-
-Channels:
-  • webhook (configurable URL, JSON body)
-  • email (SMTP)
-  • Alertmanager (for Grafana integration, Phase 7)
-```
+- **Topology map:** NetworkX graph rendered to SVG/D3; nodes colour-coded by MDP state; edges annotated with RTT p95 + loss %
+- **Anomaly timeline:** swim-lane chart per collector; one marker per anomaly event; RCA result in tooltip
+- **High-latency client table:** live table from eBPF kprobe events (Phase 2c); sortable by RTT ratio
+- **Alert routing:** webhook / email / Alertmanager; confidence-gated: >0.8 auto-alert, 0.6–0.8 flagged probable, <0.6 raw symptoms only
 
 ---
 
@@ -408,22 +812,19 @@ Channels:
 
 **Component:** `monitor/` + `dashboard/`
 
-Both the `collector/` (see `collector/ROADMAP.md` Phase 7) and `monitor/` expose a `/metrics` Prometheus endpoint. The monitor additionally exports:
+Prometheus metrics from `monitor/`:
 
 ```
-# Anomaly detection outputs
-anomaly_events_total{collector, metric, detector}          counter
-anomaly_active{collector, target, state}                   gauge
-rca_cause_total{cause}                                     counter
-rca_confidence_histogram                                   histogram
-
-# Cross-collector aggregates  
-network_rtt_p95_seconds{src_collector, dst_target}         gauge
-network_loss_ratio{src_collector, dst_target}              gauge
-high_latency_clients_total{subnet}                         gauge
+anomaly_events_total{collector, metric, detector}    counter
+anomaly_active{collector, target, state}             gauge
+rca_cause_total{cause}                               counter
+rca_confidence_histogram                             histogram
+network_rtt_p95_seconds{src_collector, dst_target}  gauge
+network_loss_ratio{src_collector, dst_target}        gauge
+high_latency_clients_total{subnet}                   gauge
 ```
 
-Provide a `dashboard/grafana/` directory with pre-built dashboard JSON for import.
+Pre-built Grafana dashboard JSON in `dashboard/grafana/`.
 
 ---
 
@@ -431,37 +832,29 @@ Provide a `dashboard/grafana/` directory with pre-built dashboard JSON for impor
 
 **Component:** `tests/`, `scripts/`, `config/`
 
-### 8a. Test Coverage
-
 ```
 tests/
 ├── unit/
-│   ├── detector_cusum_test.go   — CUSUM correctness with synthetic anomaly series
-│   ├── detector_ewma_test.go    — EWMA false positive rate validation
-│   ├── rca_engine_test.go       — DAG traversal and belief propagation
-│   └── mdp_scheduler_test.go   — State machine transitions
+│   ├── test_detector_cusum.py      — CUSUM correctness with synthetic anomaly series
+│   ├── test_detector_ewma.py       — EWMA false positive rate validation
+│   ├── test_pca_detector.py        — T² statistic threshold validation
+│   ├── test_rca_engine.py          — DAG traversal and belief propagation
+│   ├── test_rca_graph.py           — symptom→cause edge coverage
+│   └── collector/mdp_scheduler_test.go  — MDP state machine transitions (Go)
 ├── integration/
-│   ├── collector_push_test.go   — Full push cycle with mock aggregator
-│   └── rca_multinode_test.go   — Cross-collector RCA correlation
+│   ├── test_collector_push.py      — Full push cycle with mock aggregator
+│   └── test_rca_multinode.py       — Cross-collector correlation scenarios
 └── load/
-    └── collector_load_test.go  — 1000-target check plan at 5s intervals, <50ms cycle time
+    └── collector_load_test.go      — 1000-target, 5s intervals, <50ms cycle time
 ```
 
-### 8b. Configuration Schema
-
-`config/` should provide validated JSON schemas for:
-- `collector.json` — check plan, target list, push endpoint, eBPF enable flag
-- `monitor.json` — aggregator config, detector parameters (k, h, λ), RCA confidence thresholds
-- `alerts.json` — routing rules, channel credentials
-
-### 8c. Deployment Scripts
-
+Deployment scripts:
 ```
 scripts/
-├── install-collector.sh   — systemd unit install (Linux), requests CAP_BPF if eBPF enabled
-├── install-monitor.sh     — install monitor + configure reverse proxy (caddy/nginx)
-├── install-dashboard.sh  — static build + serve, or Docker compose
-└── update.sh             — rolling update with health check gate
+├── install-collector.sh    — systemd unit; grants CAP_BPF/NET_ADMIN/PERFMON if eBPF enabled
+├── install-monitor.sh      — Python venv + systemd unit + reverse proxy
+├── install-dashboard.sh    — static build or Docker Compose
+└── update.sh               — rolling update with health check gate
 ```
 
 ---
@@ -471,15 +864,15 @@ scripts/
 | Phase | Component | Description | Start | Duration |
 |---|---|---|---|---|
 | **1** | `collector/` | Complete check inventory (ICMP, SNMP, Modbus, WG, TLS, OS, routes) | Now | 5 weeks |
-| **2** | `collector/` | eBPF passive RTT (ePPing + netstacklat + high-latency client detection) | Wk 5 | 2 weeks |
-| **3** | `monitor/` | CUSUM+EWMA+PCA anomaly detection engine with Holt-Winters residuals | Wk 7 | 4 weeks |
-| **4** | `monitor/` | Automated RCA: causal DAG, belief propagation, drop connection decision tree | Wk 11 | 3 weeks |
-| **5** | `monitor/`→`collector/` | MDP adaptive scheduling + Frank-Wolfe probe budget optimisation | Wk 14 | 3 weeks |
+| **2** | `collector/` | eBPF: kprobe TCP RTT (cilium/ebpf + bpf2go), netstacklat, high-latency client detection, container deployment | Wk 5 | 2 weeks |
+| **3** | `monitor/` | CUSUM+EWMA+PCA anomaly detection (Python); Holt-Winters residuals; adaptive slots | Wk 7 | 4 weeks |
+| **4** | `monitor/` | Causal DAG RCA (networkx + naive Bayes); dropped connection decision tree | Wk 11 | 3 weeks |
+| **5** | `monitor/`→`collector/` | MDP adaptive scheduling + Frank-Wolfe probe budget | Wk 14 | 3 weeks |
 | **6** | `dashboard/` | Topology map, anomaly timeline, high-latency client table, alert routing | Wk 17 | 3 weeks |
-| **7** | `monitor/`+`dashboard/` | Prometheus metrics export + Grafana dashboard JSON | Wk 20 | 1 week |
-| **8** | `tests/`+`scripts/`+`config/` | Full test coverage, config schemas, deployment scripts | Wk 21 | 3 weeks |
+| **7** | `monitor/`+`dashboard/` | Prometheus metrics + Grafana dashboard JSON | Wk 20 | 1 week |
+| **8** | `tests/`+`scripts/`+`config/` | Full test suite, config schemas, systemd + Docker deployment | Wk 21 | 3 weeks |
 
-**Total estimated duration: 24 weeks (~6 months)**
+**Total: 24 weeks (~6 months)**
 
 ---
 
@@ -487,21 +880,25 @@ scripts/
 
 | Item | Reason |
 |---|---|
-| Mathematical anomaly detection implementation in `collector/` | The collector is a data-plane agent — lightweight, stateless. All statistical computation lives in `monitor/`. Mixing concerns breaks the architecture. |
-| Full Q-learning / deep RL for MDP scheduler | Requires a failure corpus for training. The finite-state MDP approximation (Phases 1, 5) is deployable immediately without training data and achieves 80% of the theoretical optimum per Zabala 2023. |
-| Packet capture / PCAP recording | Out of scope — eBPF passive monitoring provides RTT and flow metadata without recording payloads. Recording payloads creates GDPR and storage burden. |
-| Custom ML model training pipeline | Not needed — CUSUM+EWMA+PCA are parameter-light statistical methods that require no labelled training data. They have been validated on real ISP networks (Münz 2010). |
+| Anomaly detection in `collector/` | Collector is stateless data-plane only. All maths lives in `monitor/`. |
+| Full Q-learning / deep RL for MDP | Requires failure corpus. Finite-state MDP approximation achieves ~80% of theoretical optimum without training data (Zabala 2023). |
+| PCAP / full packet capture | eBPF provides RTT and flow metadata without payload recording. Avoids GDPR and storage burden. |
+| Custom ML training pipeline | CUSUM+EWMA+PCA are parameter-light; validated on real ISP data (Münz 2010); no labelled training data needed. |
+| eBPF on Windows nodes | Not supported by the Linux kernel eBPF subsystem. Windows nodes use active ICMP probing (graceful fallback). |
 
 ---
 
 ## References
 
-1. Sundberg, S., Brunstrom, A., Ferlin-Reiter, S., Høiland-Jørgensen, T., Brouer, J.D. "Efficient Continuous Latency Monitoring with eBPF." PAM 2023, LNCS 13882. https://doi.org/10.1007/978-3-031-28486-1_9
-2. Rezvani, M. et al. "Characterizing In-Kernel Observability of Latency-Sensitive Workloads using eBPF." ISPASS 2024. https://danielwong.org/files/eBPF-ISPASS2024.pdf
-3. Red Hat Engineering. "Boosting speed: Use eBPF and netstacklat to troubleshoot latency." 2026. https://developers.redhat.com/articles/2026/04/29/boosting-speed-use-ebpf-and-netstacklat-troubleshoot-latency
-4. Münz, G. "Traffic Anomaly Detection and Cause Identification Using Flow-Level Measurements." TU Munich Dissertation, NET-2010-06-1. https://www.net.in.tum.de/fileadmin/TUM/NET/NET-2010-06-1.pdf
-5. Christodoulou, V. et al. "A Combination of CUSUM-EWMA for Anomaly Detection in Time Series." DSAA 2015. https://pure.ulster.ac.uk/en/publications/a-combination-of-cusum-ewma-for-anomaly-detection-in-time-series--3
-6. Tikumporn, W. et al. "Automated Root Cause Analysis of Network Failures in IP Networks." IEEE Access, 2025. https://doi.org/10.1109/ACCESS.2025.11053841
-7. Hinz, J.-T. et al. "TCP's Third Eye: Leveraging eBPF for Telemetry-Powered Congestion Control." ACM SIGCOMM Workshop, 2023. https://dl.acm.org/doi/10.1145/3609021.3609295
-8. Zabala, L. et al. "Optimality of a Network Monitoring Agent." Mathematics 11(3):610, 2023. https://doi.org/10.3390/math11030610
-9. Amjad, M.J. et al. "Optimal Probing with Statistical Guarantees for Network Monitoring at Scale." arXiv:2109.07743, 2021. https://doi.org/10.48550/arXiv.2109.07743
+1. Sundberg et al. "Efficient Continuous Latency Monitoring with eBPF." PAM 2023. https://doi.org/10.1007/978-3-031-28486-1_9
+2. Rezvani et al. "Characterizing In-Kernel Observability of Latency-Sensitive Workloads using eBPF." ISPASS 2024. https://danielwong.org/files/eBPF-ISPASS2024.pdf
+3. Bertrone et al. "COP2: Continuously Observing Protocol Performance." arXiv:1902.04280, 2019. https://arxiv.org/abs/1902.04280
+4. Red Hat Engineering. "netstacklat: eBPF and network stack latency." 2026. https://developers.redhat.com/articles/2026/04/29/boosting-speed-use-ebpf-and-netstacklat-troubleshoot-latency
+5. Münz, G. "Traffic Anomaly Detection and Cause Identification." TU Munich, 2010. https://www.net.in.tum.de/fileadmin/TUM/NET/NET-2010-06-1.pdf
+6. Christodoulou et al. "A Combination of CUSUM-EWMA for Anomaly Detection in Time Series." DSAA 2015. https://pure.ulster.ac.uk/en/publications/a-combination-of-cusum-ewma-for-anomaly-detection-in-time-series--3
+7. Tikumporn et al. "Automated Root Cause Analysis of Network Failures." IEEE Access 2025. https://doi.org/10.1109/ACCESS.2025.11053841
+8. Hinz et al. "TCP's Third Eye: eBPF for Telemetry-Powered Congestion Control." ACM SIGCOMM 2023. https://dl.acm.org/doi/10.1145/3609021.3609295
+9. Zabala et al. "Optimality of a Network Monitoring Agent." Mathematics 11(3):610, 2023. https://doi.org/10.3390/math11030610
+10. Amjad et al. "Optimal Probing with Statistical Guarantees." arXiv:2109.07743, 2021. https://doi.org/10.48550/arXiv.2109.07743
+11. Zhao et al. "Wasm-bpf: Streamlining eBPF Deployment in Cloud Environments." arXiv:2408.04856, 2024. https://arxiv.org/abs/2408.04856
+12. cilium/ebpf examples: tcp_close RTT kprobe. https://github.com/cilium/ebpf/blob/main/examples/tcprtt/
