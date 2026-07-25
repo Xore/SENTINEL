@@ -1,8 +1,8 @@
 # Dev/CI-only dependencies — never bundled into the PyInstaller binary.
 -r requirements.txt
 
-pytest==8.2.2
-pytest-asyncio==0.23.7
+pytest==9.0.3
+pytest-asyncio==1.4.0
 mypy==1.10.0
 ruff==0.4.9
 pyinstaller==6.8.0
