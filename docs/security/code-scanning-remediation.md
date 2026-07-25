@@ -315,7 +315,7 @@ Alternatively, enable **Dependabot for Actions** (already in `.github/dependabot
 - [ ] `release-candidate.yml` — all `uses:` pinned to commit SHAs
 - [ ] `go.yml` — all `uses:` pinned to commit SHAs  
 - [ ] `pylint.yml` — all `uses:` pinned to commit SHAs
-- [ ] `dependabot.yml` includes `package-ecosystem: github-actions` to keep SHAs updated automatically
+- [x] `dependabot.yml` includes `package-ecosystem: github-actions` with security update grouping *(done 2026-07-25)*
 
 ---
 
@@ -346,7 +346,7 @@ The `collector/go.mod` file declares `module network-probe-collector` with `go 1
 
 - [ ] `collector/go.sum` created and committed (even if empty, to establish the pattern)
 - [ ] CI step added to verify `go.sum` is not stale
-- [ ] `go.sum` included in the `dependabot.yml` `go-modules` ecosystem watch
+- [x] `go.sum` included in Dependabot `gomod` ecosystem watch *(done 2026-07-25)*
 
 ---
 
@@ -426,7 +426,7 @@ Update all internal imports after renaming.
 | 3 | Secrets potentially leaked to stdout | Medium | `collector/main.go` | `[ ]` |
 | 4 | Subprocess command injection via config strings | Medium | `monitor/outage_monitor.py` | `[ ]` |
 | 5 | `unicode_escape` decode on untrusted `send` field | Medium | `monitor/outage_monitor.py` | `[ ]` |
-| 6 | Workflow actions not pinned to commit SHAs | Low | `.github/workflows/*.yml` | `[ ]` |
-| 7 | `go.sum` not committed | Low | `collector/go.sum` | `[ ]` |
+| 6 | Workflow actions not pinned to commit SHAs | Low | `.github/workflows/*.yml` | `[~]` partial |
+| 7 | `go.sum` not committed | Low | `collector/go.sum` | `[~]` partial |
 | 8 | `check_http()` accepts 4xx as healthy | Low | `monitor/outage_monitor.py` | `[ ]` |
 | 9 | Module path not a valid import path | Info | `collector/go.mod` | `[ ]` |
