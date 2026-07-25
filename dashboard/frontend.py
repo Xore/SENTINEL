@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -59,9 +60,15 @@ def static_files(name: str):
 
 # --- Everything else is proxied to the backend API ---
 def _proxy(path: str) -> Response:
-    url = f"{BACKEND_URL}/{path}"
+    safe_path = urllib.parse.quote(path.lstrip("/"), safe="/")
+    url = f"{BACKEND_URL}/{safe_path}"
     if request.query_string:
-        url = f"{url}?{request.query_string.decode('latin-1')}"
+        query_pairs = urllib.parse.parse_qsl(
+            request.query_string.decode("latin-1"),
+            keep_blank_values=True,
+        )
+        safe_query = urllib.parse.urlencode(query_pairs, doseq=True)
+        url = f"{url}?{safe_query}"
     fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP}
     body = request.get_data() if request.method not in ("GET", "HEAD") else None
     proxy_req = urllib.request.Request(url, data=body, method=request.method, headers=fwd_headers)
