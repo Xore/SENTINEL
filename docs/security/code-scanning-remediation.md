@@ -1,8 +1,8 @@
 # Code Scanning Remediation Checklist
 
-> **Generated:** 2026-07-25  
-> **Method:** Manual deep review of all source files (Go collector, Python monitor, GitHub Actions workflows).  
-> GitHub Advanced Security / CodeQL is **not enabled** on this repo — see Finding 1 to fix that first, then the automated alerts will supplement this list.
+> **Generated:** 2026-07-25 (re-exported 2026-07-25 19:10 CEST)  
+> **Method:** Manual deep review of all source files (Go collector, Python monitor, GitHub Actions workflows) + live re-audit against current `main` HEAD.  
+> **CodeQL status:** Workflow active (`codeql.yml` v4, `security-extended`, covers `actions` / `go` / `python`). First SARIF upload pending — findings below will be supplemented once the scan completes.
 
 ---
 
@@ -11,7 +11,7 @@
 | Symbol | Meaning |
 |---|---|
 | `[ ]` | Not fixed |
-| `[~]` | Partially fixed |
+| `[~]` | Partially fixed / in progress |
 | `[x]` | Fixed and verified |
 
 ---
@@ -23,46 +23,32 @@
 **Category:** Missing security control  
 
 ### What it is
-The repo has no CodeQL or SAST workflow. GitHub Advanced Security (free for public repos) is also not enabled. All security findings below were found by manual review — automated scanning would catch regressions continuously.
+The repo originally had no CodeQL or SAST workflow. GitHub Advanced Security (free for public repos) was not enabled. All security findings below were found by manual review — automated scanning would catch regressions continuously.
 
-### How to fix
-1. Go to **Settings → Code security and analysis → Code scanning → Set up → Default** and enable CodeQL default setup.
-2. Or add a workflow file `.github/workflows/codeql.yml`:
+### History
 
-```yaml
-name: CodeQL
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  schedule:
-    - cron: '0 4 * * 1'   # weekly on Monday
-jobs:
-  analyze:
-    name: Analyze
-    runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      actions: read
-      contents: read
-    strategy:
-      matrix:
-        language: [go, python]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
-        with:
-          languages: ${{ matrix.language }}
-      - uses: github/codeql-action/autobuild@v3
-      - uses: github/codeql-action/analyze@v3
-```
+| Date | Action |
+|---|---|
+| 2026-07-25 (initial) | Workflow added (`codeql-action/init@v3`, Go + Python) |
+| 2026-07-25 | Upgraded to `codeql-action/init@v4`; removed `autobuild` step; fixed default-setup conflict |
+| 2026-07-25 | Deleted and re-created from GitHub Advanced Setup template (v4) |
+| 2026-07-25 19:03 | **Final form committed:** `security-extended` query suite, path scoping (`collector/`, `monitor/`, `dashboard/`, `.github/workflows`), `actions/setup-go@v5`, concurrency group |
+
+### Current codeql.yml
+
+- Actions: `actions/checkout@v4`, `actions/setup-go@v5`, `github/codeql-action/*@v4`
+- Languages: `actions`, `go` (autobuild), `python` (none)
+- Query suite: `security-extended` (adds CWE-78, CWE-295, CWE-312 coverage)
+- Paths: scoped to project source; `docs/`, `tests/`, `scripts/` excluded
+- Concurrency: cancel-in-progress on the same ref
 
 ### Checklist
 
-- [x] CodeQL workflow added to `.github/workflows/codeql.yml` *(done 2026-07-25 — Go + Python, `security-extended` query suite)*
-- [ ] CodeQL default setup enabled in repo Settings *(optional — workflow approach is active)*
-- [ ] First scan completed with 0 high/critical alerts
+- [x] CodeQL workflow added and active on `main` — v4, `security-extended` *(2026-07-25)*
+- [x] `codeql.yml` uses `setup-go@v5` so Go autobuild succeeds *(2026-07-25)*
+- [ ] First scan SARIF upload completed and visible in Security → Code scanning
+- [ ] First scan shows 0 high/critical alerts (or all alerts are tracked below)
+- [ ] Default setup disabled in Settings to avoid SARIF upload conflicts
 
 ---
 
@@ -71,15 +57,21 @@ jobs:
 **Severity:** High  
 **Location:** `collector/main.go` → `httpClient()` function  
 **CWE:** CWE-295 Improper Certificate Validation  
+**Status (re-audit 2026-07-25):** ❌ **Still present** — no change since initial report.
 
 ### What it is
 
 When `verify_tls` is `false` in the collector config, the HTTP client is built with `InsecureSkipVerify: true`, disabling all TLS certificate validation. This is currently gated by a config field but still creates a footgun: any operator who sets `verify_tls: false` for a self-signed lab backend silently opens the collector to full MITM — including forged update instructions.
 
 ```go
-// collector/main.go
-if !verify {
-    tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}  // ← dangerous
+// collector/main.go — httpClient()
+func httpClient(cfg config) *http.Client {
+    verify := cfg.VerifyTLS == nil || *cfg.VerifyTLS
+    tr := &http.Transport{}
+    if !verify {
+        tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}  // ← CWE-295
+    }
+    return &http.Client{Timeout: 15 * time.Second, Transport: tr}
 }
 ```
 
@@ -125,30 +117,32 @@ func httpClient(cfg config) *http.Client {
 **Severity:** Medium  
 **Location:** `collector/main.go` → `loadConfig()`, `logf()` calls  
 **CWE:** CWE-312 Cleartext Storage of Sensitive Information  
+**Status (re-audit 2026-07-25):** ⚠️ **Partially mitigated** — `main()` logs only `cfg.AggregatorURL`, `cfg.Interval`, `cfg.PingInterval` (no secrets). No `%+v cfg` call exists. However, `config.LogSafe()` / `config.String()` guards are **not yet implemented**, so future log additions remain a risk.
 
 ### What it is
 
 The `logf()` function writes to `stdout` with no redaction. If the config struct is ever printed (e.g. in a debug log added during development), the `ingest_key` and `update_secret` fields will appear in plaintext in systemd journal / container logs.
 
-Currently the config is not printed directly, but the risk grows as the codebase evolves — there is no guard preventing it.
-
 ### How to fix
 
-1. Implement `MarshalJSON` on `config` to redact secrets:
+1. Implement `LogSafe()` and `String()` on `config` to redact secrets:
 
 ```go
 func (c config) LogSafe() string {
-    return fmt.Sprintf("{aggregator_url:%q collector_id:%q interval:%d ping_interval:%d verify_tls:%v ca_cert_file:%q}",
-        c.AggregatorURL, c.CollectorID, c.Interval, c.PingInterval, c.VerifyTLS, c.CACertFile)
+    return fmt.Sprintf("{aggregator_url:%q collector_id:%q interval:%d ping_interval:%d ca_cert_file:%q}",
+        c.AggregatorURL, c.CollectorID, c.Interval, c.PingInterval, c.CACertFile)
     // ingest_key and update_secret deliberately omitted
 }
+
+// String prevents accidental %v / fmt.Println(cfg) leaks
+func (c config) String() string { return c.LogSafe() }
 ```
 
 2. Replace any `logf("%+v", cfg)` patterns with `logf("%s", cfg.LogSafe())`.
-3. Add a `String() string` method to `config` that also redacts secrets (prevents accidental `%v` / `fmt.Println(cfg)` leaks).
 
 ### Checklist
 
+- [~] No active `%+v cfg` log call exists *(mitigated by code structure, not by guard)*
 - [ ] `config.LogSafe()` method added
 - [ ] `config.String()` method added, returns redacted representation
 - [ ] `logf` calls in `loadConfig()` and `main()` use `cfg.LogSafe()`
@@ -161,6 +155,7 @@ func (c config) LogSafe() string {
 **Severity:** Medium  
 **Location:** `monitor/outage_monitor.py` → `PingWorker.build_command()`, `check_dns()`, `route_probe()`  
 **CWE:** CWE-78 OS Command Injection  
+**Status (re-audit 2026-07-25):** ❌ **Still open** — no change since initial report.
 
 ### What it is
 
@@ -178,7 +173,7 @@ command += ["-I", interface]
 command += ["--", address]
 ```
 
-If the config file is writable by a lower-privilege process or modified via the dashboard API without sufficient sanitization, an attacker could inject flags into these commands (e.g., `interface = "eth0\n-e malicious_script"`).
+If the config file is writable by a lower-privilege process or modified via the dashboard API without sufficient sanitization, an attacker could inject flags into these commands.
 
 ### How to fix
 
@@ -232,6 +227,7 @@ def validate_iface(name: str) -> str:
 **Severity:** Medium  
 **Location:** `monitor/outage_monitor.py` → `load_ports()` (both JSON and CSV branches)  
 **CWE:** CWE-116 Improper Encoding or Escaping of Output  
+**Status (re-audit 2026-07-25):** ❌ **Still open** — no change since initial report.
 
 ### What it is
 
@@ -241,19 +237,15 @@ The `send` field in port entries goes through a two-step decode that is known to
 send.encode("utf-8").decode("unicode_escape").encode("latin-1")
 ```
 
-`unicode_escape` interprets `\x`, `\u`, `\N{...}` sequences and can produce unexpected byte sequences from attacker-controlled config. If the config JSON is ever editable by a lower-trust user (e.g., via the dashboard API), this is a vector for injecting arbitrary bytes into the TCP probe payload.
+`unicode_escape` interprets `\x`, `\u`, `\N{...}` sequences and can produce unexpected byte sequences from attacker-controlled config.
 
 ### How to fix
 
 Replace with a strictly controlled escape handler that only allows `\r`, `\n`, `\t`, and `\xNN`:
 
 ```python
-import re as _re
-
-_ESCAPE_RE = _re.compile(r'\\([rntx][0-9a-fA-F]{0,2})')
-
 def decode_send_field(raw: str) -> bytes:
-    """Safe alternative to unicode_escape — only \r \n \t \xNN allowed."""
+    """Safe alternative to unicode_escape — only \\r \\n \\t \\xNN allowed."""
     result = bytearray()
     i = 0
     while i < len(raw):
@@ -286,17 +278,11 @@ Replace all occurrences of `send.encode("utf-8").decode("unicode_escape").encode
 **Severity:** Low  
 **Location:** `.github/workflows/release-candidate.yml`, `.github/workflows/go.yml`, `.github/workflows/pylint.yml`  
 **CWE:** CWE-829 Inclusion of Functionality from Untrusted Control Sphere  
+**Status (re-audit 2026-07-25):** ⚠️ **Partially fixed** — Dependabot watches `github-actions` ecosystem (done). Floating tags (`@v4`, `@v7`, `@v8`) remain in `release-candidate.yml`, `go.yml`, `pylint.yml`. `codeql.yml` also uses floating `@v4` / `@v5`.
 
 ### What it is
 
-All workflows pin actions to floating major tags (`@v4`, `@v7`, `@v8`) rather than immutable commit SHAs. A compromised or typosquatted action maintainer can push a new tag pointing to malicious code, which would then run in CI with `id-token: write` and `contents: write` permissions.
-
-Examples in `release-candidate.yml`:
-```yaml
-- uses: actions/checkout@v7           # floating
-- uses: actions/attest-build-provenance@v4  # floating
-- uses: actions/download-artifact@v8  # floating
-```
+All workflows pin actions to floating major tags rather than immutable commit SHAs. A compromised or typosquatted action maintainer can push a new tag pointing to malicious code, which would then run in CI with `id-token: write` and `contents: write` permissions.
 
 ### How to fix
 
@@ -306,16 +292,17 @@ Pin to full commit SHAs:
 # Replace floating tags with pinned SHAs, e.g.:
 - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683       # v4.2.2
 - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34        # v5.3.0
-- uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282  # v2.2.3
+- uses: github/codeql-action/init@v4                                      # pin to SHA
 ```
 
-Alternatively, enable **Dependabot for Actions** (already in `.github/dependabot.yml` — verify it covers `actions:` ecosystem).
+Alternatively, let Dependabot propose the SHA-pinned updates (already watching the `actions` ecosystem).
 
 ### Checklist
 
 - [ ] `release-candidate.yml` — all `uses:` pinned to commit SHAs
 - [ ] `go.yml` — all `uses:` pinned to commit SHAs  
 - [ ] `pylint.yml` — all `uses:` pinned to commit SHAs
+- [ ] `codeql.yml` — all `uses:` pinned to commit SHAs
 - [x] `dependabot.yml` includes `package-ecosystem: github-actions` with security update grouping *(done 2026-07-25)*
 
 ---
@@ -325,6 +312,7 @@ Alternatively, enable **Dependabot for Actions** (already in `.github/dependabot
 **Severity:** Low  
 **Location:** `collector/go.sum` (missing)  
 **CWE:** CWE-829 Inclusion of Functionality from Untrusted Control Sphere  
+**Status (re-audit 2026-07-25):** ⚠️ **Still partially open** — `go.mod` is stdlib-only (`go 1.22`, no external deps), so `go.sum` is legitimately empty. Pattern must be established before Phase 9/10 deps are added.
 
 ### What it is
 
@@ -346,7 +334,7 @@ The `collector/go.mod` file declares `module network-probe-collector` with `go 1
 ### Checklist
 
 - [ ] `collector/go.sum` created and committed (even if empty, to establish the pattern)
-- [ ] CI step added to verify `go.sum` is not stale
+- [ ] CI step added to `go.yml` to verify `go.sum` is not stale
 - [x] `go.sum` included in Dependabot `gomod` ecosystem watch *(done 2026-07-25)*
 
 ---
@@ -356,6 +344,7 @@ The `collector/go.mod` file declares `module network-probe-collector` with `go 1
 **Severity:** Low  
 **Location:** `monitor/outage_monitor.py` → `check_http()`  
 **CWE:** CWE-252 Unchecked Return Value  
+**Status (re-audit 2026-07-25):** ❌ **Still open** — no change since initial report.
 
 ### What it is
 
@@ -370,14 +359,11 @@ A 401 Unauthorized, 403 Forbidden, or 404 Not Found response is reported as `ok=
 Make the success range configurable per service entry and default to 2xx only:
 
 ```python
-# In check_http, accept an optional expected_status_range parameter
 def check_http(target: str, ok_range: tuple[int,int] = (200, 299)) -> tuple[bool, float | None, str]:
     ...
     ok = ok_range[0] <= response.status <= ok_range[1]
     return ok, round(total, 1), detail
 ```
-
-For Phase 9 PKI endpoint monitoring, the expected status is `200` (enrollment) or `204` (revocation) — not a broad `< 500`.
 
 ### Checklist
 
@@ -391,6 +377,7 @@ For Phase 9 PKI endpoint monitoring, the expected status is `200` (enrollment) o
 
 **Severity:** Informational  
 **Location:** `collector/go.mod`  
+**Status (re-audit 2026-07-25):** ❌ **Still open** — module is still `network-probe-collector`.
 
 ### What it is
 
@@ -420,14 +407,24 @@ Update all internal imports after renaming.
 
 ## Summary Table
 
-| # | Finding | Severity | File | Fixed |
+> Last full re-audit: **2026-07-25 19:10 CEST** against `main` HEAD `e5573a6`.
+
+| # | Finding | Severity | File | Status |
 |---|---|---|---|---|
-| 1 | No CodeQL / automated scanning | High | `.github/workflows/` | `[~]` workflow added, first scan pending |
-| 2 | `InsecureSkipVerify: true` in HTTP client | High | `collector/main.go` | `[ ]` |
-| 3 | Secrets potentially leaked to stdout | Medium | `collector/main.go` | `[ ]` |
+| 1 | No CodeQL / automated scanning | High | `.github/workflows/` | `[x]` workflow active (v4, security-extended) — first scan pending |
+| 2 | `InsecureSkipVerify: true` in HTTP client | High | `collector/main.go` | `[ ]` still present |
+| 3 | Secrets potentially leaked to stdout | Medium | `collector/main.go` | `[~]` no active leak, guard not yet implemented |
 | 4 | Subprocess command injection via config strings | Medium | `monitor/outage_monitor.py` | `[ ]` |
 | 5 | `unicode_escape` decode on untrusted `send` field | Medium | `monitor/outage_monitor.py` | `[ ]` |
-| 6 | Workflow actions not pinned to commit SHAs | Low | `.github/workflows/*.yml` | `[~]` partial |
-| 7 | `go.sum` not committed | Low | `collector/go.sum` | `[~]` partial |
+| 6 | Workflow actions not pinned to commit SHAs | Low | `.github/workflows/*.yml` | `[~]` Dependabot watching; SHAs not yet pinned |
+| 7 | `go.sum` not committed | Low | `collector/go.sum` | `[~]` stdlib-only so empty; must add before Phase 9 deps |
 | 8 | `check_http()` accepts 4xx as healthy | Low | `monitor/outage_monitor.py` | `[ ]` |
-| 9 | Module path not a valid import path | Info | `collector/go.mod` | `[ ]` |
+| 9 | Module path not a valid import path | Info | `collector/go.mod` | `[ ]` still `network-probe-collector` |
+
+### Priority order for next sprint
+
+1. **Finding 2** (High) — remove `InsecureSkipVerify`; add `ca_cert_file` support. Blocks Phase 9.
+2. **Finding 4** (Medium) — add `validate_address()` / `validate_iface()`. CodeQL `security-extended` will flag CWE-78; fix before first scan upload.
+3. **Finding 5** (Medium) — replace `unicode_escape` with `decode_send_field()`.
+4. **Finding 3** (Medium) — add `config.LogSafe()` / `config.String()` guard.
+5. **Findings 6–7–8–9** (Low/Info) — batch into a single hardening PR.
