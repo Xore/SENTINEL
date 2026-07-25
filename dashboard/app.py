@@ -1893,11 +1893,15 @@ def job_detail(job_id: str):
 @app.get("/api/ids/alert")
 def ids_alert_detail():
     """Every EVE event for one flow_id - the full context around an alert."""
-    flow = str(request.args.get("flow", "")).strip()
-    if not re.fullmatch(r"[0-9]+", flow):
+    flow_raw = str(request.args.get("flow", "")).strip()
+    try:
+        flow_id = int(flow_raw, 10)
+    except (TypeError, ValueError):
+        return jsonify(error="a numeric flow id is required"), 400
+    if flow_id < 0:
         return jsonify(error="a numeric flow id is required"), 400
     command = [os.environ.get("PROBE_PYTHON", sys.executable), str(ROOT / "monitor" / "ids_reader.py"),
-               "--log", str(IDS_LOG), "--flow", flow]
+               "--log", str(IDS_LOG), "--flow", str(flow_id)]
     code, output = run(command, 20)
     try:
         return jsonify(json.loads(output))
