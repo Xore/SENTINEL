@@ -84,6 +84,7 @@ def check_tcp(host: str, port: int) -> dict:
 def check_tls(host: str, port: int, name: str) -> dict:
     """Certificate + handshake facts via a single TLS connection (no app data)."""
     ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE  # read the cert even if self-signed (switches/APs)
     try:
