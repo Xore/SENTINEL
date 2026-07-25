@@ -1,319 +1,230 @@
-# Portable IT/OT Network Analysis Probe
+# SENTINEL
+### Scalable Edge Network Telemetry and Intelligent Network ELement
 
-This repository is a deployment and operating guide for a **lightweight Ubuntu 24.04 LTS network probe**. The core is Wireshark/TShark/Dumpcap for packet evidence and scripted summaries. Add ntopng for a live web overview, Zeek for durable connection/protocol logs, and Suricata only if signature-based IDS alerts are required. There is no Elasticsearch/OpenSearch stack and no mandatory container platform.
+> **v1 (current):** A single-host IT/OT network probe — passive capture, active checks, anomaly detection, and a Python/Flask dashboard.  
+> **v2 (in design):** A distributed fleet of Go collectors reporting to a multi-service backend (Go ingestion + Python analysis + Go API) with a SvelteKit frontend, VictoriaMetrics time-series storage, PostgreSQL, and an ML-based baseline learning engine. **v2 is not yet implemented.** See [docs/architecture/ARCHITECTURE-V2.md](docs/architecture/ARCHITECTURE-V2.md) for the full design.
 
-The probe is **passive-first**. It observes mirrored traffic from a managed-switch SPAN port or a network TAP. Active checks are deliberately separate, target allow-listed, low-rate, and must be approved by the OT system owner. Never connect this device inline with a control path.
+---
 
-Start with [ARCHITECTURE.md](ARCHITECTURE.md) for scan levels, component boundaries, device profiles, health signals, scheduling, and the implementation roadmap.
+## What is SENTINEL?
 
-Future use cases and prioritized features are tracked in [ROADMAP.md](ROADMAP.md).
+SENTINEL is a **lightweight, passive-first IT/OT network monitoring system** designed for environments where visibility matters and false positives cost operational time. It runs on commodity hardware — a laptop, a Raspberry Pi, or a small VM — and requires no external SIEM, no Elasticsearch stack, and no container platform.
 
-## Recommended architecture
+The probe is **passive by default**. It observes mirrored traffic from a managed-switch SPAN port or a network TAP. Active checks are deliberately separate, target allow-listed, low-rate, and require approval from the OT system owner. Never connect this device inline with a control path.
+
+---
+
+## v1 — Current Implementation
+
+v1 is a **monolithic single-host probe** built around a Python analysis stack and a Flask web dashboard. It is operational today.
+
+### Architecture
 
 ```text
                           management VLAN / VPN
  Analyst browser  <-------------------------------->  NIC 1 (IP, firewall)
-                                                        Laptop
+                                                        Probe host
  Switch TAP/SPAN  --------------------------------->  NIC 2 (no IP)
-                                              Wireshark + optional services
- Optional Wi-Fi adapter  -------------------------->  monitor capture
+                                              Passive capture + optional services
+ Optional Wi-Fi adapter  -------------------------->  monitor-mode capture
 ```
 
-- **Management NIC:** built-in Ethernet or a dedicated USB NIC (this build uses the built-in Ethernet on DHCP, currently `10.0.255.7`). Remote UI and SSH live here.
-- **Capture NIC:** a separate Intel-based wired adapter, with no IP address. Feed it from a TAP or correctly configured SPAN port.
-- **Wi-Fi capture:** use a separate Linux-compatible USB adapter that supports monitor mode. One radio/channel cannot provide a complete view of all bands/channels. Capturing protected Wi-Fi payloads requires authorized access and appropriate keys; metadata is still useful without them.
-- **Do not use a hub-like laptop connection as an inline bridge.** A laptop failure must not interrupt production.
+- **Management NIC:** built-in Ethernet or USB NIC on DHCP. Dashboard and SSH live here.
+- **Capture NIC:** separate Intel-based wired adapter with no IP address. Fed from a TAP or SPAN port.
+- **Wi-Fi capture:** separate Linux-compatible USB adapter in monitor mode. One radio/channel cannot provide a complete view; capturing encrypted Wi-Fi payloads requires authorisation and appropriate keys.
+- **Do not use a laptop connection as an inline bridge.** A probe failure must not interrupt production.
 
-## Laptop specification
+### Hardware target
 
-Practical target for a small network or field investigation (far smaller than an all-in-one SIEM/NDR appliance):
-
-| Component | Recommended | Minimum for evaluation |
+| Component | Recommended | Minimum |
 |---|---:|---:|
 | CPU | x86-64, 6–8 modern cores | 4 cores |
 | RAM | 16–32 GB | 8 GB |
 | Storage | 1–2 TB NVMe TLC | 512 GB SSD |
 | Networking | 2 independent Ethernet NICs; Intel preferred | 2 NICs |
-| Other | TPM 2.0, full-disk encryption, wired power, cooling | — |
+| Other | TPM 2.0, full-disk encryption, wired power | — |
 
-Packet retention, not the tools, usually determines storage: average traffic in Mbit/s multiplied by `10.8` is approximately GB/day of raw packet data. At 50 Mbit/s, raw PCAP is about 540 GB/day. Use a bounded ring buffer and keep long-term Zeek summaries instead of all payloads.
+### Install sequence
 
-## Install sequence
+> **In a hurry?** [`scripts/setup.sh`](scripts/setup.sh) is a unified, menu-driven installer. Preview with `./scripts/setup.sh --standalone --dry-run`, then apply with `sudo ./scripts/setup.sh --standalone --apply`. Full guide: [docs/guides/00-setup.md](docs/guides/00-setup.md).
 
-> **In a hurry?** [`scripts/setup.sh`](scripts/setup.sh) is a unified, menu-driven
-> installer that runs the component scripts below in the right order. Preview a
-> node with `./scripts/setup.sh --standalone --dry-run`, then apply it with
-> `sudo ./scripts/setup.sh --standalone --apply`. Full guide:
-> [docs/guides/00-setup.md](docs/guides/00-setup.md). The numbered steps below remain the
-> reference for what each component does and the safety context around it.
+1. Read [docs/guides/01-design-and-safety.md](docs/guides/01-design-and-safety.md) and obtain written authorisation and network scope.
+2. Install **Ubuntu Desktop 24.04 LTS** with full-disk encryption.
+3. Patch Ubuntu, create a non-root administrator, enable Secure Boot if supported.
+4. Copy this repository to the probe, run `sudo ./scripts/preflight.sh`, then `sudo ./scripts/install-lightweight.sh`.
+5. Follow [docs/guides/02-install-lightweight.md](docs/guides/02-install-lightweight.md) for optional ntopng, Zeek, and Suricata layers.
+6. Install the dashboard service:
+   ```bash
+   sudo cp -r ~/analyseLaptop /opt/analyseLaptop
+   sudo chmod -R a+rX /opt/analyseLaptop
+   sudo /opt/analyseLaptop/scripts/install-dashboard-service.sh --apply
+   sudo /opt/analyseLaptop/scripts/install-outage-monitor.sh --apply
+   ```
+7. (Optional) Passive signature IDS: `sudo ./scripts/install-ids.sh --apply [capture-interface]`
+8. (Optional) LLDP/CDP neighbour discovery: `sudo ./scripts/install-neighbors.sh --apply`
+9. (Optional) Live flow analysis: `sudo ./scripts/install-ntopng.sh --apply [capture-interface]`
+10. Configure the SPAN/TAP per [docs/guides/03-capture-and-wifi.md](docs/guides/03-capture-and-wifi.md).
+11. Enter known assets in `config/assets.csv`.
+12. After authorisation: copy `config/targets.example.csv` to `config/targets.csv` for active checks.
+13. Routine operation: [docs/guides/04-operations.md](docs/guides/04-operations.md).
 
-1. Read [docs/guides/01-design-and-safety.md](docs/guides/01-design-and-safety.md) and obtain written authorization and network scope.
-2. Install **Ubuntu Desktop 24.04 LTS** (GUI needed to join Wi-Fi via NetworkManager) with full-disk encryption. Use the standard Ubuntu installer and choose the partitioning manually; avoid any appliance ISO that can erase all non-removable storage without confirmation.
-3. Patch Ubuntu, create a non-root administrator, and enable Secure Boot if supported. The management NIC takes its address from DHCP (this build: `10.0.255.7`); a static reservation on the switch/router is fine. Do not configure an address, route, DNS, or gateway on the capture NIC.
-4. Copy this repository to the probe, run `sudo ./scripts/preflight.sh`, then `sudo ./scripts/install-lightweight.sh`. The first is read-only; the second shows the package plan and asks before installing.
-5. Follow [docs/guides/02-install-lightweight.md](docs/guides/02-install-lightweight.md) to select optional ntopng, Zeek, and Suricata layers.
-6. To install the local dashboard as a restricted service, copy the repository to a system path first (Ubuntu home directories are mode 750, so the service user cannot read `/home/<user>`): `sudo cp -r ~/analyseLaptop /opt/analyseLaptop && sudo chmod -R a+rX /opt/analyseLaptop`. Then review and run `sudo /opt/analyseLaptop/scripts/install-dashboard-service.sh --apply`, validate with `./scripts/verify-probe.sh`, and add the outage monitor with `sudo /opt/analyseLaptop/scripts/install-outage-monitor.sh --apply`.
-7. (Optional) Add passive attack detection: review and run `sudo /opt/analyseLaptop/scripts/install-ids.sh --apply [capture-interface]` to install Suricata (ET Open rules, AF_PACKET IDS mode). Alerts appear in the dashboard's Security tab. See "Attack detection (signature IDS)" below.
-8. (Optional) Add neighbour discovery: review and run `sudo /opt/analyseLaptop/scripts/install-neighbors.sh --apply` to install lldpd **receive-only** (passive: listens for LLDP/CDP frames, never transmits). The dashboard's Neighbours tab then shows which switch/port/VLAN the probe is plugged into. See "Neighbours and SNMP" below.
-9. (Optional) Add live flow analysis: review and run `sudo /opt/analyseLaptop/scripts/install-ntopng.sh --apply [capture-interface]` to install ntopng (passive libpcap capture, its own web UI on port 3000, first login forces a password change). Once detected, the dashboard's Overview tab shows a "ntopng flows" link.
-10. Configure the SPAN/TAP and validate packet visibility using [docs/guides/03-capture-and-wifi.md](docs/guides/03-capture-and-wifi.md).
-11. Enter known assets in `config/assets.csv`; it becomes the human-owned reference for results.
-12. Only after authorization, copy `config/targets.example.csv` to `config/targets.csv` and use `sudo ./scripts/ot-reachability.sh config/targets.csv` for narrowly scoped TCP checks.
-13. Use [docs/guides/04-operations.md](docs/guides/04-operations.md) for acceptance tests and routine operation.
+### Core components (v1)
 
-## Continuous outage monitor
+| Component | Language | Role |
+|---|---|---|
+| `monitor/outage_monitor.py` | Python | Continuous per-path ping/Wi-Fi recorder, outage events, service checks, route tracking |
+| `monitor/discovery.py` | Python | LAN host inventory — IP, MAC, vendor, reverse DNS |
+| `monitor/wifi_survey.py` | Python | Wi-Fi AP/channel survey (nmcli/iw) |
+| `monitor/ids_reader.py` | Python | Read-only Suricata `eve.json` alert reader |
+| `monitor/snmp_probe.py` | Python | Read-only single-host SNMP (v2c/v3) |
+| `dashboard/` | Python/Flask | Local web UI + API; SQLite backend |
+| `collector/` | Go | Active-check agent (ICMP, DNS, HTTP/S, TCP, NTP); cross-platform |
+| `scripts/` | Bash | Install, capture, verification, and operator tools |
 
-The probe's primary live instrument is the **outage monitor**
-(`monitor/outage_monitor.py`), built for intermittent failures such as
-"Wi-Fi stays associated but traffic drops for seconds" or "internal network
-dead for 1–2 minutes while 1.1.1.1 still answers":
+### What v1 detects
 
-- One `ping -O` stream per (target, interface) pair, one sample per second.
-  Probing the same destinations via the Wi-Fi *and* wired NICs separates
-  radio problems from network problems. Each target's source adapter is
-  editable from **Settings → What to probe** (an interface dropdown); blank
-  means the OS routes it. Both the ping stream (`ping -I <iface>`) and the
-  route probe (`mtr -I <iface>`) honour the choice.
-- Wi-Fi link telemetry every 5 s (signal, bitrate, tx retries/failures,
-  beacon loss) plus per-NIC drop/error counters.
-- Everything lands in SQLite (`/var/lib/network-probe/monitor.db`, 14-day
-  retention). Outage events open after 3 consecutive misses, close after
-  5 consecutive replies, and are classified on close (`wifi-only`,
-  `internal-only (internet still reachable)`, `total-outage`, …).
-- On event start, a 15 s broadcast/multicast capture on the wired interface
-  records the top-talking MAC addresses — a broadcast storm from one client
-  keeps flowing while unicast is dead, so the snapshot frequently names the
-  culprit.
-- Service-health profiles every 60 s from `monitor-services.csv`: DNS query
-  time (per resolver), HTTP/HTTPS with separate connect/TLS/response timings,
-  plain TCP connect, and chrony NTP sync offset.
-- Route and per-hop quality: every 5 min an `mtr -n -j` run to each
-  internal/external reference records the full hop chain **and** per-hop
-  metrics (loss %, last/avg/best/worst RTT and StDev as jitter). A changed
-  hop sequence becomes a route event; the latest per-hop metrics are stored
-  in `route_metrics` for the map below. `mtr` runs unprivileged because
-  `/usr/bin/mtr-packet` carries `cap_net_raw` (installed via `mtr-tiny`).
-- Per-interface packets/s, multicast/s and drop rates derived from NIC
-  counters.
-- Plots (loss, RTT, Wi-Fi signal, service latency, traffic rate, outage
-  bands), route tables and the event timeline live at `/monitor`, together
-  with two path views built from the mtr data: an **internal path map**
-  (SVG topology of the hops between the probe and each target, trimmed at
-  the WAN gateway) and **hop-quality cards** — one card per hop toward the
-  WAN, each showing that hop's latency, jitter and loss.
+- Suricata signature alerts (Security tab)
+- New or unexpected devices, services, DHCP/DNS behaviour, TLS certificates, communication pairs
+- Traffic volume, top talkers, failed connections, retransmission clues, broadcast/multicast behaviour
+- Passive S7comm, S7comm Plus, PROFINET, and OPC UA operations visible at the monitored point
+- Unexpected engineering-station/PLC relationships, programming/upload/download, unusual OPC UA connections
+- Wi-Fi RF issues: retransmissions, beacon loss, channel congestion
+- Per-hop route changes and latency degradation via `mtr`
 
-### Dashboard exposure and login
+**What it cannot see:** traffic that does not cross the monitored link, encrypted application content without keys, radio traffic on channels not currently monitored, or attacks that leave no observable network trace.
 
-By default the dashboard binds to `127.0.0.1` (SSH tunnel to view). To expose
-it on the management-LAN address instead, install with:
+### Dashboard exposure
+
+By default the dashboard binds to `127.0.0.1` (access via SSH tunnel). To expose on the management LAN:
 
 ```bash
 sudo PROBE_EXPOSE=lan /opt/analyseLaptop/scripts/install-dashboard-service.sh --apply
 ```
 
-This binds to the current IPv4 address of the default-route interface and turns
-on the username/password login. Sign in with the default **admin / admin**, then
-set a real password under **Settings → Account** (stored as a salted hash;
-sessions are in-memory, so a restart signs everyone out). The transport is plain
-HTTP: acceptable on a trusted management network, never through a port-forward to
-the internet. If the LAN address changes (DHCP), re-run the installer.
+Default login: **admin / admin** — change immediately under **Settings → Account**. Transport is plain HTTP; acceptable on a trusted management network, never through a public port-forward.
 
-Install after the dashboard service:
+### Continuous outage monitor
 
-```bash
-sudo ./scripts/install-outage-monitor.sh --apply
-```
+The primary live instrument is `monitor/outage_monitor.py`:
 
-This seeds three config files under `/etc/network-probe/` (edit them, then
-`sudo systemctl restart network-probe-monitor`):
+- One `ping -O` stream per (target, interface) pair, one sample per second. Probing the same destinations via Wi-Fi *and* wired NIC separates radio problems from network problems.
+- Wi-Fi link telemetry every 5 s (signal, bitrate, tx retries/failures, beacon loss).
+- Everything lands in SQLite (`/var/lib/network-probe/monitor.db`, 14-day retention). Outage events open after 3 consecutive misses, close after 5 consecutive replies.
+- Service-health profiles every 60 s: DNS query time, HTTP/HTTPS with connect/TLS/response timings, TCP connect, NTP sync offset.
+- Route quality: `mtr -n -j` every 5 min per target — full hop chain with per-hop loss %, last/avg/best/worst RTT, and jitter.
+- Plots, route tables, and event timeline live at `/monitor` — including an internal path map (SVG topology) and hop-quality cards.
 
-- `monitor-targets.csv` — ping targets (gateway, internal servers, external
-  references), one per interface, that drive outage detection.
-- `monitor-services.csv` — DNS/HTTP/HTTPS/TCP/NTP service checks with per-phase
-  timing.
-- `monitor-ports.csv` — per-port health checks. Well-known ports (80, 443, 22,
-  53, 25, 6379, …) probe and expect a valid response automatically; custom
-  ports take an optional `send`/`expect`. OT/control ports (S7 102, Modbus 502,
-  OPC UA 4840, PROFINET, EtherNet/IP, DNP3, BACnet, SNMP) are **connect-only** —
-  the probe never sends an application payload to them.
+### Collector (Go, cross-platform)
 
-### Traffic generator
+The `collector/` directory contains a **Go-based active-check agent** that runs on any host (Linux, Windows, macOS) and reports to the probe API.
 
-The `/monitor` page includes a bounded traffic generator for path/port testing
-(TCP/UDP, custom text/hex/sized payloads, optional expected-response regex). It
-only sends to destinations in `/etc/network-probe/traffic-gen-allow.csv`
-(`host,port,proto`, seeded empty) and is hard-capped at 1000 messages, 100/s,
-64 KB payload, 60 s total. Control-system ports are refused outright — it is a
-test tool, not a fuzzer or load flooder.
+Checks: ICMP ping, DNS resolution, HTTP/HTTPS timing, TCP connect, NTP offset, port health.
 
-### Broad view: LAN discovery and Wi-Fi survey
-
-Beyond the outage instrument, the main dashboard gives the wide network picture
-the probe was built for:
-
-- **Discovery** tab — a device inventory of a directly-connected subnet: IP,
-  MAC, best-effort vendor (OUI table skewed toward IT/OT/network gear) and
-  reverse-DNS name, from a light ICMP/ARP host sweep plus the kernel neighbour
-  cache (`monitor/discovery.py`). Host discovery only — no port scan, and never
-  a payload to OT devices. The subnet is bounded to the probe's own connected
-  networks (prefix /22–/30) so a typo cannot sweep the internet.
-- **Wi-Fi** tab — an AP/channel survey (`monitor/wifi_survey.py`): every SSID
-  on air with BSSID, channel, band, signal and security label, plus a
-  per-channel occupancy summary — the "which AP is the Wi-Fi coming from and
-  how busy is the RF neighbourhood" view. It reads NetworkManager's scan cache
-  (no root) and needs the radio enabled.
-- For deeper 802.11 work, `sudo scripts/wifi-monitor-capture.sh <iface>
-  <channels> [seconds]` puts a radio into monitor mode, channel-hops, captures
-  management/control frames and summarises the beaconing APs and client
-  stations. It needs `CAP_NET_ADMIN`, so it is an operator sudo tool and is
-  deliberately not a dashboard button (the web process stays unprivileged).
-
-> **Wi-Fi note:** this build's Intel 8260 radio driver (`iwlwifi`) and firmware
-> are present and monitor-mode is supported, but the radio can be **rfkill
-> hard-blocked** by the Dell wireless switch/BIOS. If the survey reports the
-> radio is off, enable the wireless switch or the WLAN radio in BIOS/UEFI, then
-> join the network through the desktop GUI.
-
-### Attack detection (signature IDS)
-
-For the "detect attacks, not just issues" half of the brief, the probe runs a
-passive signature IDS:
-
-- **Security** tab — recent Suricata alerts (time, severity, signature,
-  category, source/destination) plus a per-severity and top-signature summary
-  and engine health. It is read-only: the dashboard tails Suricata's `eve.json`
-  through `monitor/ids_reader.py` and never starts, stops, or reconfigures the
-  engine.
-- Install it once on the probe with `sudo ./scripts/install-ids.sh --apply
-  [interface]`. This installs Suricata (Ubuntu repo, single binary — the
-  lightweight choice over Zeek), pulls the Emerging Threats **Open** ruleset,
-  and enables it as a systemd service in **AF_PACKET IDS mode — passive only,
-  never inline/IPS**, so it can flag but never block or alter traffic.
-- Point it at a no-IP **capture NIC on a SPAN/TAP** when you have one; with only
-  the management interface it still sees traffic to/from the probe plus
-  broadcast/multicast (enough to catch scans against the probe, ARP anomalies
-  and broadcast-storm signatures). Re-run the installer with the capture
-  interface name to switch.
-- Alerts are exposed to the unprivileged web account by dropping Suricata's
-  post-capture group to `probe-dashboard` (group-readable `eve.json`); the web
-  process is never granted sudo.
-
-### Neighbours and SNMP
-
-Two inventory features answer "what is the probe connected to?":
-
-- **Neighbours (LLDP/CDP)** — `scripts/install-neighbors.sh --apply` installs
-  lldpd configured **receive-only**: it listens for neighbour advertisements but
-  never transmits its own, keeping the probe passive on OT networks. The
-  Neighbours tab then shows the switch name, remote port/port-description, VLAN
-  and management IP for the link the probe is plugged into. The unprivileged web
-  process reads them through `lldpctl` (the installer adds `probe-dashboard` to
-  lldpcli's exec group and makes the control socket group-readable — no sudo).
-- **SNMP** — a read-only, single-host `snmpget`/`snmpwalk` probe (system group +
-  interface list). It runs only against the host you type, using credentials
-  stored in **Settings** (v2c community or v3 user/auth/priv). It never sweeps a
-  range. Keep it off production OT without a change window (see the safety
-  boundary below).
-
-Both surface a management IP that, like every IP in discovery and the alert
-feed, is click-to-trace (`tracepath`) from the dashboard.
-
-## Collector (Go, cross-platform)
-
-The `collector/` directory contains a lightweight **Go-based active-check agent** designed to run on any host (Linux, Windows, macOS) and report results to the probe's dashboard API. It complements the passive `monitor/` stack by providing structured, scheduled active telemetry from remote endpoints or from the probe itself in standalone mode.
-
-Current checks (`collector/checks.go`):
-
-- **ICMP ping** — binary reachability and RTT via raw sockets (Linux: `ping_linux.go`, Windows: `ping_windows.go`; privilege re-exec handled by `reexec_unix.go` / `reexec_windows.go`)
-- **DNS resolution** — query time per resolver
-- **HTTP/HTTPS** — connect, TLS handshake, and response timing with status-code validation
-- **TCP connect** — port reachability with configurable timeout
-- **NTP** — chrony/NTP offset check
-- **Port scan (allow-listed)** — bounded port health checks
-
-The collector is scheduled on a fixed 30 s tick (`collector/main.go`). Results are written to the dashboard API or local SQLite store. A test suite covering all check types lives in `collector/collector_test.go`. Pre-built binaries land in `collector/dist/` via the CI release workflow.
-
-> **Roadmap note:** the collector is the target for feature-parity with the Python `monitor/` stack (RTT distributions, Wi-Fi link quality, interface error counters, route/hop tracing, adaptive MDP scheduling, SNMP GET, and Prometheus export). See [ROADMAP.md](ROADMAP.md) for the prioritised backlog.
-
-To build from source:
+Scheduled on a 30 s tick. Results go to the dashboard API or local SQLite. Pre-built binaries in `collector/dist/`.
 
 ```bash
-cd collector
-go build -o collector-linux-amd64 ./...
-```
-
-To run in standalone mode (no dashboard required):
-
-```bash
+cd collector && go build -o collector-linux-amd64 ./...
 ./collector-linux-amd64 --standalone --config config/collector.example.yaml
 ```
 
-## What this detects
+---
 
-- Suricata signature alerts (installed via `scripts/install-ids.sh`, surfaced in the Security tab)
-- New or unexpected devices, services, DHCP/DNS behavior, TLS certificates, software, and communication pairs
-- Traffic volume, top talkers, failed connections, retransmission clues, broadcast/multicast behavior, and time-protocol activity
-- Passive S7comm, S7comm Plus, PROFINET, and OPC UA operations visible at the monitored point
-- Unexpected engineering-station/PLC relationships, discovery, programming/upload/download behavior, and unusual OPC UA connections
+## v2 — Planned Architecture (not yet implemented)
 
-It cannot see traffic that does not cross the monitored link, encrypted application content without keys, radio traffic on channels the Wi-Fi adapter is not listening to, or attacks that leave no observable network trace. A SPAN port can also drop packets under load; a TAP is preferable for evidence-quality capture.
+> **Status:** Design complete. Implementation not started. All v2 design documents are in [`docs/architecture/`](docs/architecture/) and [`docs/ml/`](docs/ml/).
+
+v1 was designed for a single monitoring probe on a bounded network. Three constraints are now broken:
+
+| Constraint | v1 | v2 target |
+|---|---|---|
+| Scale | 1 collector, local SQLite | 50+ simultaneous collector nodes |
+| Service separation | Monolithic Flask process | Independent services with defined API boundaries |
+| Language fit | Python for everything | Go for hot-path ingestion/API; Python for analysis/ML; TypeScript/SvelteKit for frontend |
+
+### v2 Service Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     SENTINEL v2 System                      │
+│                                                             │
+│  Collector tier (Go) ×50+ nodes                             │
+│  • Active checks: ICMP / DNS / HTTP / TCP / NTP             │
+│  • eBPF passive RTT layer                                    │
+│  • WireGuard introspection                                   │
+│  • SNMP GET / Modbus FC01/FC03                               │
+│  • Gorilla local hot/cold store                              │
+│  • MDP adaptive scheduler                                    │
+│                │ mTLS + OTLP/gRPC                            │
+│                ▼                                             │
+│  backend/ingest/   (Go)   — OTLP receiver, writes VM + PG   │
+│  backend/analyse/  (Python) — CUSUM/EWMA, PCA, RCA, ML      │
+│  backend/api/      (Go/Gin) — REST + WebSocket, JWT auth     │
+│                │                                             │
+│                ▼                                             │
+│  VictoriaMetrics  — time-series (metrics, RTT, loss, scores) │
+│  PostgreSQL       — events, anomalies, RCA, config, PKI      │
+│                │                                             │
+│                ▼                                             │
+│  frontend/ (SvelteKit/TypeScript) — static SPA via Nginx     │
+│  • Fleet overview, topology map (D3/SVG)                     │
+│  • Anomaly + RCA timeline                                    │
+│  • ML baseline status and model management                   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### v2 Key capabilities
+
+**Fleet scale:** 50+ independent collector nodes connect over mutual TLS (mTLS) with backend-issued PKI leaf certificates. Each collector is a zero-dependency Go static binary that cross-compiles to `linux/arm64`, `linux/amd64`, and `windows/amd64`.
+
+**Time-series storage:** VictoriaMetrics replaces SQLite. Single binary, no external dependencies, Prometheus remote-write compatible, 20–30% lower memory than InfluxDB at equivalent write rate. 50 collectors × 30 metrics × 2 samples/min = ~50 samples/s — well within single-node capacity.
+
+**Structured event storage:** PostgreSQL replaces SQLite for events, anomalies, RCA results, collector registry, check plans, and PKI cert metadata. PostgreSQL `LISTEN/NOTIFY` drives real-time WebSocket push to the SvelteKit frontend without a message broker.
+
+**ML baseline learning:** The `backend/analyse/` service learns normal network behaviour for each collector × metric group during a configurable learning phase (default: 7 days), then raises anomaly scores instead of static threshold breaches. Based on LSTM Autoencoder with ADWIN concept drift detection. See [`docs/ml/ML_BASELINE_LEARNING.md`](docs/ml/ML_BASELINE_LEARNING.md) for the full design.
+
+**SvelteKit frontend:** Replaces the Flask/Jinja2 dashboard. Compiled to a static SPA served by Nginx. Real-time WebSocket feed for anomaly events and collector state. Topology map, anomaly timeline, RCA panel, ML model management view.
+
+**Deployment:** Docker Compose on a single server (NUC or small VM) for the default 50-node case. Scales to VictoriaMetrics cluster + HAProxy for larger deployments without application code changes.
+
+### v2 Design documents
+
+| Document | Contents |
+|---|---|
+| [`docs/architecture/ARCHITECTURE-V2.md`](docs/architecture/ARCHITECTURE-V2.md) | Full service decomposition, storage decisions, inter-service communication, deployment, migration path from v1 |
+| [`docs/ml/ML_BASELINE_LEARNING.md`](docs/ml/ML_BASELINE_LEARNING.md) | ML baseline learning design: LSTM-AE architecture, ADWIN drift detection, data storage strategy, learning phase lifecycle, PostgreSQL schema, SvelteKit ML view |
+| [`ROADMAP.md`](ROADMAP.md) | Phased implementation plan with per-phase tracking |
+
+---
 
 ## Repository map
 
-- `docs/guides/` — design, lightweight installation, capture, operations, research notes, Auvik feature reference, and network map roadmap
-- `docs/theory/` — background theory and academic references
-- `docs/setup/` — hardware and OS setup guides
-- `docs/collector/` — collector architecture and integration notes
-- `docs/gap-analysis/` — gap analysis documents
-- `docs/gap-analysis-collector-vs-standalone.md` — collector vs standalone feature parity analysis
-- `docs/research-guide-for-gap-topics.md` — academic research guide for roadmap gap topics
-- `scripts/preflight.sh` — read-only hardware/OS/interface readiness report
-- `scripts/ot-reachability.sh` — explicit allow-list TCP reachability checks only
-- `scripts/probe-health.sh` — local status and capture-drop checks
-- `scripts/network-snapshot.sh` — hashed local support/configuration snapshot
-- `scripts/l2-health.sh` — short passive link/broadcast/protocol health sample
-- `scripts/install-dashboard-service.sh` — explicit Ubuntu dashboard bootstrap
-- `scripts/verify-probe.sh` — post-install verification
-- `scripts/capture-pcapng.sh` — bounded, rotating Wireshark-compatible capture
-- `scripts/pcap-summary.sh` — passive endpoint/protocol/broadcast summary
-- `config/` — example scope and asset inventory files (never store passwords here)
-- `dashboard/` — local web UI/API for guarded jobs and results; see [dashboard/README.md](dashboard/README.md)
-- `monitor/outage_monitor.py` — continuous per-path ping/Wi-Fi recorder with outage events, service checks, port checks, route tracking
-- `monitor/probes.py` — port-probe engine with well-known port→expected-response table and OT connect-only safety
-- `monitor/traffic_gen.py` — bounded, allow-listed TCP/UDP traffic generator
-- `monitor/discovery.py` — broad-view LAN host inventory (IP/MAC/vendor/name), discovery-only
-- `monitor/wifi_survey.py` — Wi-Fi AP/channel survey (nmcli/iw), with per-channel occupancy
-- `monitor/ids_reader.py` — read-only Suricata `eve.json` alert summariser for the Security tab
-- `scripts/install-ids.sh` — installs Suricata as a passive signature IDS (ET Open rules, AF_PACKET, systemd)
-- `monitor/snmp_probe.py` — read-only single-host SNMP probe (v2c/v3, system group + interface list)
-- `scripts/install-neighbors.sh` — installs lldpd receive-only for LLDP/CDP neighbour discovery
-- `scripts/install-ntopng.sh` — installs ntopng (passive flow analysis, own web UI on port 3000)
-- `dashboard/auth.py` — username/password login store (salted PBKDF2-SHA256 hash, in-memory sessions; default admin/admin)
-- `dashboard/settings.py` — persistent, dashboard-editable settings store (SNMP creds, capture overrides, approved scope, traffic allow-list; secrets 0600)
-- `dashboard/services.py` — known IT/OT service catalog driving the Actions dropdowns
-- `dashboard/history.py` — web-writable SQLite store: host inventory, scan/action log, persistent jobs, LLDP inventory + change log
-- `scripts/wifi-monitor-capture.sh` — operator sudo tool: monitor-mode 802.11 mgmt-frame capture and summary
-- `scripts/install-outage-monitor.sh` — systemd service for the outage monitor
-- `config/monitor-{targets,services,ports}.example.csv`, `config/traffic-gen-allow.example.csv` — seed configs for the monitor and generator
-- `collector/main.go` — Go active-check agent: ping, DNS, HTTP/S, TCP, NTP, port checks; scheduled 30 s tick; outputs to dashboard API or local SQLite
-- `collector/checks.go` — check implementations (ICMP, DNS, HTTP, TCP, NTP, port)
-- `collector/collector_test.go` — unit and integration tests for all check types
-- `collector/dist/` — pre-built binaries (linux/amd64, windows/amd64) from CI
-- `tests/` — Python integration and regression tests for the monitor and dashboard stack (pytest ≥ 8.4)
-
-For a standalone evidence capture, run:
-
-```bash
-sudo ./scripts/capture-pcapng.sh <capture-interface> /var/capture 300 24 2048
-./scripts/pcap-summary.sh /var/capture/<file>.pcapng
+```
+collector/          Go active-check agent (v1 + v2 collector)
+dashboard/          Python/Flask web UI (v1 only)
+monitor/            Python monitoring stack (v1 only)
+scripts/            Bash install, capture, and operator tools (v1)
+config/             Example scope, asset, and target files
+docs/
+  architecture/     ARCHITECTURE.md (v1), ARCHITECTURE-V2.md (v2 design)
+  ml/               ML_BASELINE_LEARNING.md (v2 ML design)
+  guides/           Design, install, capture, operations, research notes
+  theory/           Academic background and references
+  setup/            Hardware and OS setup guides
+  collector/        Collector architecture and integration notes
+  gap-analysis/     Feature parity gap analysis
+tests/              Python integration and regression tests (pytest ≥ 8.4)
 ```
 
-This produces a ring of 24 five-minute PCAPNG files with a 2 GiB per-file safety cap. The files open directly in Wireshark or any PCAP-compatible analysis tool.
+---
 
 ## Important safety boundary
 
-Passive capture is the default. Do not run generic vulnerability scanners, unauthenticated SNMP sweeps, Nmap version detection, NSE scripts, S7 reads/writes, OPC UA browsing, fuzzing, or high-rate discovery against production OT without a change window and vendor/site approval. A successful TCP connection proves only that a listener accepted a connection; it does not prove application health or safety.
+Passive capture is the default. Do not run generic vulnerability scanners, unauthenticated SNMP sweeps, Nmap version detection, NSE scripts, S7 reads/writes, OPC UA browsing, fuzzing, or high-rate discovery against production OT **without a change window and vendor/site approval**.
+
+A successful TCP connection proves only that a listener accepted a connection — not application health or operational safety. The probe's scan levels (passive L0 → active L1 → authenticated L2) are enforced by the collector check-plan and require explicit escalation.
+
+---
 
 ## Sources
 
-Research was refreshed 2026-07-25. Primary references are collected in [docs/guides/05-research-and-decisions.md](docs/guides/05-research-and-decisions.md).
+Research refreshed 2026-07-25. Primary references: [docs/guides/05-research-and-decisions.md](docs/guides/05-research-and-decisions.md).
