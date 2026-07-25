@@ -1,10 +1,9 @@
-# Collector v2 — Full Refactor Design
+# Collector v2 — Design
 
 > **Language:** Python 3.12  
 > **Packaging:** PyInstaller single-file executable (Linux amd64 + arm64, Windows amd64)  
 > **Date:** 2026-07-25  
 > **Status:** Design / Approved  
-> **Supersedes:** v1 collector (Go, single binary, no bundled host metrics)  
 
 ---
 
@@ -12,24 +11,24 @@
 
 The v2 collector is a **probe agent** running on Raspberry Pi nodes, OT edge devices, and laptops. The backend services (`ingest`, `analyse`, `api`, federation agent) already use Python for ML/analysis work. Unifying the entire stack on Python eliminates the Go toolchain from the project entirely:
 
-| Criterion | Go (v1) | Python (v2) |
-|---|---|---|
-| Language consistency | Go collector + Python backend = two toolchains | Single language across all components |
-| eBPF integration | `cilium/ebpf` — CGO-free but complex | `bcc` Python bindings — well-documented, widely used |
-| Packet capture | `gopacket/afpacket` — requires kernel AF_PACKET | `scapy.AsyncSniffer` — same kernel interface, pure Python |
-| SNMP | `gosnmp` | `pysnmp` / `easysnmp` |
-| Modbus | `go-modbus` | `pymodbus` — mature, OT-standard |
-| OTLP export | `go.opentelemetry.io/otel` | `opentelemetry-sdk` + `opentelemetry-exporter-otlp-proto-grpc` |
-| mTLS | `crypto/tls` | `grpc.ssl_channel_credentials()` + `ssl` stdlib |
-| Packaging | `go build` static binary | PyInstaller `--onefile` (~18–22 MB) |
-| ARM cross-compile | `GOOS=linux GOARCH=arm64 go build` | `pyinstaller --target-arch arm64` via Docker buildx |
-| CI build time | ~40 s | ~90 s (PyInstaller slower but acceptable) |
-| Async concurrency | goroutines | `asyncio` task loop |
-| Hot/cold store | custom Gorilla ring buffer | `lmdb` (fast) or `sqlite3` (stdlib fallback) |
-| PKI / cert handling | `crypto/x509` | `cryptography` library |
-| Config validation | custom struct tags | `pydantic` v2 |
+| Criterion | Python (v2) |
+|---|---|
+| Language consistency | Single language across all components |
+| eBPF integration | `bcc` Python bindings — well-documented, widely used |
+| Packet capture | `scapy.AsyncSniffer` — pure Python, AF_PACKET |
+| SNMP | `pysnmp` / `easysnmp` |
+| Modbus | `pymodbus` — mature, OT-standard |
+| OTLP export | `opentelemetry-sdk` + `opentelemetry-exporter-otlp-proto-grpc` |
+| mTLS | `grpc.ssl_channel_credentials()` + `ssl` stdlib |
+| Packaging | PyInstaller `--onefile` (~18–22 MB) |
+| ARM cross-compile | `pyinstaller --target-arch arm64` via Docker buildx |
+| CI build time | ~90 s (PyInstaller; acceptable) |
+| Async concurrency | `asyncio` task loop |
+| Hot/cold store | `lmdb` (fast) or `sqlite3` (stdlib fallback) |
+| PKI / cert handling | `cryptography` library |
+| Config validation | `pydantic` v2 |
 
-**Decision:** Python 3.12 throughout. The federation agent (previously a Go binary on the site server) is also Python, completing the single-language stack.
+**Decision:** Python 3.12 throughout. The federation agent (site server) is also Python, completing the single-language stack.
 
 ---
 
@@ -39,8 +38,8 @@ The v2 collector is a **probe agent** running on Raspberry Pi nodes, OT edge dev
 
 | ID | Requirement |
 |---|---|
-| FR-01 | Probe all v1 check types: ICMP ping, TCP connect, HTTP/HTTPS, DNS, SNMP |
-| FR-02 | Add v2 check types: MTR hop-tracing, Wi-Fi health, broadcast/multicast top-talker |
+| FR-01 | Probe all check types: ICMP ping, TCP connect, HTTP/HTTPS, DNS, SNMP |
+| FR-02 | Additional check types: MTR hop-tracing, Wi-Fi health, broadcast/multicast top-talker |
 | FR-03 | Bundle host metrics: CPU, memory, disk, network interfaces, systemd unit state |
 | FR-04 | Export all metrics via OTLP/gRPC with mTLS to the ingest service |
 | FR-05 | Self-manage PKI leaf cert: auto-enroll, auto-renew when <14 days remaining |
@@ -202,7 +201,7 @@ async def run_scheduler(tasks: list[CheckTask]) -> None:
 
 ## 6. Check Inventory
 
-### 6.1 v2 Check Table
+### 6.1 Check Table
 
 | Phase | Module | Capability required | Linux | Windows | Scan level |
 |---|---|---|---|---|---|
@@ -505,10 +504,10 @@ build-collector:
 
 | Phase | Deliverable | Weeks | Notes |
 |---|---|---|---|
-| P1 | Project scaffold: `pyproject.toml`, `config.py`, `scheduler.py`, `transport/otlp.py`, `transport/mtls.py`, `pki/enroll.py` | 1–2 | Replaces Go bootstrap |
-| P2 | Core probes: `net_icmp.py`, `net_tcp.py`, `net_http.py`, `net_dns.py`, `net_latency.py` | 3–4 | Feature parity with v1 |
+| P1 | Project scaffold: `pyproject.toml`, `config.py`, `scheduler.py`, `transport/otlp.py`, `transport/mtls.py`, `pki/enroll.py` | 1–2 | |
+| P2 | Core probes: `net_icmp.py`, `net_tcp.py`, `net_http.py`, `net_dns.py`, `net_latency.py` | 3–4 | |
 | P3 | OS health: `os_health/linux.py`, `os_health/windows.py`, `os_health/processes.py` | 5 | No deps beyond stdlib |
-| P4 | Store + retry: `store/hot.py` (lmdb), `store/cold.py` (sqlite3), `transport/retry.py` | 6 | Replaces Gorilla ring buffer |
+| P4 | Store + retry: `store/hot.py` (lmdb), `store/cold.py` (sqlite3), `transport/retry.py` | 6 | |
 | P5 | PKI auto-renew: `pki/renew.py`; health score: `health/score.py` | 7 | |
 | C4 | Wi-Fi health: `net_wifi_linux.py`, `net_wifi_windows.py` | 8 | |
 | C6 | MTR hop-tracing: `net_mtr.py` | 9 | |
@@ -520,9 +519,8 @@ build-collector:
 | C13 | eBPF flow tracking: `ebpf/flow_tracker.py` (bcc) | 13–14 | Linux only; bcc via apt |
 | B1 | PyInstaller build pipeline + Dockerfile.collector-arm64 | 14 | |
 | B2 | CI: pytest + mypy + ruff + pyinstaller artifact upload | 14 | |
-| M1–M5 | Migration from v1: parallel run, cutover, decommission | 15–25 | See Section 15 |
 
-**Total: ~25 weeks** (same as original Go timeline; Python build is slower but parallelisable).
+**Total: ~14 weeks.**
 
 ---
 
@@ -541,17 +539,3 @@ build-collector:
 | TU Munich (Brügge & Simon, NET-2024-04-1) | Broadcast storm as wireless OT congestion cause (C11) |
 | RITICS/NCSC ICS-COI 2024, Appendix A | Broadcast storm as OT IoC (C11) |
 | 802.11k/v (IEEE 2008) | Roaming event detection via Wi-Fi health (C4) |
-
----
-
-## 15. Migration Plan (v1 → v2)
-
-| Phase | Action |
-|---|---|
-| M1 | Deploy v2 Python collector alongside v1 on a test node; verify OTLP metrics reach ingest |
-| M2 | Parallel run on 5 nodes: compare v1 vs v2 metrics; validate feature parity |
-| M3 | Roll out v2 to 50% of fleet (Ansible `--serial 25`) |
-| M4 | Roll out v2 to remaining 50% |
-| M5 | Decommission v1; remove legacy Ansible tasks; remove `node_exporter` from all nodes |
-
-During M1–M4, the v1 and v2 collectors run on separate systemd units (`analyselaptop-collector-v1.service` and `analyselaptop-collector-v2.service`). The ingest service accepts both by collector_id prefix.

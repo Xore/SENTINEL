@@ -38,7 +38,7 @@ cryptography==42.0.8
 
 ## Phase 2 — Core Probes (Weeks 3–4)
 
-**Goal:** Feature parity with v1 collector.
+**Goal:** Core network probes.
 
 ### Deliverables
 - `checks/net_icmp.py` — raw `socket.SOCK_RAW` ICMP echo; asyncio-safe
@@ -57,7 +57,7 @@ dnspython==2.6.1
 
 ## Phase 3 — OS Health (Week 5)
 
-**Goal:** Bundle all host metrics natively. Remove `node_exporter` dependency.
+**Goal:** Bundle all host metrics natively. No `node_exporter` dependency.
 
 ### Deliverables
 - `os_health/linux.py` — `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/proc/uptime`, `os.statvfs`
@@ -198,20 +198,6 @@ CAP_BPF + CAP_PERFMON (Linux 5.8+)
 - `Dockerfile.collector-arm64` — PyInstaller build for Linux arm64 (via Docker buildx + QEMU)
 - `.github/workflows/ci.yml` — `setup-python@v5`, pytest, mypy, ruff, pyinstaller artifact
 - `collector/dist/` — built binaries committed as CI artifacts
-
----
-
-## Phase M1–M5 — Migration (Weeks 15–25)
-
-See `COLLECTOR-V2-REFACTOR.md` Section 15 for the full migration plan.
-
-| Phase | Action |
-|---|---|
-| M1 | Deploy v2 Python collector alongside v1 on test node |
-| M2 | Parallel run on 5 nodes; validate parity |
-| M3 | Roll out v2 to 50% of fleet |
-| M4 | Roll out v2 to remaining 50% |
-| M5 | Decommission v1; remove node_exporter from all nodes |
 
 ---
 

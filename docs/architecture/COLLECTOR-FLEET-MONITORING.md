@@ -20,7 +20,7 @@ Layer 2 — systemd unit state (OS-level)
   └─ Is the systemd service active/inactive/failed?
   └─ Is it crash-looping (restart count rising)?
   └─ Detected by: v2 collector bundles host_systemd_unit_active + host_systemd_restart_total
-     natively via os_health_linux.go / os_health_windows.go — no node_exporter required
+     natively via os_health/linux.py — no node_exporter required
 
 Layer 3 — Host vitals (hardware/OS-level)
   └─ Is the node reachable at all? CPU/memory/disk/network?
@@ -30,10 +30,10 @@ Layer 3 — Host vitals (hardware/OS-level)
 
 All three layers are covered by the **v2 collector binary alone**. The v2 collector reads `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `syscall.Statfs`, and `systemctl show` directly and emits them as OTLP metrics alongside probe results. On Windows it uses `Get-CimInstance Win32_OperatingSystem`.
 
-> **node_exporter is optional in v2.** It may still be deployed on nodes that need to feed a separate Prometheus/Grafana stack, but it is no longer required for the analyselaptop fleet monitoring pipeline. See [Section 9](#9-optional-node_exporter-fallback) for the fallback pattern.
+> **node_exporter is optional in v2.** It may still be deployed on nodes that need to feed a separate Prometheus/Grafana stack, but it is not required for the analyselaptop fleet monitoring pipeline. See [Section 9](#9-optional-node_exporter-fallback) for the fallback pattern.
 
 Layer 1 is already built into the v2 architecture (ingest service writes `last_seen` to PostgreSQL on every OTLP push).  
-Layers 2 and 3 are served by the v2 collector's native OS health collection — `os_health_linux.go` / `os_health_windows.go` (see [`COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) Section 6.1).
+Layers 2 and 3 are served by the v2 collector's native OS health collection — `os_health/linux.py` / `os_health/windows.py` (see [`COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) Section 6.1).
 
 ---
 
@@ -82,9 +82,9 @@ In v2, the collector emits systemd unit health as OTLP gauges. No `node_exporter
 | `host_systemd_restart_count_30m` | `collector_id, site_id, unit` | Restarts in last 30 min window |
 | `host_systemd_start_time_s` | `collector_id, site_id, unit` | Last start time (Unix epoch) |
 
-These are emitted from `os_processes.go` on Linux (via `systemctl show -p ActiveState,NRestarts,ActiveEnterTimestamp analyselaptop-collector.service`).
+These are emitted from `os_health/processes.py` on Linux (via `systemctl show -p ActiveState,NRestarts,ActiveEnterTimestamp analyselaptop-collector.service`).
 
-### Mapping from old `node_exporter` metrics
+### Mapping from `node_exporter` metrics
 
 | Old (`node_exporter`) | New (v2 collector) |
 |---|---|
@@ -97,7 +97,7 @@ These are emitted from `os_processes.go` on Linux (via `systemctl show -p Active
 
 ## 4. Layer 3: Host Vitals — Native v2 Collector Metrics
 
-The v2 collector emits all host vitals from its own `os_health_linux.go` / `os_health_windows.go`. No sidecar needed:
+The v2 collector emits all host vitals from its own `os_health/linux.py` / `os_health/windows.py`. No sidecar needed:
 
 | OTLP Metric | Labels | Source |
 |---|---|---|
@@ -110,9 +110,9 @@ The v2 collector emits all host vitals from its own `os_health_linux.go` / `os_h
 | `host_net_rx_bytes_total` | `collector_id, site_id, interface` | `/proc/net/dev` |
 | `host_net_tx_bytes_total` | `collector_id, site_id, interface` | `/proc/net/dev` |
 | `host_net_rx_errors_total` | `collector_id, site_id, interface` | `/proc/net/dev` |
-| `collector_health_score` | `collector_id, site_id` | `health_score.go` (self-computed) |
-| `collector_cert_days_left` | `collector_id, site_id` | `pki/expiry.go` |
-| `collector_cycle_duration_ms` | `collector_id, site_id` | `main.go` loop timer |
+| `collector_health_score` | `collector_id, site_id` | `health/score.py` (self-computed) |
+| `collector_cert_days_left` | `collector_id, site_id` | `pki/renew.py` |
+| `collector_cycle_duration_ms` | `collector_id, site_id` | `__main__.py` loop timer |
 
 ---
 
@@ -281,26 +281,18 @@ Row colour coding in the fleet table:
 
 ---
 
-## 8. What Gets Deployed Per Collector Node (v2)
+## 8. What Gets Deployed Per Collector Node
 
 | Component | Binary | Managed by | Port exposed |
 |---|---|---|---|
-| `analyselaptop-collector` v2 | Go static binary (~22–26 MB) | Ansible + systemd | None (outbound `4317` only) |
-| ~~`node_exporter`~~ | ~~Static binary~~ | ~~Ansible + systemd~~ | ~~`127.0.0.1:9100`~~ |
+| `analyselaptop-collector` v2 | Python PyInstaller bundle (~22–26 MB) | Ansible + systemd | None (outbound `4317` only) |
 
-> **node_exporter is removed from the per-node deployment.** The v2 collector binary bundles all host metrics natively. Deploying `node_exporter` on analyselaptop collector nodes is no longer part of the standard Ansible role.
+> **node_exporter is not part of the collector node deployment.** The v2 collector binary bundles all host metrics natively.
 
 No additional inbound firewall rules beyond the existing outbound `4317/tcp` to the hub. No additional binaries. No additional systemd units.
 
 ---
 
-## 9. Optional: node_exporter Fallback
+## 9. Optional: node_exporter
 
-`node_exporter` may still be useful in two scenarios:
-
-1. **You run a separate Prometheus/Grafana stack** alongside analyselaptop and want a unified host-metrics feed.
-2. **v1 collector nodes not yet migrated to v2** — during the migration window (phases M1–M4 in `COLLECTOR-V2-REFACTOR.md` Section 12), v1 nodes still rely on `node_exporter` for Layers 2 and 3.
-
-For v1 nodes during migration, the original Ansible tasks from the previous version of this document remain valid. After migration completes (phase M5), the `node_exporter` Ansible tasks should be removed from the collector role and the binaries removed from nodes.
-
-See [`COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) Section 12 for the full migration plan.
+`node_exporter` may still be useful if you run a separate Prometheus/Grafana stack alongside analyselaptop and want a unified host-metrics feed into that stack. It is not part of the standard analyselaptop collector role.
