@@ -280,7 +280,7 @@ Probe interval by state:
 
 - [x] **#53 — Webhook/email alerting on sustained state changes.** *(v1 shipped.)* Edge-triggered on #50 sustained-vs-spike classifier; webhook+SMTP delivery; Settings panel; `/api/alerts*`; 34 tests.
 - [x] **#48 — Session/acceptance report (JSON/CSV/HTML + SHA-256 hashes).** *v1 shipped.* Pure assembler + renderers in `dashboard/report.py` (`build_report` → per-target uptime/loss/RTT p50·p95, per-service reliability, outage events with failed-target context, TCP/DNS trend verdicts, redacted config-in-effect, roll-up acceptance verdict pass/attention/insufficient_data). Three renderers (canonical JSON, multi-section CSV, self-contained HTML) each stamped with a SHA-256 `meta.digest` computed over the report's canonical JSON (digest slot blanked, so it is recomputable/verifiable — `report.verify()`). Endpoint `GET /api/report/session?format=json|csv|html&minutes=|since=&until=` returns the artefact with `X-Report-SHA256` + `Content-Disposition`. One-click export panel in Settings (HTML/JSON/CSV + window selector). 29 tests in `tests/test_report.py` (pure assembly, digest stability/tamper-detection, renderer escaping/self-containment, endpoint formats + 400/no-DB paths). Full suite 220 OK.
-- [ ] **#47 (trigger) — Freeze-evidence action.** Dashboard button snapshots current stream buffers + active anomaly/RCA context into timestamped, hashed evidence bundle. JSON telemetry only — no full PCAP.
+- [x] **#47 (trigger) — Freeze-evidence action.** *v1 shipped.* `POST /api/evidence/freeze` snapshots the recent monitor buffers (ping/service/event/tcp/dns/wifi) + active alert context + the #48 session report (json/html/csv) + redacted config-in-effect into a timestamped bundle under `PROBE_EVIDENCE_DIR`. Each file is SHA-256'd in a `MANIFEST.json` with a single order-independent `bundle_digest` (tamper-evident, re-verifiable). `GET /api/evidence` lists bundles; `GET /api/evidence/<id>` returns the manifest; `GET /api/evidence/<id>/<file>` downloads one file (bundle-id + filename path-traversal guarded). Settings → "Freeze evidence" panel. Pure policy in `dashboard/evidence.py`; 27 tests in `tests/test_evidence.py`. JSON telemetry only — no full PCAP.
 
 ---
 
@@ -332,7 +332,7 @@ scripts/
 
 ### Folded-in tasks from the prior roadmap
 
-- [ ] **#47 (policy) — Disk reserve / capture policy.** Config schema for reserved evidence partition/quota; retention and rotation of evidence bundles; hard floor that refuses a snapshot when free space would drop below the reserve.
+- [x] **#47 (policy) — Disk reserve / capture policy.** *v1 shipped.* `settings.evidence` config schema (`dir`, `reserve_mb`, `max_bundles`, `max_total_mb`, `window_minutes`) validated in `config_validation.py`. `evidence.policy()` normalises + clamps it; `evidence.disk_reserve_ok()` is the hard floor (freeze returns **507** rather than dropping free space below the reserve); `evidence.select_for_rotation()` prunes oldest-first by count **and** total size after each snapshot.
 
 ---
 
@@ -523,7 +523,7 @@ scripts/
 | **#51** Baselines by segment / hour / production state | Phase 3 | Generalises the 168-bucket adaptive control limits |
 | **#53** Webhook/email alerting on sustained state changes | Phase 6 | ✅ v1 shipped: edge-triggered on #50 classifier, webhook+SMTP, Settings panel, `/api/alerts*`, 34 tests |
 | **#48** Session/acceptance report (JSON/CSV/HTML) + hashes | Phase 6 | ✅ shipped — `dashboard/report.py` + `/api/report/session` + Settings export panel; SHA-256 digest, tamper-evident |
-| **#47** Freeze-evidence action + disk reserve/capture policy | Phase 6 (trigger) + Phase 8 (policy) | Dashboard action snapshots JSON telemetry; disk-reserve is config/hardening |
+| **#47** Freeze-evidence action + disk reserve/capture policy | ✅ v1 shipped | Dashboard action snapshots JSON telemetry into hashed bundles; disk-reserve hard floor + rotation |
 | **PCAP / full packet capture** | Phase 11 | Moved from out-of-scope: eBPF TC hook captures flow metadata only (no payload). GDPR-compliant on contracted internal networks. |
 | **Full Q-learning / deep RL for MDP** | Phase 12 | Moved from out-of-scope: failure corpus accumulates automatically from Phase 5 MDP logs. Finite-state MDP remains production scheduler until DQN reaches parity. |
 

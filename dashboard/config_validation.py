@@ -163,6 +163,20 @@ def _validate_alerting(alerting: dict, errors: list[str]) -> None:
                     errors.append(f"alerting.email.{field} must be a string")
 
 
+def _validate_evidence(evidence: dict, errors: list[str]) -> None:
+    if not isinstance(evidence, dict):
+        errors.append("evidence: expected an object")
+        return
+    if "dir" in evidence and not isinstance(evidence["dir"], str):
+        errors.append("evidence.dir must be a string")
+    for field, lo, hi in (("reserve_mb", 0, 1_000_000), ("max_bundles", 1, 100_000),
+                          ("max_total_mb", 1, 10_000_000), ("window_minutes", 5, 1440)):
+        if field in evidence:
+            val = evidence[field]
+            if not _is_number(val) or val < lo or val > hi:
+                errors.append(f"evidence.{field} must be a number between {lo} and {hi}")
+
+
 _VALIDATORS = {
     "snmp": _validate_snmp,
     "metrics": _validate_metrics,
@@ -170,6 +184,7 @@ _VALIDATORS = {
     "approved_scope": _validate_approved_scope,
     "dangerous_actions": _validate_dangerous_actions,
     "alerting": _validate_alerting,
+    "evidence": _validate_evidence,
 }
 
 

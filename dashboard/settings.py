@@ -101,6 +101,19 @@ DEFAULTS: dict = {
             "to_addrs": "",          # comma-separated recipients
         },
     },
+    # Freeze-evidence bundles (task #47, roadmap P1). A dashboard action
+    # snapshots recent telemetry into a timestamped, hashed bundle for an
+    # acceptance/incident hand-off. `dir` empty -> app.py's default under the
+    # state dir. The reserve is a hard floor: a snapshot is refused when it
+    # would drop free space below it. Rotation keeps at most max_bundles and
+    # max_total_mb, deleting oldest first.
+    "evidence": {
+        "dir": "",                 # override bundle directory (empty = default)
+        "reserve_mb": 512,         # refuse a snapshot below this free-space floor
+        "max_bundles": 50,         # rotation cap by count
+        "max_total_mb": 2048,      # rotation cap by total bundle size
+        "window_minutes": 60,      # how much recent telemetry to freeze
+    },
     # Roadmap P5 - explicitly excluded-by-default capabilities (task #55). This
     # is a safety governance gate, NOT an attack toolkit: the master switch and
     # the per-action flags below are all off, and even when turned on the probe

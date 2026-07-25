@@ -37,6 +37,7 @@ try:  # package import (waitress-serve dashboard.app:app)
     from dashboard import trends
     from dashboard import alerts
     from dashboard import report
+    from dashboard import evidence
 except ImportError:  # run from inside the dashboard directory
     import settings as settings_store
     import history
@@ -52,6 +53,7 @@ except ImportError:  # run from inside the dashboard directory
     import trends
     import alerts
     import report
+    import evidence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # let us import the monitor/* helpers as a namespace pkg
@@ -60,6 +62,8 @@ CAPTURE_DIR = Path(os.environ.get("PROBE_CAPTURE_DIR", ROOT / "captures")).resol
 SNAPSHOT_DIR = Path(os.environ.get("PROBE_SNAPSHOT_DIR", ROOT / "snapshots")).resolve()
 TARGET_FILE = Path(os.environ.get("PROBE_TARGET_FILE", ROOT / "config" / "targets.csv")).resolve()
 MONITOR_DB = Path(os.environ.get("PROBE_MONITOR_DB", "/var/lib/network-probe/monitor.db"))
+# Freeze-evidence bundles (task #47) live here unless settings.evidence.dir overrides.
+EVIDENCE_DIR = Path(os.environ.get("PROBE_EVIDENCE_DIR", MONITOR_DB.parent / "evidence"))
 TRAFFIC_ALLOW_FILE = Path(os.environ.get("PROBE_TRAFFIC_ALLOW", "/etc/network-probe/traffic-gen-allow.csv"))
 # Legacy root-owned monitor CSVs. The monitor now prefers the shared JSON config
 # (monitor_config), but the Settings editor seeds itself from these on first load
@@ -2532,61 +2536,66 @@ def _report_window() -> tuple[float, float]:
     return now - minutes * 60, now
 
 
-def _build_session_report(start: float, end: float) -> dict:
-    """Assemble (and finalize the digest of) the session report from the
-    read-only monitor DB. Missing DB still yields a valid, empty report."""
-    ping_rows: list[dict] = []
-    service_rows: list[dict] = []
-    event_rows: list[dict] = []
-    wifi_rows: list[dict] = []
-    tcp_samples: list[dict] = []
-    dns_rows: list[dict] = []
-
+def _read_monitor_rows(start: float, end: float) -> dict:
+    """Read the raw monitor buffers for [start, end] (read-only). Missing DB or
+    table yields empty lists — never raises. Shared by the session report and
+    the freeze-evidence bundle."""
+    rows = {"ping": [], "service": [], "events": [], "tcp": [], "dns": [], "wifi": []}
     db = monitor_db()
-    if db is not None:
+    if db is None:
+        return rows
+    try:
+        rows["ping"] = [dict(r) for r in db.execute(
+            "SELECT ts, target, ok, rtt_ms FROM ping_samples "
+            "WHERE ts >= ? AND ts <= ?", (start, end)).fetchall()]
+        rows["service"] = [dict(r) for r in db.execute(
+            "SELECT ts, name, kind, ok, duration_ms FROM service_samples "
+            "WHERE ts >= ? AND ts <= ?", (start, end)).fetchall()]
+        rows["events"] = [dict(r) for r in db.execute(
+            "SELECT id, started, ended, kind, failed_targets FROM events "
+            "WHERE started <= ? AND (ended IS NULL OR ended >= ?) "
+            "ORDER BY started", (end, start)).fetchall()]
+        rows["tcp"] = [dict(r) for r in db.execute(
+            "SELECT ts, in_segs, out_segs, retrans_segs, out_rsts, attempt_fails, "
+            "estab_resets, tcp_syn_retrans, tcp_lost_retransmit FROM tcp_samples "
+            "WHERE ts >= ? AND ts <= ? ORDER BY ts", (start, end)).fetchall()]
+        rows["dns"] = [dict(r) for r in db.execute(
+            "SELECT ts, ok FROM service_samples WHERE kind = 'dns' "
+            "AND ts >= ? AND ts <= ? ORDER BY ts", (start, end)).fetchall()]
         try:
-            ping_rows = [dict(r) for r in db.execute(
-                "SELECT ts, target, ok, rtt_ms FROM ping_samples "
+            rows["wifi"] = [dict(r) for r in db.execute(
+                "SELECT ts, connected, signal_dbm FROM wifi_samples "
                 "WHERE ts >= ? AND ts <= ?", (start, end)).fetchall()]
-            service_rows = [dict(r) for r in db.execute(
-                "SELECT ts, name, kind, ok, duration_ms FROM service_samples "
-                "WHERE ts >= ? AND ts <= ?", (start, end)).fetchall()]
-            event_rows = [dict(r) for r in db.execute(
-                "SELECT id, started, ended, kind, failed_targets FROM events "
-                "WHERE started <= ? AND (ended IS NULL OR ended >= ?) "
-                "ORDER BY started", (end, start)).fetchall()]
-            tcp_samples = [dict(r) for r in db.execute(
-                "SELECT ts, in_segs, out_segs, retrans_segs, out_rsts, attempt_fails, "
-                "estab_resets, tcp_syn_retrans, tcp_lost_retransmit FROM tcp_samples "
-                "WHERE ts >= ? AND ts <= ? ORDER BY ts", (start, end)).fetchall()]
-            dns_rows = [dict(r) for r in db.execute(
-                "SELECT ts, ok FROM service_samples WHERE kind = 'dns' "
-                "AND ts >= ? AND ts <= ? ORDER BY ts", (start, end)).fetchall()]
-            try:
-                wifi_rows = [dict(r) for r in db.execute(
-                    "SELECT ts, connected, signal_dbm FROM wifi_samples "
-                    "WHERE ts >= ? AND ts <= ?", (start, end)).fetchall()]
-            except sqlite3.OperationalError:
-                wifi_rows = []  # older monitor schemas may lack wifi_samples
-        finally:
-            db.close()
+        except sqlite3.OperationalError:
+            rows["wifi"] = []  # older monitor schemas may lack wifi_samples
+    finally:
+        db.close()
+    return rows
 
+
+def _report_from_rows(start: float, end: float, rows: dict) -> dict:
+    """Build + finalize the #48 session report from pre-read monitor rows."""
     trend_verdicts = {
-        "tcp": trends.tcp_trend(tcp_samples).get("verdict", {}) if tcp_samples else {},
-        "dns": trends.dns_trend(dns_rows).get("verdict", {}) if dns_rows else {},
+        "tcp": trends.tcp_trend(rows["tcp"]).get("verdict", {}) if rows["tcp"] else {},
+        "dns": trends.dns_trend(rows["dns"]).get("verdict", {}) if rows["dns"] else {},
     }
     cfg = settings_store.redacted()
     config_in_effect = {k: cfg.get(k) for k in ("monitor", "alerting", "multinode") if k in cfg}
-
     rep = report.build_report(
         window_start=start, window_end=end,
         host=socket.gethostname(),
         version=os.environ.get("PROBE_VERSION", "dev"),
         role=(settings_store.load().get("multinode") or {}).get("role", "standalone"),
-        ping_rows=ping_rows, service_rows=service_rows, event_rows=event_rows,
-        trend_verdicts=trend_verdicts, wifi_rows=wifi_rows, config=config_in_effect,
+        ping_rows=rows["ping"], service_rows=rows["service"], event_rows=rows["events"],
+        trend_verdicts=trend_verdicts, wifi_rows=rows["wifi"], config=config_in_effect,
     )
     return report.finalize(rep)
+
+
+def _build_session_report(start: float, end: float) -> dict:
+    """Assemble (and finalize the digest of) the session report from the
+    read-only monitor DB. Missing DB still yields a valid, empty report."""
+    return _report_from_rows(start, end, _read_monitor_rows(start, end))
 
 
 @app.get("/api/report/session")
@@ -2609,6 +2618,168 @@ def report_session():
     resp.headers["X-Report-SHA256"] = rep["meta"]["digest"]
     resp.headers["Content-Disposition"] = f'{disposition}; filename="{filename}"'
     return resp
+
+
+# --- Freeze-evidence bundles (task #47) --------------------------------------
+# A dashboard action snapshots recent telemetry (raw monitor buffers + the #48
+# session report + active alert context + config in effect) into a timestamped,
+# hashed bundle on disk. A hard disk-reserve floor refuses the snapshot rather
+# than filling the partition; rotation keeps only the newest N/total-MB bundles.
+# Read-only wrt the network — it only reads the monitor DB and writes files.
+_evidence_lock = threading.Lock()
+
+
+def _evidence_dir() -> Path:
+    """Resolve the bundle directory: settings.evidence.dir wins, else the
+    EVIDENCE_DIR default. Created on demand."""
+    configured = (settings_store.load().get("evidence", {}) or {}).get("dir") or ""
+    base = Path(configured).expanduser() if configured.strip() else EVIDENCE_DIR
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _list_bundles(base: Path) -> list[dict]:
+    """Enumerate existing bundles with their manifest summary + on-disk size."""
+    out: list[dict] = []
+    if not base.is_dir():
+        return out
+    for child in base.iterdir():
+        if not child.is_dir() or not evidence.is_valid_bundle_id(child.name):
+            continue
+        size = sum(f.stat().st_size for f in child.glob("*") if f.is_file())
+        entry = {"id": child.name, "bytes": size, "created": child.stat().st_mtime}
+        manifest = child / evidence.MANIFEST_NAME
+        if manifest.is_file():
+            try:
+                m = json.loads(manifest.read_text(encoding="utf-8"))
+                entry["created"] = m.get("created", entry["created"])
+                entry["bundle_digest"] = m.get("bundle_digest")
+                entry["meta"] = m.get("meta", {})
+                entry["files"] = sorted(m.get("files", {}).keys())
+            except (ValueError, OSError):
+                entry["corrupt"] = True
+        out.append(entry)
+    out.sort(key=lambda b: b.get("created", 0), reverse=True)  # newest first
+    return out
+
+
+@app.post("/api/evidence/freeze")
+def evidence_freeze():
+    """Snapshot recent telemetry into a hashed, on-disk evidence bundle.
+    Refuses with 507 when the disk reserve would be breached."""
+    pol = evidence.policy(settings_store.load().get("evidence", {}))
+    now = time.time()
+    start = now - pol["window_minutes"] * 60
+
+    with _evidence_lock:
+        rows = _read_monitor_rows(start, now)
+        rep = _report_from_rows(start, now, rows)
+
+        # Active alerting context (edge state + recent history), best-effort.
+        try:
+            alert_state = alerts.load_state()
+            alert_ctx = {"signals": alert_state.get("signals", {}),
+                         "history": list(reversed(alert_state.get("history", [])))[:50],
+                         "last_run": alert_state.get("last_run")}
+        except Exception:
+            alert_ctx = {}
+
+        telemetry = {
+            "captured_at": now,
+            "window": {"start": start, "end": now, "minutes": pol["window_minutes"]},
+            "host": socket.gethostname(),
+            "buffers": rows,          # raw ping/service/event/tcp/dns/wifi rows
+            "alerting": alert_ctx,
+            "config_in_effect": settings_store.redacted(),
+        }
+
+        files = {
+            "telemetry.json": json.dumps(telemetry, indent=2, sort_keys=True, default=str).encode(),
+            "report.json": report.to_json(rep).encode(),
+            "report.html": report.to_html(rep).encode(),
+            "report.csv": report.to_csv(rep).encode(),
+        }
+        incoming = sum(len(b) for b in files.values())
+
+        base = _evidence_dir()
+        try:
+            free = shutil.disk_usage(base).free
+        except OSError:
+            free = 0
+        if not evidence.disk_reserve_ok(free, incoming, pol["reserve_bytes"]):
+            return jsonify(
+                error="refused: writing this bundle would drop free space below the "
+                      f"configured reserve of {pol['reserve_bytes'] // (1024 * 1024)} MB",
+                free_bytes=free, incoming_bytes=incoming,
+                reserve_bytes=pol["reserve_bytes"]), 507
+
+        bid = evidence.bundle_id(now, uuid.uuid4().hex)
+        meta = {"verdict": rep["meta"].get("digest") and rep["summary"].get("verdict"),
+                "report_digest": rep["meta"].get("digest"),
+                "window_minutes": pol["window_minutes"],
+                "counts": {k: len(v) for k, v in rows.items()}}
+        manifest = evidence.build_manifest(bid, now, files, meta)
+
+        bundle_path = base / bid
+        bundle_path.mkdir(parents=True, exist_ok=False)
+        for name, blob in files.items():
+            (bundle_path / name).write_bytes(blob)
+        (bundle_path / evidence.MANIFEST_NAME).write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+        # Rotation: delete oldest beyond the count/size caps.
+        rotated: list[str] = []
+        doomed = evidence.select_for_rotation(
+            _list_bundles(base), max_bundles=pol["max_bundles"],
+            max_total_bytes=pol["max_total_bytes"])
+        for victim in doomed:
+            if victim == bid or not evidence.is_valid_bundle_id(victim):
+                continue  # never rotate the bundle we just made
+            shutil.rmtree(base / victim, ignore_errors=True)
+            rotated.append(victim)
+
+    return jsonify({"bundle_id": bid, "bundle_digest": manifest["bundle_digest"],
+                    "bytes": incoming, "files": sorted(files.keys()),
+                    "rotated": rotated, "verdict": rep["summary"].get("verdict")}), 201
+
+
+@app.get("/api/evidence")
+def evidence_list():
+    """List existing evidence bundles (newest first) with disk-reserve status."""
+    base = _evidence_dir()
+    pol = evidence.policy(settings_store.load().get("evidence", {}))
+    try:
+        free = shutil.disk_usage(base).free
+    except OSError:
+        free = 0
+    return jsonify({"bundles": _list_bundles(base), "dir": str(base),
+                    "free_bytes": free, "reserve_bytes": pol["reserve_bytes"],
+                    "max_bundles": pol["max_bundles"]})
+
+
+@app.get("/api/evidence/<bundle_id>")
+def evidence_manifest(bundle_id: str):
+    """Return one bundle's manifest (hashes + meta)."""
+    if not evidence.is_valid_bundle_id(bundle_id):
+        return jsonify(error="invalid bundle id"), 400
+    manifest = _evidence_dir() / bundle_id / evidence.MANIFEST_NAME
+    if not manifest.is_file():
+        return jsonify(error="bundle not found"), 404
+    return jsonify(json.loads(manifest.read_text(encoding="utf-8")))
+
+
+@app.get("/api/evidence/<bundle_id>/<path:filename>")
+def evidence_file(bundle_id: str, filename: str):
+    """Download a single file from a bundle (path-traversal guarded)."""
+    if not evidence.is_valid_bundle_id(bundle_id):
+        return jsonify(error="invalid bundle id"), 400
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        return jsonify(error="invalid filename"), 400
+    bundle_path = (_evidence_dir() / bundle_id).resolve()
+    target = (bundle_path / filename).resolve()
+    if not str(target).startswith(str(bundle_path) + os.sep) or not target.is_file():
+        return jsonify(error="file not found"), 404
+    return send_from_directory(str(bundle_path), filename, as_attachment=True)
 
 
 @app.get("/api/monitor/routes")

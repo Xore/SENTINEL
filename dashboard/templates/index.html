@@ -356,6 +356,14 @@
           <button onclick="downloadReport('csv')">CSV</button>
         </div>
       </div>
+      <div class="panel" id="evidencePanel"><div class="panel-head"><div><p class="eyebrow">ACCEPTANCE</p><h2>Freeze evidence</h2></div><button onclick="loadEvidence()">Refresh</button></div>
+        <p class="hint">Snapshot recent telemetry (raw monitor buffers, active alert context, the session report, and the config in effect) into a timestamped, SHA-256-hashed bundle on disk — a defensible hand-off for an acceptance sign-off or incident. JSON only, never a full packet capture. A hard free-space reserve refuses a snapshot rather than filling the disk, and old bundles rotate out by count and total size (configurable in <code>settings.evidence</code>).</p>
+        <div class="form-row inline">
+          <button class="primary" onclick="freezeEvidence()" title="Snapshot recent telemetry into a hashed bundle">Freeze now</button>
+          <span id="evStatus" class="hint"></span>
+        </div>
+        <div id="evList" class="table-wrap"></div>
+      </div>
       <div class="panel" id="accountPanel"><div class="panel-head"><div><p class="eyebrow">ACCESS</p><h2>Account &amp; password</h2></div><button onclick="logout()">Sign out</button></div>
         <p class="hint">Sign in with a username and password (default <code>admin</code> / <code>admin</code> on a fresh install — change it below). The password is stored only as a salted hash. Sessions are held in memory, so <strong>restarting the dashboard signs everyone out</strong>. <span id="acctWho" class="hint"></span></p>
         <div class="form-row"><input id="acctUser" placeholder="username" aria-label="username" autocomplete="username"></div>
