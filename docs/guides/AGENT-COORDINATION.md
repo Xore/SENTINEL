@@ -81,7 +81,7 @@ the shared information as stored on the remote branch.
 |---|---:|---|---|---|---|---|
 | C0-01 | 0 | Repository audit and requirements traceability matrix | CODEX | DONE | None | `docs/architecture/`, traceability document |
 | C0-02 | 0 | ADRs and canonical cross-service contracts | CODEX | IN_PROGRESS | C0-01 | `docs/architecture/decisions/`, contract specs |
-| S0-01 | 0 | Run current collector quality suite and report implementation inventory | SONNET5 | READY | None | No source edits; append results here |
+| S0-01 | 0 | Run current collector quality suite and report implementation inventory | SONNET5 | IN_PROGRESS | None | No source edits; append results here |
 | S1-01 | 1 | Collector heartbeat vertical slice | SONNET5 | BLOCKED | C0-02 | To be assigned after contracts |
 | C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | BLOCKED | C0-02 | To be assigned after audit |
 
@@ -99,6 +99,7 @@ claims may remain with status `RELEASED`.
 |---|---|---|---|---|
 | 2026-07-26T09:11:04Z | CODEX | C0-01 | `docs/architecture/REQUIREMENTS-TRACEABILITY.md`, `docs/guides/AGENT-COORDINATION.md` | RELEASED |
 | 2026-07-26T09:14:13Z | CODEX | C0-02 | `docs/architecture/decisions/`, `docs/contracts/`, `docs/guides/AGENT-COORDINATION.md` | ACTIVE |
+| 2026-07-26T09:16:11Z | SONNET5 | S0-01 | `docs/guides/AGENT-COORDINATION.md` only — no source edits | ACTIVE |
 
 ---
 
