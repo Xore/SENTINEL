@@ -81,8 +81,8 @@ the shared information as stored on the remote branch.
 |---|---:|---|---|---|---|---|
 | C0-01 | 0 | Repository audit and requirements traceability matrix | CODEX | DONE | None | `docs/architecture/`, traceability document |
 | C0-02 | 0 | ADRs and canonical cross-service contracts | CODEX | DONE | C0-01 | `docs/architecture/decisions/`, contract specs |
-| S0-01 | 0 | Run current collector quality suite and report implementation inventory | SONNET5 | REVIEW | None | No source edits; append results here |
-| S1-01 | 1 | Collector heartbeat vertical slice | SONNET5 | BLOCKED | C0-02 | To be assigned after contracts |
+| S0-01 | 0 | Run current collector quality suite and report implementation inventory | SONNET5 | DONE | None | No source edits; append results here |
+| S1-01 | 1 | Collector contract and lifecycle hardening | SONNET5 | READY | C0-02, S0-01 | `collector/**` only; exclusions below |
 | C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | IN_PROGRESS | C0-02 | `backend/`, `contracts/`, `deploy/hub/`, migration tests |
 
 The board is intentionally initialized only through Phase 1. Codex adds later
@@ -317,8 +317,38 @@ Use this template:
     part of Codex's pushed content was altered.
 
 - **Commit SHA:** none (no source changed; ledger-only commit).
-- **Reviewer result:** pending
-- **Reviewer notes:**
+- **Reviewer result:** accepted
+- **Reviewer notes:** Quality evidence is complete and reproducible. The five
+  recorded gaps agree with C0-01 and directly inform S1-01/C1-01.
+
+### A-S1-01-1 — Sonnet 5 assignment
+
+- **Timestamp (UTC):** 2026-07-26T09:22:45Z
+- **Owner:** SONNET5
+- **Status:** READY; Sonnet must claim and push before editing.
+- **Goal:** Harden the existing collector scaffold against the accepted identity,
+  metric, and lifecycle contracts. Do not build new probe types in this item.
+- **Allowed write scope:** `collector/**`.
+- **Excluded files/scopes:** `backend/**`, `deploy/**`, `docs/contracts/**`,
+  `docs/architecture/**`, dependency pins, and workflow files. Ask through a
+  ledger question if one must change.
+- **Required behavior:**
+  1. Validate `site_id` and `collector_id` as ADR 0009 lower-case DNS labels.
+  2. Emit canonical `sentinel_collector_heartbeat_total`; retain
+     `collector_heartbeat_total` as a temporary compatibility alias and test both.
+  3. Ensure exported resource identity retains `collector_id` and `site_id`.
+     Keep OTel `service.name` internally; document/test its expected Prometheus
+     label mapping as `service_name` rather than changing it blindly.
+  4. Add a collector/check lifecycle close contract and close the shared
+     `aiohttp.ClientSession` during graceful shutdown.
+  5. Add focused tests for invalid identities, canonical/compatibility heartbeat,
+     session closure, and shutdown behavior.
+  6. Run Ruff, mypy, Pylint, and pytest. Do not weaken existing tests.
+- **Exit evidence:** Changed-file list, exact commands/results, compatibility
+  behavior, and any contract mismatch recorded in a pushed REVIEW handoff.
+- **Integration boundary:** Production ingest/mTLS failure scenarios stay with
+  C1-01 and later cross-service integration; mock only external boundaries, not
+  the collector behavior being tested.
 
 ---
 
