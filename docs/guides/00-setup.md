@@ -1,158 +1,229 @@
-# Unified setup
+# Setup — v2 Collector
 
-The front door for installing the Network Probe. One orchestrator,
-[`scripts/setup.sh`](../../scripts/setup.sh), drives every component installer in the
-right order. It changes nothing itself — it previews a plan and then runs the real
-per-component scripts (each with its own `--apply`), so you can always see exactly
-what will happen first.
+This guide covers installing and bootstrapping the v2 Python collector on a new node.
+The collector is a **Python 3.12 asyncio process** shipped as a PyInstaller single-file
+binary. It has no web UI of its own — all data is pushed to the hub via OTLP/gRPC.
 
-> Target OS is **Ubuntu 24.04 LTS**. Most components install a systemd service under
-> a shared unprivileged `probe-dashboard` account with state in
-> `/var/lib/network-probe` and config in `/etc/network-probe`.
+> **Target platforms:** Linux amd64, Linux arm64 (Raspberry Pi 3B/4B), Windows amd64.
+> **Full design:** [`docs/collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md)
+
+---
+
+## Prerequisites
+
+### Linux (Debian/Ubuntu/Raspberry Pi OS)
+
+```bash
+# Python 3.12 and system tools
+sudo apt-get update
+sudo apt-get install -y python3.12 python3.12-venv python3-pip \
+    iw ethtool iproute2 dnsutils snmp mtr-tiny curl git
+
+# Optional: eBPF flow tracking (Phase C13 only — requires kernel ≥5.8)
+sudo apt-get install -y python3-bpfcc
+```
+
+### Windows
+
+- Python 3.12 from [python.org](https://www.python.org/downloads/) (add to PATH)
+- `iw` / `ethtool` not required — Windows checks use `netsh` and `psutil` only
+
+---
 
 ## Node roles
 
-| Role | What it is | Components |
+| Role | What runs on the node | Pushes to |
 |---|---|---|
-| **standalone** | A self-sufficient node: full dashboard + backend + local collection. Also the **aggregator** that remote collectors push to. | base tools, dashboard, outage monitor, reconciler, LLDP neighbours |
-| **full** | Standalone plus the passive traffic-analysis add-ons. | standalone + Suricata IDS, IDS adapter, ntopng |
-| **collector** | A slim push-only node: collection workers that push to a remote aggregator. No local dashboard. | collector push-agent |
+| **collector** | `analyselaptop-collector` binary | Hub ingest (OTLP/gRPC) |
+| **hub** | Ingest service + analyse service + API + frontend | — (receives from collectors) |
 
-See [`../../ROADMAP.md`](../../ROADMAP.md) and the multi-node design in
-[07-network-map-and-monitoring-roadmap.md](07-network-map-and-monitoring-roadmap.md).
+This guide covers the **collector** role. Hub setup is in
+[`docs/collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) §12.
 
-## Quick start
+---
 
-Preview a standalone node (safe, no root, nothing applied):
+## Quick start (pre-built binary)
 
-```bash
-./scripts/setup.sh --standalone --dry-run
-```
-
-Apply it for real (components need root):
+### 1. Download the binary
 
 ```bash
-sudo ./scripts/setup.sh --standalone --apply
+# Linux amd64
+curl -L -o analyselaptop-collector \
+  https://github.com/Xore/analyseLaptop/releases/latest/download/analyselaptop-collector-linux-amd64
+chmod +x analyselaptop-collector
+
+# Linux arm64 (Raspberry Pi)
+curl -L -o analyselaptop-collector \
+  https://github.com/Xore/analyseLaptop/releases/latest/download/analyselaptop-collector-linux-arm64
+chmod +x analyselaptop-collector
 ```
 
-Pick components à la carte, or use the interactive menu:
+### 2. Create config file
+
+```yaml
+# /etc/analyselaptop/collector.yaml
+collector_id: pi-bedroom
+site_id: home
+scan_level_max: 2
+
+backend:
+  url: https://<hub-ip>:4317
+  pki_dir: /var/lib/analyselaptop/pki
+  retry_max: 10
+  retry_backoff_s: 2.0
+
+wifi:
+  enabled: true
+  interface: wlan0
+  scan_interval_s: 60
+  ap_change_alert: true
+
+bcast_mcast:
+  enabled: true
+  interface: eth0
+  window_s: 30
+  top_n: 10
+  interval_s: 300
+
+log_level: INFO
+data_dir: /var/lib/analyselaptop/data
+```
+
+### 3. Grant capabilities
+
+The collector needs `CAP_NET_RAW` for ICMP probes, MTR hop-tracing, and
+broadcast/multicast capture. Grant it to the binary (preferred over running as root):
 
 ```bash
-sudo ./scripts/setup.sh --component dashboard --component ids --apply
-sudo ./scripts/setup.sh            # interactive menu
+sudo setcap cap_net_raw+ep ./analyselaptop-collector
 ```
 
-List everything available:
+For eBPF flow tracking (Phase C13, optional):
+```bash
+sudo setcap cap_net_raw,cap_bpf,cap_perfmon+ep ./analyselaptop-collector
+```
+
+### 4. PKI enrolment
+
+Before the first run, enrol the collector with the hub to receive its mTLS certificate:
 
 ```bash
-./scripts/setup.sh --list
+mkdir -p /var/lib/analyselaptop/pki
+./analyselaptop-collector enroll \
+  --hub https://<hub-ip>:4317 \
+  --enroll-token <token-from-hub>
 ```
 
-### LAN exposure & login
+This writes `collector.key` and `collector.crt` into `pki_dir`. The collector
+auto-renews the cert when fewer than 14 days remain.
 
-By default the dashboard binds to loopback with auth disabled (local desktop use).
-To expose it on the LAN and require a login, set `PROBE_EXPOSE=lan` for the
-dashboard install:
+### 5. Run
 
 ```bash
-sudo PROBE_EXPOSE=lan ./scripts/setup.sh --component dashboard --apply
+./analyselaptop-collector --config /etc/analyselaptop/collector.yaml
 ```
 
-It binds the default-route interface's IPv4 address on port 8088 and turns on the
-username/password login (default **admin / admin** — change it under
-**Settings → Account** immediately; the salted hash lives in
-`/var/lib/network-probe/dashboard-auth.json`). HTTP only: use it on trusted
-management networks, never port-forward to the internet.
+Structured JSON logs go to stdout. On first startup the scheduler runs a full
+cycle; metrics appear in the hub within one cycle (default ≤30 s).
 
-### Split frontend / backend (optional)
+---
 
-By default one process serves both the API and the UI on port 8088. Set
-`PROBE_SPLIT=1` for the dashboard install to run them as two systemd units: the
-**backend** (API + all collection) on loopback `127.0.0.1:8090`, and a thin
-**frontend proxy** (`dashboard.frontend`) on the public bind `:8088` that serves
-the static shell and reverse-proxies `/api` to the backend.
+## Systemd service (Linux)
+
+```ini
+# /etc/systemd/system/analyselaptop-collector.service
+[Unit]
+Description=analyseLaptop Collector v2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=analyselaptop
+ExecStart=/usr/local/bin/analyselaptop-collector --config /etc/analyselaptop/collector.yaml
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+AmbientCapabilities=CAP_NET_RAW
+# Add CAP_BPF CAP_PERFMON here if eBPF is enabled
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ```bash
-sudo PROBE_EXPOSE=lan PROBE_SPLIT=1 ./scripts/setup.sh --component dashboard --apply
+sudo useradd -r -s /sbin/nologin analyselaptop
+sudo cp analyselaptop-collector /usr/local/bin/
+sudo systemctl daemon-reload
+sudo systemctl enable --now analyselaptop-collector
+sudo systemctl status analyselaptop-collector
 ```
 
-Auth is unchanged — the backend session login is the single source of truth in
-both modes; the proxy adds no auth of its own, it just forwards the `np_session`
-cookie. If the backend restarts, the shell keeps rendering and API calls return
-`502 {"backend":false}` so the UI can show an offline banner instead of going
-blank. Re-running the installer without `PROBE_SPLIT=1` collapses back to the
-single-process unit (and removes the backend unit).
+---
 
-### Prometheus / OpenMetrics (optional)
-
-The dashboard can expose a read-only `/metrics` scrape endpoint in the Prometheus
-text format. It is **off by default** — enable under **Settings → Metrics**
-(`metrics.enabled`). Optionally set a bearer token there:
-
-```
-scrape_configs:
-  - job_name: network-probe
-    static_configs: [{ targets: ["<probe-ip>:8088"] }]
-    authorization: { credentials: "<token-if-set>" }
-```
-
-In split mode the frontend proxy forwards `/metrics` to the backend transparently.
-
-## Enrolling a collector
-
-A collector is a separate machine that pushes to a standalone aggregator.
-
-1. On the **aggregator**: open **Collectors → Enroll collector**. Copy the ingest
-   key shown **once**, and make sure *accept external collectors* is enabled.
-2. On the **collector machine**, run setup with the aggregator URL and that key:
+## Build from source
 
 ```bash
-sudo AGGREGATOR_URL=http://<aggregator-ip>:8088 INGEST_KEY=<key-from-enroll> \
-     ./scripts/setup.sh --collector --apply
+git clone https://github.com/Xore/analyseLaptop.git
+cd analyseLaptop/collector
+
+# Development venv
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+
+# Run tests
+pytest tests/ -v
+mypy . --ignore-missing-imports
+ruff check .
+
+# Build single-file binary (Linux amd64)
+pyinstaller --onefile --name analyselaptop-collector __main__.py
+# Output: dist/analyselaptop-collector
+
+# Build for arm64 via Docker buildx
+docker buildx build \
+  --platform linux/arm64 \
+  -f Dockerfile.collector-arm64 \
+  --output type=local,dest=dist/arm64 \
+  .
 ```
 
-## Passwordless access to a lab box
+---
 
-For **trusted lab machines you own**, one command from your workstation sets up
-key-based SSH plus passwordless sudo:
+## Verify the collector is running
 
 ```bash
-./scripts/lab-access-bootstrap.sh --host 192.168.50.33 --user adminuser
+# Service status
+systemctl status analyselaptop-collector
+
+# Live logs
+journalctl -u analyselaptop-collector -f
+
+# Check metrics are reaching the hub (from hub node)
+curl -s http://<hub-ip>:8080/api/collectors | jq '.[] | select(.id=="pi-bedroom")'
 ```
 
-To undo it on the box:
+---
 
-```bash
-sudo ./scripts/lab-grant-access.sh --user adminuser --revoke
-```
+## Capability reference
 
-> Do **not** point this at production machines — NOPASSWD sudo removes the password check for that user.
-
-## Components
-
-| id | Installer | Notes |
+| Capability | Required for | Notes |
 |---|---|---|
-| `lightweight` | install-lightweight.sh | base packages & CLI tools (see [02-install-lightweight.md](02-install-lightweight.md)) |
-| `dashboard` | install-dashboard-service.sh | the web dashboard + API systemd service |
-| `monitor` | install-outage-monitor.sh | continuous reachability monitor |
-| `reconciler` | install-reconciler.sh | privileged reconciler for safe, auto-rolling-back network changes |
-| `neighbours` | install-neighbors.sh | lldpd for LLDP/CDP neighbour discovery (receive-only) |
-| `ids` | install-ids.sh | Suricata passive IDS (AF_PACKET, never inline) |
-| `ids-adapter` | install-ids-adapter.sh | auto-follows a usable capture NIC for the IDS |
-| `ntopng` | install-ntopng.sh | passive flow analyser with its own web UI |
-| `desktop` | install-desktop-launcher.sh | double-click launchers — **run as your normal desktop user** |
-| `collector` | install-collector.sh | slim push-agent (needs `AGGREGATOR_URL` + `INGEST_KEY`) |
+| `CAP_NET_RAW` | ICMP probes, MTR hop-tracing, bcast/mcast capture | Always required |
+| `CAP_NET_ADMIN` | Wi-Fi `iw scan` (some kernels) | Only if Wi-Fi scan enabled |
+| `CAP_BPF` | eBPF flow tracking (Phase C13) | Linux kernel ≥5.8 only |
+| `CAP_PERFMON` | eBPF flow tracking (Phase C13) | Linux kernel ≥5.8 only |
 
-## Verifying
+---
 
-After applying, sanity-check the box and the running services:
+## Troubleshooting
 
-```bash
-./scripts/preflight.sh        # environment/tooling checks
-./scripts/verify-probe.sh     # service + endpoint checks
-./scripts/run-tests.sh        # Go + Python + setup.sh test suite (for developers)
-```
-
-Operational guidance (captures, Wi-Fi, day-to-day) lives in
-[03-capture-and-wifi.md](03-capture-and-wifi.md) and
-[04-operations.md](04-operations.md).
+| Symptom | Cause | Fix |
+|---|---|---|
+| `PermissionError` on ICMP socket | `CAP_NET_RAW` not set | `sudo setcap cap_net_raw+ep ./analyselaptop-collector` |
+| `ImportError: bcc` | `python3-bpfcc` not installed | `sudo apt install python3-bpfcc` or disable eBPF in config |
+| Cert error on gRPC connect | `pki_dir` cert not enrolled | Run `enroll` command first |
+| PyInstaller binary slow to start on Pi | Self-extraction to `/tmp` | Expected on cold start; `TimeoutStartSec=30` in systemd unit |
+| Wi-Fi scan returns empty | `CAP_NET_ADMIN` missing | `sudo setcap cap_net_raw,cap_net_admin+ep ./analyselaptop-collector` |
