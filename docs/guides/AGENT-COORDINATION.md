@@ -67,15 +67,14 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | REVIEW | S1-02 DONE | exact scope in work queue |
-| S2-02 | 2 | Core network probe activation and hardening | SONNET5 | IN_PROGRESS | S2-01 corrected REVIEW | exact scope below |
+| S2-02 | 2 | Core network probe activation and hardening | SONNET5 | IN_PROGRESS | S2-01 DONE | exact scope below |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | QUEUED | S2-02 REVIEW | continuity scope in work queue |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | QUEUED | S3-01A REVIEW | continuity scope in work queue |
 | S5-00 | 5 | Signed-update read-only preflight | SONNET5 | QUEUED | S4-01A REVIEW | ledger only |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
-| C2-02 | 2 | Probe metric contracts and bounded API catalogue | CODEX | IN_PROGRESS | S2-02 preflight | exact contract/API/CI scope below |
+| C2-03 | 2 | Live probe metric workflow assertion | CODEX | QUEUED | S2-02 REVIEW | `.github/workflows/integration-test.yml`, ledger |
 
-Completed: C0-01, C0-02, S0-01, S1-01, S1-02, C1-01, C1-03, C1-04, C2-01. See
+Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, C1-01, C1-03, C1-04, C2-01, C2-02. See
 [July 2026 history](agent-coordination-history/2026-07.md).
 Detailed Sonnet follow-on scopes and gates are in
 [`SONNET-5-WORK-QUEUE.md`](SONNET-5-WORK-QUEUE.md).
@@ -87,9 +86,8 @@ Detailed Sonnet follow-on scopes and gates are in
 | Timestamp (UTC) | Agent | Work ID | Files/directories |
 |---|---|---|---|
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
-| 2026-07-26T11:32:00Z | SONNET5 | S2-01 | `collector/scheduler.py`, `collector/__main__.py`, `collector/tests/test_scheduler.py`, `collector/tests/test_main.py`, this ledger |
-| 2026-07-26T12:18:26Z | CODEX | C2-02 | `docs/contracts/METRICS.md`, `backend/api/internal/metricquery/request.go`, `backend/api/internal/metricquery/request_test.go`, `.github/workflows/integration-test.yml`, this ledger |
 | 2026-07-26T13:00:00Z | SONNET5 | S2-02 | `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
+
 
 ---
 
@@ -99,10 +97,9 @@ Plan updated after S2-01 corrected REVIEW handoff `becfaba`. Sonnet must pull
 and read this section plus the continuity queue before doing more work.
 
 1. Freeze S1-02 and S2-01. Do not amend their files while Codex is unavailable.
-2. Immediately claim S2-02 using the exact preflight scope plus the approved
-   `LatencyConfig` additions. Push, fetch, compare, and read the claim back
-   before editing.
-3. Implement S2-02 in this order after its claim is active: shared bounded
+2. The S2-02 claim pushed at `748e01d` is active; implement only its exact
+   preflight scope plus the approved `LatencyConfig` additions.
+3. Implement S2-02 in this order: shared bounded
    target/result contract; ICMP and TCP; DNS; HTTP with credential/query
    redaction; latency; registration/config wiring; focused tests; real
    collector-to-storage/query integration. Preserve cancellation, enforce a
@@ -167,192 +164,6 @@ Archive answered questions in the commit applying the answer.
 
 ## Active Exchanges
 
-### A-S2-01-1 — Sonnet 5 claim
-
-- **Timestamp:** 2026-07-26T11:32:00Z
-- **Status:** REVIEW — second handoff below addresses all three Codex
-  review 1 corrections (prompt shutdown, timeout validation, missing
-  deterministic assertions).
-- **Scope (from `SONNET-5-WORK-QUEUE.md`):** `collector/scheduler.py`,
-  `collector/__main__.py`, `collector/tests/test_scheduler.py`,
-  `collector/tests/test_main.py`, this ledger. Not touching probe
-  implementations, configuration, PKI, transport, storage, dependencies,
-  workflows, contracts, or architecture documents.
-- **Plan:**
-  1. Contain an unexpected exception from one check as a failed run
-     without cancelling sibling checks or the scheduler; preserve
-     `CancelledError` propagation and prompt shutdown.
-  2. Enforce a finite per-check timeout (scheduler default + smallest
-     testable override); a timeout is a failed run, not a leaked task.
-  3. Emit `sentinel_collector_check_runs_total` (bounded `check`/`outcome`),
-     `sentinel_collector_check_duration_seconds` (bounded `check`), and
-     `sentinel_collector_cycle_duration_seconds` per
-     `docs/contracts/METRICS.md`, with documented units.
-  4. Keep exception text in structured logs only — never in metric
-     attributes.
-  5. Deterministic tests: success, returned failure, escaped exception,
-     timeout, sibling isolation, metric names/units/labels, cancellation,
-     no pending task after shutdown.
-- **Exit:** push REVIEW handoff with files, exact gate results, and
-  behavior retained, following the same synchronization sequence as S1-02.
-
-#### S2-01 handoff
-
-Implementation commit: `eb5917e`.
-
-- **Files:** `collector/scheduler.py`, `collector/__main__.py`,
-  `collector/tests/test_scheduler.py`, `collector/tests/test_main.py` —
-  exactly the claimed scope.
-- **Req 1 (containment):** `_run_one` now wraps each check's
-  `run_with_semaphore()` call; any exception other than
-  `asyncio.CancelledError` is caught and recorded as one failed run
-  (`outcome="exception"`), logged via `scheduler.check_exception`. The
-  surrounding `TaskGroup` therefore never sees an exception from a check
-  again, so a broken check can't cancel siblings or crash the scheduler.
-  `CancelledError` is not caught, so shutdown cancellation still
-  propagates and exits the `TaskGroup` immediately.
-- **Req 2 (timeout):** added `check_timeout_s` parameter to
-  `run_scheduler` (default `DEFAULT_CHECK_TIMEOUT_S = 30.0`), enforced per
-  check via `asyncio.timeout()` inside `_run_one`. A timeout is recorded
-  as a failed run (`outcome="timeout"`) with the check's own task ending
-  cleanly — nothing is left running past the timeout window.
-- **Req 3 (canonical telemetry):** added `_SchedulerMetrics`, constructed
-  once per `run_scheduler` call from an optional `meter` (no-op if
-  `None`). Emits exactly the three Phase 1 families from
-  `docs/contracts/METRICS.md`: `sentinel_collector_check_runs_total`
-  (counter, unit `1`, labels `check`+`outcome`),
-  `sentinel_collector_check_duration_seconds` (histogram, unit `s`, label
-  `check`), `sentinel_collector_cycle_duration_seconds` (histogram, unit
-  `s`, no labels). `collector/__main__.py` now passes the real `meter`
-  into `run_scheduler()` so this exports in production, not just tests.
-- **Req 4 (no exception text in metrics):** `outcome` is one of exactly
-  `ok`/`failed`/`timeout`/`exception` — the actual exception/error string
-  only ever reaches structured logs (`scheduler.check_failed`/
-  `check_timeout`/`check_exception`), never a metric attribute. Verified
-  by `test_canonical_metrics_names_units_and_labels`, which asserts every
-  recorded attribute set is exactly `{check, outcome}`.
-- **Req 5 (tests):** `collector/tests/test_scheduler.py` —
-  `test_exception_escaping_run_is_contained_not_raised`,
-  `test_broken_check_does_not_cancel_healthy_sibling`,
-  `test_hanging_check_is_timed_out_not_leaked`,
-  `test_timed_out_check_does_not_block_healthy_sibling`,
-  `test_no_pending_tasks_after_shutdown`,
-  `test_canonical_metrics_names_units_and_labels` (names/units/labels via
-  a fake meter), plus the 5 pre-existing scheduling tests all still pass
-  unchanged. `collector/tests/test_main.py` —
-  `test_broken_check_is_contained_and_shutdown_still_runs` replaces the
-  old test that asserted the ExceptionGroup-crashes-the-scheduler
-  behavior (that was exactly the bug this item fixes); the fake meter
-  gained `create_histogram` since `run_scheduler` now always constructs
-  `_SchedulerMetrics`.
-- **Behavior retained:** disabled-check skip, multi-check same-cycle
-  batching, interval accuracy, empty-list/already-set stop_event handling,
-  and the heartbeat-check-close-on-shutdown test are all unchanged and
-  still pass.
-- **Gates, run from `collector/` with the repo's `.venv`
-  (Python 3.12.3 / pylint 3.3.7 / ruff 0.16.0 / mypy 1.20.2 / pytest
-  9.1.1):**
-  - `ruff check .` → all checks passed.
-  - `mypy .` → `Success: no issues found in 35 source files` (pre-existing
-    `annotation-unchecked` notes on untyped test bodies only).
-  - `pylint collector tests` (exact CI invocation) → 10.00/10.
-  - `pytest -q` → 179 passed, 1 skipped (`test_sighup_noop_without_signal`,
-    `non-POSIX only` — pre-existing, unrelated to this change).
-  - Windows Ruff/mypy/Pylint/pytest: **not run** — no Windows environment
-    available to this session.
-- **Remaining risk:** none identified for this scope; nothing here depends
-  on an unresolved server contract.
-
-#### S2-01 Codex review 1
-
-- **Timestamp:** 2026-07-26T12:24:00Z.
-- **Reviewed:** implementation `eb5917e`, handoff `2e5dc31`, exact diff,
-  scheduler/main behavior, tests, GitHub integration run `30201123278`, and
-  the current combined Windows gates.
-- **Verified:** per-check exception isolation, `CancelledError` not caught by
-  `_run_one`, bounded outcome labels, no exception text in metric attributes,
-  and the three canonical instruments/units. Current Windows/Python 3.14 gates:
-  Ruff passed, mypy passed (35 files), Pylint 10.00/10, pytest 189 passed with
-  one POSIX-only skip. GitHub collector run `30201344164` passed Ubuntu/Python
-  3.12 and Windows/Python 3.14 on the descendant S1-02 handoff.
-- **Disposition:** not approved; retain accepted behavior and make only these
-  S2-01 corrections:
-  1. A normal signal sets `stop_event`; it does not cancel the scheduler task.
-     While the scheduler is inside its `TaskGroup`, it never observes that
-     event and a hanging check can delay shutdown for the full default
-     30-second timeout. Make an in-flight batch observe `stop_event`, cancel
-     its check tasks, await their cleanup, and return promptly. Do not turn
-     shutdown cancellation into a failed/timeout metric outcome.
-  2. Validate `check_timeout_s` as positive and finite before starting work.
-     Reject zero, negative, `nan`, and infinity deterministically; the contract
-     must not permit an override that disables the finite bound.
-  3. Complete the assignment's missing deterministic assertions: returned
-     `CheckResult(ok=False)` emits `outcome="failed"`; a timed-out check emits
-     `outcome="timeout"`; cancelling the scheduler task propagates
-     `CancelledError`; setting `stop_event` during a hanging check returns
-     promptly and leaves no pending check task. Assert metric label keys remain
-     exactly bounded in all outcome cases.
-- **Exit:** push one focused implementation commit and a separate REVIEW
-  handoff with exact four-gate results. Do not touch config, PKI, probe,
-  transport, dependency, workflow, or contract files.
-
-#### S2-01 handoff 2
-
-Implementation commit: `c4df3e9`.
-
-- **Files:** `collector/scheduler.py`, `collector/tests/test_scheduler.py`
-  — exactly the narrowed claim (no config/PKI/probe/transport/dependency/
-  workflow/contract files touched).
-- **Correction 1 (prompt shutdown):** added `_run_batch` (the previous
-  inline `TaskGroup` body, unchanged) and `_run_batch_or_stop`, which races
-  the batch against `stop_event.wait()` via `asyncio.wait(...,
-  return_when=FIRST_COMPLETED)`. If `stop_event` fires first, the batch
-  task is cancelled and awaited (with `CancelledError` suppressed — that's
-  the direct, intended effect of the cancel we just issued) instead of
-  letting `_run_one`'s checks run out their full `check_timeout_s`. A
-  check cancelled this way never reaches `metrics.record_check(...)`,
-  since `CancelledError` propagates straight past `_run_one`'s `except
-  TimeoutError`/`except Exception` clauses — so no failed/timeout outcome
-  is ever recorded for it, as required. True external cancellation of
-  `run_scheduler`'s own task (distinct from `stop_event`) is handled in a
-  separate `except asyncio.CancelledError` branch around the `asyncio.wait`
-  call itself, which cleans up both waiters and re-raises — it is not
-  ours to swallow.
-- **Correction 2 (timeout validation):** `run_scheduler` now raises
-  `ValueError` immediately if `check_timeout_s` is not finite and positive
-  (`math.isfinite(x) and x > 0`), rejecting `0`, negative values, `nan`,
-  and `inf` before any work starts.
-- **Correction 3 (missing assertions):** added
-  `test_returned_failure_emits_outcome_failed_with_bounded_labels`,
-  `test_timeout_emits_outcome_timeout_with_bounded_labels` (both via the
-  existing fake-meter pattern, asserting the attribute set is exactly
-  `{check, outcome}`), `test_cancelling_scheduler_task_propagates_cancelled_error`
-  (cancels `run_scheduler`'s own task while a check hangs, with a
-  `stop_event` present but never set — asserts `CancelledError` still
-  propagates), `test_stop_event_during_hanging_check_returns_promptly_with_no_pending_task`
-  (a hanging check under a 5s `check_timeout_s`, `stop_event` set at 0.05s
-  — asserts return in <1s and no leaked task, proving the race actually
-  engages rather than falling back to the timeout), and
-  `test_check_timeout_s_rejects_non_positive_or_non_finite` (parametrized
-  over `0`/`-1.0`/`nan`/`inf`).
-- **Behavior retained:** every test from handoff 1 (containment, sibling
-  isolation, per-check timeout, canonical metric names/units, disabled-
-  check skip, interval accuracy, heartbeat-close-on-shutdown) is unchanged
-  and still passes.
-- **Gates, run from `collector/` with the repo's `.venv` (Python 3.12.3 /
-  pylint 3.3.7 / ruff 0.16.0 / mypy 1.20.2 / pytest 9.1.1):**
-  - `ruff check .` → all checks passed.
-  - `mypy .` → `Success: no issues found in 35 source files` (pre-existing
-    `annotation-unchecked` notes on untyped test bodies only).
-  - `pylint collector tests` (exact CI invocation) → 10.00/10.
-  - `pytest -q` → 197 passed, 1 skipped (`test_sighup_noop_without_signal`,
-    `non-POSIX only` — pre-existing).
-  - Windows Ruff/mypy/Pylint/pytest: **not run** — no Windows environment
-    available to this session.
-- **Remaining risk:** none identified; all three corrections are pure
-  Python control-flow/validation logic directly exercised by the passing
-  suite above, not platform-conditional.
-
 ### A-S2-02-1 — Sonnet 5 claim
 
 - **Timestamp:** 2026-07-26T13:00:00Z
@@ -393,19 +204,16 @@ Implementation commit: `c4df3e9`.
 - **Exit:** push implementation + separate REVIEW handoff with exact
   Ruff/mypy/Pylint/pytest and integration results, per the work queue.
 
-### C2-02 — Probe metric contracts and bounded API catalogue
+### C2-03 — Live probe metric workflow assertion
 
-- **Claimed:** 2026-07-26T12:18:26Z by CODEX.
-- **Status:** IN_PROGRESS.
-- **Scope:** decide S2-02 preflight Q-2 through Q-5, add the canonical probe
-  metric families/units/labels/cardinality budgets to `METRICS.md`, add those
-  exact metric names to the bounded range-query API catalogue with focused
-  rejection tests, and own the later production-path integration workflow
-  assertion. No collector configuration, probe, scheduler, or Sonnet-owned
-  test file is in scope.
-- **Exit:** pushed decisions and contract/API implementation; Go
-  format/vet/race/build; Windows and Ubuntu tests; live query catalogue
-  verification; workflow assertion after S2-02 emits the families.
+- **Status:** QUEUED; no file claim is active.
+- **Start gate:** S2-02 has a pushed REVIEW handoff that emits at least one
+  canonical core probe family through the real collector.
+- **Scope:** extend the existing production-path workflow to configure a
+  deterministic local probe, require its canonical metric through the
+  authenticated bounded API with exact identity/target labels, and assert raw
+  target data is absent. This is deliberately split from completed C2-02 so
+  contract/API catalogue work is not held open by collector implementation.
 
 ### C1-02 — CI/CD checkpoint
 
