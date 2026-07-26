@@ -66,7 +66,7 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | IN_PROGRESS | S1-01 | `collector/**`; exclusions below |
+| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | REVIEW | S1-01 | `collector/**`; exclusions below |
 | C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | IN_PROGRESS | C0-02 | `backend/`, `contracts/`, `deploy/hub/`, migration tests |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 
@@ -87,7 +87,25 @@ Completed: C0-01, C0-02, S0-01, S1-01. See
 
 ## Open Questions
 
-No open questions.
+### Q-1 — Enroll contract: retry-on-4xx and identity echo
+- Raised/UTC/work ID: 2026-07-26T10:40:00Z / S1-02
+- Question and affected files: `collector/pki/enroll.py` (`_post_csr`,
+  `ensure_enrolled`). (a) An invalid/reused bootstrap token today returns
+  through the same generic non-200 branch as any other failure and is
+  retried up to `backend.retry_max` times before failing — should 4xx
+  auth-rejection statuses instead fail fast without retrying? (b) The
+  enroll response body never echoes back `collector_id`/`site_id` for the
+  client to confirm identity — is that intentional, or should the
+  contract add an identity-echo field the client verifies before writing
+  cert/key files?
+- Evidence: `collector/pki/enroll.py:78-86` — any `resp.status != 200`
+  hits one generic `EnrollmentError`; the success path only reads
+  `certificate_pem`/`ca_certificate_pem`, no identity field.
+- Smallest reversible proposal: none proposed — this is a backend/contract
+  decision (`docs/contracts/**` is outside S1-02's write scope). Tests
+  added under S1-02 exercise the *current* generic-retry, no-identity-echo
+  contract; they will need updating if the contract changes.
+- Decision: pending
 
 Use:
 
@@ -109,7 +127,7 @@ Archive answered questions in the commit applying the answer.
 ### A-S1-02-1 — Sonnet 5 assignment
 
 - **Timestamp:** 2026-07-26T09:47:13Z
-- **Status:** READY; claim and push before editing.
+- **Status:** REVIEW — handoff below.
 - **Goal:** Make the documented Windows development path accurately validate
   Phase 1 collector behavior and strengthen enrollment failure tests.
 - **Allowed:** `collector/**`.
@@ -130,6 +148,79 @@ Archive answered questions in the commit applying the answer.
      pytest. Report platform-specific skips explicitly.
 - **Exit:** Push REVIEW handoff with files, exact results, behavior retained,
   suppressions with rationale, and remaining server-contract dependencies.
+
+#### S1-02 handoff
+
+Implementation commit: `6745750`.
+
+- **Files:** `collector/config.py`, `collector/tests/pki/test_enroll.py`.
+- **Req 1 (0600 Windows parity):** `test_writes_files_on_success` now
+  branches on `sys.platform`. POSIX still asserts `0o600` unchanged.
+  Windows asserts `0o666` with an inline rationale comment: `os.chmod` on
+  Windows only toggles `FILE_ATTRIBUTE_READONLY` and can't restrict access
+  per-owner, so a mode with a write bit (`0o600`) never sets read-only —
+  CPython's `stat()` emulation then reports `0o666` for every
+  user/group/other bit. True owner-only protection on Windows needs an
+  explicit ACL, not `chmod`; tracked as a platform gap, not something this
+  test fixes. Only the POSIX branch is exercised on this Linux host;
+  Windows branch is unverified (platform skip).
+- **Req 2 (Pylint SIGHUP/ThreadPoolExecutor false failures):**
+  - `signal.SIGHUP` (`collector/config.py`, `install_sighup_reload`): added
+    `# pylint: disable-next=no-member` directly on the
+    `signal.signal(signal.SIGHUP, ...)` line, with a comment. Root cause:
+    typeshed's `signal.pyi` declares `SIGHUP` only under
+    `sys.platform != "win32"`; when pylint itself runs on Windows, astroid
+    resolves `signal` against the win32-conditioned stub and reports
+    `no-member` even though the `hasattr(signal, "SIGHUP")` guard above
+    makes the line unreachable there at runtime — astroid doesn't narrow
+    module-attribute existence from a runtime `hasattr` check. This
+    reproduces only when pylint's host platform is Windows; **could not be
+    verified directly** — this Linux/Python 3.12.3/pylint 3.3.7 host
+    (matching CI's `collector.yml`/`pylint.yml`) rates `config.py` a clean
+    10.00/10 both before and after the change, so the suppression is
+    inert here but should prevent the reported Windows false positive
+    without touching any other check.
+  - `ThreadPoolExecutor` (`collector/utils/thread_pool.py`): **not
+    reproduced or changed.** `pylint collector tests` and a standalone
+    `pylint utils/thread_pool.py` both rate 10.00/10 on Python 3.12.3 /
+    pylint 3.3.7 / astroid 3.3.11 — the same tool versions this repo's CI
+    uses. No Windows or Python 3.14 environment was available to this
+    session to reproduce the reported failure, and I did not find a
+    concrete, checkable symptom (message ID/text) to target a suppression
+    at, so per rule 6 I'm recording it here instead of guessing: if the
+    original report has the actual pylint message ID/output, please add it
+    to this entry or a new question so a narrowly-scoped fix can be
+    applied and verified.
+- **Req 3 (enrollment failure tests):** added
+  `TestEnsureEnrolledFailureModes` in
+  `collector/tests/pki/test_enroll.py`: invalid/reused-token status (401,
+  through the existing generic non-200 branch), malformed response body
+  missing `certificate_pem`, missing `ca_certificate_pem`, and a non-dict
+  JSON body (`TypeError` branch); network error that retries then
+  succeeds (`aiohttp.ClientConnectionError`) and one that exhausts
+  retries (`aiohttp.ServerTimeoutError`). No identity-mismatch test was
+  added — the current response contract has no identity field to
+  mismatch (see Q-1).
+- **Req 4 (no invented contract):** confirmed — all new tests exercise
+  `_post_csr`'s existing generic-status/generic-shape handling; Q-1 above
+  records the two contract questions (retry-on-4xx, identity echo) instead
+  of silently deciding either.
+- **Req 5 (four gates + platform skips):** all run from `collector/` with
+  the repo's `.venv` (Python 3.12.3):
+  - `ruff check .` → all checks passed.
+  - `mypy .` → `Success: no issues found in 35 source files` (3
+    pre-existing `annotation-unchecked` notes, unrelated to this change).
+  - `pylint collector tests` (exact CI invocation) → 10.00/10.
+  - `pytest -q` → 161 passed, 1 skipped (`test_sighup_noop_without_signal`,
+    `non-POSIX only` — expected on this POSIX host).
+  - Windows Ruff/mypy/Pylint/pytest: **not run** — no Windows environment
+    available this session; explicitly skipped per Req 5's own allowance.
+- **Behavior retained:** no runtime logic changed — the SIGHUP guard,
+  retry loop, and enroll wire format are unchanged; only a test assertion
+  and a lint suppression were added.
+- **Remaining server-contract dependencies:** Q-1 (retry-on-4xx,
+  identity echo) and the unreproduced `ThreadPoolExecutor` Pylint report
+  above.
 
 ### Pending C1-01 handoff
 
