@@ -68,7 +68,7 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | SONNET5 | REVIEW | S2-01 DONE | exact scope below |
-| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | IN_PROGRESS | S2-02 REVIEW | exact new-file scope below |
+| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | exact new-file scope below |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | QUEUED | S3-01A REVIEW | continuity scope in work queue |
 | S5-00 | 5 | Signed-update read-only preflight | SONNET5 | QUEUED | S4-01A REVIEW | ledger only |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
@@ -306,8 +306,7 @@ Implementation commit: `4ba26c2`.
 ### A-S3-01A-1 — Sonnet 5 claim
 
 - **Timestamp:** 2026-07-26T14:10:00Z
-- **Status:** IN_PROGRESS — claimed under the continuity authority after
-  S2-02's pushed REVIEW handoff `e208ef3`. All S2-02 files (and S1-02/S2-01
+- **Status:** REVIEW — handoff below. All S2-02 files (and S1-02/S2-01
   before them) are frozen and untouched by this claim.
 - **Scope:** exactly the File Claims row above — seven new check modules
   plus seven matching new test modules. No edits to `config.py`,
@@ -327,6 +326,85 @@ Implementation commit: `4ba26c2`.
   had before S2-02 wired instruments.
 - **Exit:** push implementation + separate REVIEW handoff with exact
   Ruff/mypy/Pylint/pytest results, per the work queue.
+
+#### S3-01A handoff
+
+Implementation commit: `8e96e8c`.
+
+- **Files:** exactly the claimed new-file scope — seven `host_*.py` check
+  modules and seven matching test modules. No existing file was edited.
+- **`host_cpu.py`:** `/proc/stat`'s aggregate `cpu` line, delta-based
+  utilization between consecutive `run()` calls (stored as instance
+  state); the first call after construction records a baseline only,
+  since utilization needs an interval to be meaningful.
+- **`host_memory.py`:** `/proc/meminfo`, preferring the kernel's own
+  `MemAvailable` (reclaimable-cache-aware) with a
+  `MemFree+Buffers+Cached` fallback for kernels too old to report it.
+- **`host_disk.py`:** `shutil.disk_usage` for one configured mount path
+  — genuinely cross-platform (unlike the `/proc`-based checks), so no
+  platform guard.
+- **`host_load.py`:** `os.getloadavg()`; not routed through the bounded
+  thread pool since it's a fast syscall reading a precomputed kernel
+  value, not a blocking call — matches
+  `docs/guides/ASYNCIO-OPTIMIZATION.md` §3's own scope for the pool.
+- **`host_network.py`:** `/proc/net/dev`, same delta-across-cycles
+  approach as `host_cpu.py`, for one configured interface's RX/TX byte
+  rate.
+- **`host_process.py`:** one named process per instance (mirrors
+  `net_tcp.py`'s one-target-per-instance shape — a bounded allow-list
+  becomes however many instances a later registration claim constructs).
+  Scans `/proc/<pid>/comm`; a PID that vanishes or becomes unreadable
+  mid-scan is skipped, not treated as a hard failure — only a failure to
+  list `/proc` itself propagates. Documented the kernel's 15-character
+  `comm` truncation as a known limitation, not a bug.
+- **`host_service.py`:** one named systemd service per instance, via
+  `systemctl is-active` over `asyncio.create_subprocess_exec` — genuinely
+  async I/O, not routed through the thread pool. A timeout kills the
+  subprocess before re-raising; a missing `systemctl` binary (non-systemd
+  Linux, minimal containers) raises a clear `RuntimeError` instead of an
+  opaque `FileNotFoundError`.
+- **Shared design decisions:** all six file-reading/subprocess checks
+  route blocking work through `collector.utils.thread_pool.run_in_thread`
+  except `host_load`/`host_service` (neither is a blocking call — see
+  above). `host_cpu`/`host_memory`/`host_network`/`host_process` report a
+  clear `ok=False` "unsupported platform" failure on non-Linux instead of
+  crashing; `host_disk` doesn't need this (portable) and `host_load`/
+  `host_service` fail naturally through their own real error paths
+  (`OSError`/`AttributeError`, missing `systemctl`) without a separate
+  guard. No check creates an OTel instrument or gets constructed by
+  `__main__.py` — both explicitly deferred to a later claim, so every
+  `CheckResult.metrics`/`.labels` here is internal/test-facing only, the
+  same shape `net_*.py`'s checks had before S2-02.
+- **Tests:** each module has success, malformed/missing-input, and
+  cancellation-of-a-slow-call coverage; permission-denial where a real
+  chmod is meaningful (`host_cpu`, `host_memory`, `host_network`,
+  `host_process`); platform/tool-unavailability handling
+  (`host_cpu`/`host_memory`/`host_network`/`host_process`'s non-Linux
+  guard; `host_load`'s missing-`getloadavg`-attribute case;
+  `host_service`'s missing-`systemctl` case). `host_process`'s tests build
+  a real fake `/proc` directory tree under `tmp_path` rather than mocking
+  individual calls. `host_service`'s tests use a fake async subprocess
+  object (`communicate`/`kill`/`wait`) to exercise the timeout-kills-the-
+  process path without a real hung process. No test depends on the
+  developer host's actual process/service/interface state.
+- **Behavior retained:** every S1-02/S2-01/S2-02 test and behavior is
+  unchanged.
+- **Gates, run from `collector/` with the repo's `.venv` (Python 3.12.3 /
+  pylint 3.3.7 / ruff 0.16.0 / mypy 1.20.2 / pytest 9.1.1):**
+  - `ruff check .` → all checks passed.
+  - `mypy .` → `Success: no issues found in 49 source files` (pre-existing
+    `annotation-unchecked` notes on untyped test bodies only).
+  - `pylint collector tests` (exact CI invocation) → 10.00/10.
+  - `pytest -q` → 340 passed, 1 skipped (`test_sighup_noop_without_signal`,
+    `non-POSIX only` — pre-existing).
+  - Windows Ruff/mypy/Pylint/pytest: **not run** — no Windows environment
+    available to this session. The four Linux-only checks' own tests
+    explicitly simulate non-Linux behavior via monkeypatching rather than
+    depending on an actual Windows run.
+- **Remaining risk:** none identified against the current contract;
+  registration/config wiring and OTel instrument design for these seven
+  checks remain open for the later claim the work queue already
+  anticipates.
 
 ### C2-03 — Live probe metric workflow assertion
 
