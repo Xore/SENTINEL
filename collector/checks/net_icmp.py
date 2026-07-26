@@ -14,7 +14,8 @@ import structlog
 from opentelemetry.metrics import Meter
 
 from collector.checks import BaseCheck, CheckResult
-from collector.config import CollectorSettings
+from collector.config import CollectorSettings, IcmpTarget
+from collector.utils.thread_pool import run_in_thread
 
 log = structlog.get_logger()
 
@@ -98,10 +99,17 @@ def _ping_once_blocking(
 
 
 async def ping(target_ip: str, *, identifier: int, sequence: int, timeout_s: float) -> float:
-    """Async wrapper around the blocking ping — RTT in milliseconds."""
-    return await asyncio.to_thread(
-        _ping_once_blocking, target_ip, identifier, sequence, timeout_s
-    )
+    """Async wrapper around the blocking ping — RTT in milliseconds.
+
+    Runs on the collector's shared, hard-capped 2-worker thread pool
+    (`collector.utils.thread_pool.run_in_thread`), not the default
+    `asyncio.to_thread` executor — raw-socket ICMP is exactly the kind of
+    blocking call that pool exists for (docs/guides/ASYNCIO-OPTIMIZATION.md
+    §3), and using the unbounded default pool here would let a burst of
+    concurrent ICMP/latency checks exceed the Pi 3B CPU NFR the rest of the
+    collector enforces.
+    """
+    return await run_in_thread(_ping_once_blocking, target_ip, identifier, sequence, timeout_s)
 
 
 class IcmpCheck(BaseCheck):
@@ -112,7 +120,7 @@ class IcmpCheck(BaseCheck):
         self,
         config: CollectorSettings,
         meter: Meter | None,
-        target: str,
+        target: IcmpTarget,
         *,
         semaphore: asyncio.Semaphore | None = None,
     ) -> None:
@@ -120,27 +128,59 @@ class IcmpCheck(BaseCheck):
         self.target = target
         self.interval_s = config.icmp.interval_s
         self._sequence = 0
-        self._identifier = target_identifier(target)
+        self._identifier = target_identifier(target.host)
+        self._rtt_seconds = (
+            meter.create_histogram(
+                "sentinel_collector_icmp_rtt_seconds",
+                description="ICMP echo round-trip time",
+                unit="s",
+            )
+            if meter is not None
+            else None
+        )
+        self._loss_ratio = (
+            meter.create_gauge(
+                "sentinel_collector_icmp_loss_ratio",
+                description="ICMP echo loss ratio (0.0-1.0) for the most recent probe",
+                unit="1",
+            )
+            if meter is not None
+            else None
+        )
+
+    def is_enabled(self) -> bool:
+        return super().is_enabled() and self.config.icmp.enabled
+
+    def _record(self, *, rtt_ms: float | None, loss_pct: float) -> None:
+        attributes = {"target_id": self.target.target_id}
+        if self._rtt_seconds is not None and rtt_ms is not None:
+            self._rtt_seconds.record(rtt_ms / 1000.0, attributes=attributes)
+        if self._loss_ratio is not None:
+            self._loss_ratio.set(loss_pct / 100.0, attributes=attributes)
 
     async def run(self) -> CheckResult:
         self._sequence = (self._sequence + 1) % 65536
         try:
             rtt_ms = await ping(
-                self.target,
+                self.target.host,
                 identifier=self._identifier,
                 sequence=self._sequence,
                 timeout_s=self.config.icmp.timeout_s,
             )
+            self._record(rtt_ms=rtt_ms, loss_pct=0.0)
             return CheckResult(
                 ok=True,
                 metrics={"icmp_rtt_ms": rtt_ms, "icmp_loss_pct": 0.0},
-                labels={"target": self.target},
+                labels={"target": self.target.host},
             )
         except Exception as exc:  # BaseCheck.run() must never raise
-            log.warning("check.degraded", check=self.name, target=self.target, error=str(exc))
+            log.warning(
+                "check.degraded", check=self.name, target=self.target.host, error=str(exc)
+            )
+            self._record(rtt_ms=None, loss_pct=100.0)
             return CheckResult(
                 ok=False,
                 metrics={"icmp_loss_pct": 100.0},
-                labels={"target": self.target},
+                labels={"target": self.target.host},
                 error=str(exc),
             )

@@ -8,6 +8,12 @@ import pytest
 import collector.__main__ as main_module
 from collector.__main__ import main
 from collector.checks import BaseCheck, CheckResult
+from collector.checks.net_dns import DnsCheck
+from collector.checks.net_http import HttpCheck
+from collector.checks.net_icmp import IcmpCheck
+from collector.checks.net_latency import LatencyCheck
+from collector.checks.net_tcp import TcpCheck
+from collector.config import load_settings
 
 
 async def test_missing_collector_id_exits_with_code_1():
@@ -200,3 +206,106 @@ async def test_main_closes_heartbeat_check_on_shutdown(monkeypatch, enrolled_pki
 
     assert len(close_calls) == 1
     assert isinstance(close_calls[0], heartbeat_check_cls)
+
+
+class TestBuildChecks:
+    """S2-02: registration wiring — one check instance per configured target
+    per probe family, plus the heartbeat. Each check's own `is_enabled()`
+    gates whether it actually runs; construction itself is unconditional.
+    """
+
+    def test_no_targets_configured_returns_only_heartbeat(self, settings):
+        checks = main_module._build_checks(  # pylint: disable=protected-access
+            settings, meter=None, log=main_module.structlog.get_logger(), semaphore=None
+        )
+        assert len(checks) == 1
+        assert isinstance(checks[0], main_module._HeartbeatCheck)  # pylint: disable=protected-access
+
+    def test_one_instance_per_target_per_family(self):
+        settings = load_settings(
+            collector_id="c",
+            icmp={"targets": [{"target_id": "icmp-1", "host": "10.0.0.1"}]},
+            tcp={"targets": [{"target_id": "tcp-1", "host": "10.0.0.1", "port": 443}]},
+            http={"targets": [{"target_id": "http-1", "url": "https://10.0.0.1/"}]},
+            dns={"targets": [{"target_id": "dns-1", "hostname": "example.com"}]},
+            latency={
+                "enabled": True,
+                "targets": [{"target_id": "lat-1", "host": "10.0.0.1"}],
+            },
+        )
+        checks = main_module._build_checks(  # pylint: disable=protected-access
+            settings, meter=None, log=main_module.structlog.get_logger(), semaphore=None
+        )
+
+        by_type = {type(c) for c in checks}
+        assert by_type == {
+            main_module._HeartbeatCheck,  # pylint: disable=protected-access
+            IcmpCheck,
+            TcpCheck,
+            HttpCheck,
+            DnsCheck,
+            LatencyCheck,
+        }
+        assert len(checks) == 6
+
+    def test_dns_constructs_one_check_per_configured_record_type(self):
+        settings = load_settings(
+            collector_id="c",
+            dns={
+                "targets": [{"target_id": "dns-1", "hostname": "example.com"}],
+                "record_types": ["A", "AAAA"],
+            },
+        )
+        checks = main_module._build_checks(  # pylint: disable=protected-access
+            settings, meter=None, log=main_module.structlog.get_logger(), semaphore=None
+        )
+
+        dns_checks = [c for c in checks if isinstance(c, DnsCheck)]
+        assert len(dns_checks) == 2
+        assert {c.record_type for c in dns_checks} == {"A", "AAAA"}
+
+    def test_multiple_targets_in_one_family_each_get_an_instance(self):
+        settings = load_settings(
+            collector_id="c",
+            icmp={
+                "targets": [
+                    {"target_id": "icmp-1", "host": "10.0.0.1"},
+                    {"target_id": "icmp-2", "host": "10.0.0.2"},
+                ]
+            },
+        )
+        checks = main_module._build_checks(  # pylint: disable=protected-access
+            settings, meter=None, log=main_module.structlog.get_logger(), semaphore=None
+        )
+
+        icmp_checks = [c for c in checks if isinstance(c, IcmpCheck)]
+        assert len(icmp_checks) == 2
+        assert {c.target.target_id for c in icmp_checks} == {"icmp-1", "icmp-2"}
+
+    def test_disabled_family_still_constructs_but_check_is_not_enabled(self):
+        # Construction is unconditional; is_enabled() is where the family's
+        # `enabled` flag actually takes effect (checked at scheduler time).
+        settings = load_settings(
+            collector_id="c",
+            icmp={"enabled": False, "targets": [{"target_id": "icmp-1", "host": "10.0.0.1"}]},
+        )
+        checks = main_module._build_checks(  # pylint: disable=protected-access
+            settings, meter=None, log=main_module.structlog.get_logger(), semaphore=None
+        )
+
+        icmp_checks = [c for c in checks if isinstance(c, IcmpCheck)]
+        assert len(icmp_checks) == 1
+        assert icmp_checks[0].is_enabled() is False
+
+    def test_latency_disabled_by_default_still_constructs_but_not_enabled(self):
+        settings = load_settings(
+            collector_id="c",
+            latency={"targets": [{"target_id": "lat-1", "host": "10.0.0.1"}]},
+        )
+        checks = main_module._build_checks(  # pylint: disable=protected-access
+            settings, meter=None, log=main_module.structlog.get_logger(), semaphore=None
+        )
+
+        latency_checks = [c for c in checks if isinstance(c, LatencyCheck)]
+        assert len(latency_checks) == 1
+        assert latency_checks[0].is_enabled() is False

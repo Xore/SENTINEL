@@ -12,6 +12,11 @@ import structlog
 from opentelemetry.metrics import Meter
 
 from collector.checks import BaseCheck, CheckResult
+from collector.checks.net_dns import DnsCheck
+from collector.checks.net_http import HttpCheck
+from collector.checks.net_icmp import IcmpCheck
+from collector.checks.net_latency import LatencyCheck
+from collector.checks.net_tcp import TcpCheck
 from collector.config import CollectorSettings, ConfigError, install_sighup_reload, load_settings
 from collector.health.loop_watchdog import loop_latency_watchdog
 from collector.pki.enroll import ensure_enrolled
@@ -121,6 +126,40 @@ async def _close_checks(checks: list[BaseCheck], log: structlog.BoundLogger) -> 
             log.warning("check.close_failed", check=check.name, error=str(exc))
 
 
+def _build_checks(
+    settings: CollectorSettings,
+    meter: Meter | None,
+    log: structlog.BoundLogger,
+    *,
+    semaphore: asyncio.Semaphore | None,
+) -> list[BaseCheck]:
+    """One check instance per configured target for every probe family, plus
+    the heartbeat. Construction is unconditional — each check's own
+    `is_enabled()` (scan level and its family's `enabled` flag) decides at
+    scheduler time whether it actually runs (docs/contracts/METRICS.md,
+    S2-02 preflight Q-5).
+    """
+    checks: list[BaseCheck] = [_HeartbeatCheck(settings, meter, log, semaphore=semaphore)]
+
+    for icmp_target in settings.icmp.targets:
+        checks.append(IcmpCheck(settings, meter, icmp_target, semaphore=semaphore))
+
+    for tcp_target in settings.tcp.targets:
+        checks.append(TcpCheck(settings, meter, tcp_target, semaphore=semaphore))
+
+    for http_target in settings.http.targets:
+        checks.append(HttpCheck(settings, meter, http_target, semaphore=semaphore))
+
+    for dns_target in settings.dns.targets:
+        for record_type in settings.dns.record_types:
+            checks.append(DnsCheck(settings, meter, dns_target, record_type, semaphore=semaphore))
+
+    for latency_target in settings.latency.targets:
+        checks.append(LatencyCheck(settings, meter, latency_target, semaphore=semaphore))
+
+    return checks
+
+
 def _install_uvloop() -> None:
     """Install uvloop as the default event loop policy on Linux, if
     available. A soft dependency: the collector must run correctly without
@@ -162,7 +201,7 @@ async def main(*, stop_event: asyncio.Event | None = None) -> None:
     meter = get_meter(provider)
 
     semaphore = asyncio.Semaphore(settings.max_concurrent_probes)
-    checks: list[BaseCheck] = [_HeartbeatCheck(settings, meter, log, semaphore=semaphore)]
+    checks = _build_checks(settings, meter, log, semaphore=semaphore)
 
     if stop_event is None:
         stop_event = asyncio.Event()

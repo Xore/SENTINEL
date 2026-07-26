@@ -12,12 +12,14 @@ overrides all flow through one place. Schema mirrors
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import signal
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, ValidationInfo, field_validator
@@ -50,6 +52,59 @@ def _validate_dns_label(value: str, field_name: str) -> str:
 
 class ConfigError(Exception):
     """Raised when configuration cannot be loaded or fails validation."""
+
+
+# docs/contracts/METRICS.md: at most 32 targets per probe family, so the
+# operator-assigned target_id label stays within its stated cardinality budget.
+_MAX_TARGETS_PER_FAMILY = 32
+
+# A deliberately lenient hostname check (not full RFC 1123): rejects empty,
+# whitespace-padded, control-character, or absurdly long values without
+# implementing a complete DNS-name grammar.
+_HOSTNAME_RE = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$")
+
+# docs/contracts/METRICS.md's DNS record_type allow-list — restricted to this
+# set so record_type can safely be a metric label (never arbitrary response
+# data).
+_ALLOWED_DNS_RECORD_TYPES = frozenset({"A", "AAAA", "CNAME", "MX", "NS", "PTR", "SRV", "TXT"})
+
+
+def _validate_host(value: str) -> str:
+    """A probe target host must be a syntactically valid IPv4/IPv6 address or
+    hostname — not empty, not whitespace-padded, no control characters."""
+    if not value or value != value.strip():
+        raise ValueError(f"host must be a non-empty, non-whitespace-padded value: got {value!r}")
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        if len(value) > 253 or not _HOSTNAME_RE.match(value):
+            raise ValueError(
+                f"host must be a valid IP address or hostname: got {value!r}"
+            ) from None
+    return value
+
+
+def _validate_target_url(value: str) -> str:
+    """An HTTP probe target must be an absolute http(s) URL."""
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"url must be an absolute http:// or https:// URL: got {value!r}")
+    return value
+
+
+def _validate_target_list(targets: list[Any], family: str) -> list[Any]:
+    """Shared cap/uniqueness check for every probe family's target list —
+    at most `_MAX_TARGETS_PER_FAMILY` entries, unique `target_id` values."""
+    if len(targets) > _MAX_TARGETS_PER_FAMILY:
+        raise ValueError(
+            f"{family} targets: at most {_MAX_TARGETS_PER_FAMILY} allowed, got {len(targets)}"
+        )
+    seen: set[str] = set()
+    for target in targets:
+        if target.target_id in seen:
+            raise ValueError(f"{family} targets: duplicate target_id {target.target_id!r}")
+        seen.add(target.target_id)
+    return targets
 
 
 # --------------------------------------------------------------------------- #
@@ -92,16 +147,50 @@ class EbpfConfig(BaseModel):
     flow_track: bool = True
 
 
+class IcmpTarget(BaseModel):
+    """A single ICMP probe target. `target_id` (not `host`) is the only
+    identifier that may ever reach a metric label — see METRICS.md."""
+
+    target_id: str
+    host: str
+
+    @field_validator("target_id")
+    @classmethod
+    def _validate_target_id(cls, value: str) -> str:
+        return _validate_dns_label(value, "target_id")
+
+    @field_validator("host")
+    @classmethod
+    def _validate_host_field(cls, value: str) -> str:
+        return _validate_host(value)
+
+
 class IcmpConfig(BaseModel):
     enabled: bool = True
-    targets: list[str] = Field(default_factory=list)
+    targets: list[IcmpTarget] = Field(default_factory=list)
     interval_s: int = Field(default=10, gt=0)
     timeout_s: float = Field(default=2.0, gt=0)
 
+    @field_validator("targets")
+    @classmethod
+    def _validate_targets_field(cls, value: list[IcmpTarget]) -> list[IcmpTarget]:
+        return _validate_target_list(value, "icmp")
+
 
 class TcpTarget(BaseModel):
+    target_id: str
     host: str
     port: int = Field(ge=1, le=65535)
+
+    @field_validator("target_id")
+    @classmethod
+    def _validate_target_id(cls, value: str) -> str:
+        return _validate_dns_label(value, "target_id")
+
+    @field_validator("host")
+    @classmethod
+    def _validate_host_field(cls, value: str) -> str:
+        return _validate_host(value)
 
 
 class TcpConfig(BaseModel):
@@ -110,22 +199,111 @@ class TcpConfig(BaseModel):
     interval_s: int = Field(default=30, gt=0)
     timeout_s: float = Field(default=5.0, gt=0)
 
+    @field_validator("targets")
+    @classmethod
+    def _validate_targets_field(cls, value: list[TcpTarget]) -> list[TcpTarget]:
+        return _validate_target_list(value, "tcp")
+
+
+class HttpTarget(BaseModel):
+    target_id: str
+    url: str
+
+    @field_validator("target_id")
+    @classmethod
+    def _validate_target_id(cls, value: str) -> str:
+        return _validate_dns_label(value, "target_id")
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url_field(cls, value: str) -> str:
+        return _validate_target_url(value)
+
 
 class HttpConfig(BaseModel):
     enabled: bool = True
-    targets: list[str] = Field(default_factory=list)  # full URLs
+    targets: list[HttpTarget] = Field(default_factory=list)
     interval_s: int = Field(default=30, gt=0)
     timeout_s: float = Field(default=10.0, gt=0)
     verify_tls: bool = True
 
+    @field_validator("targets")
+    @classmethod
+    def _validate_targets_field(cls, value: list[HttpTarget]) -> list[HttpTarget]:
+        return _validate_target_list(value, "http")
+
+
+class DnsTarget(BaseModel):
+    target_id: str
+    hostname: str
+
+    @field_validator("target_id")
+    @classmethod
+    def _validate_target_id(cls, value: str) -> str:
+        return _validate_dns_label(value, "target_id")
+
+    @field_validator("hostname")
+    @classmethod
+    def _validate_hostname_field(cls, value: str) -> str:
+        return _validate_host(value)
+
 
 class DnsConfig(BaseModel):
     enabled: bool = True
-    targets: list[str] = Field(default_factory=list)  # hostnames to resolve
+    targets: list[DnsTarget] = Field(default_factory=list)
     record_types: list[str] = Field(default_factory=lambda: ["A"])
     resolvers: list[str] = Field(default_factory=list)  # empty = system default
     interval_s: int = Field(default=30, gt=0)
     timeout_s: float = Field(default=5.0, gt=0)
+
+    @field_validator("targets")
+    @classmethod
+    def _validate_targets_field(cls, value: list[DnsTarget]) -> list[DnsTarget]:
+        return _validate_target_list(value, "dns")
+
+    @field_validator("record_types")
+    @classmethod
+    def _validate_record_types(cls, value: list[str]) -> list[str]:
+        for record_type in value:
+            if record_type not in _ALLOWED_DNS_RECORD_TYPES:
+                raise ValueError(
+                    f"dns record_types: {record_type!r} not in allowed set "
+                    f"{sorted(_ALLOWED_DNS_RECORD_TYPES)}"
+                )
+        return value
+
+
+class LatencyTarget(BaseModel):
+    target_id: str
+    host: str
+
+    @field_validator("target_id")
+    @classmethod
+    def _validate_target_id(cls, value: str) -> str:
+        return _validate_dns_label(value, "target_id")
+
+    @field_validator("host")
+    @classmethod
+    def _validate_host_field(cls, value: str) -> str:
+        return _validate_host(value)
+
+
+class LatencyConfig(BaseModel):
+    """RTT/jitter burst probing. Separate from `IcmpConfig` and disabled by
+    default (Q-4's resolution, docs/guides/AGENT-COORDINATION.md) — sharing
+    ICMP's target list would silently multiply packet volume on every
+    enabled ICMP target."""
+
+    enabled: bool = False
+    targets: list[LatencyTarget] = Field(default_factory=list)
+    sample_count: int = Field(default=5, ge=1)
+    interval_s: int = Field(default=10, gt=0)
+    timeout_s: float = Field(default=2.0, gt=0)
+
+    @field_validator("targets")
+    @classmethod
+    def _validate_targets_field(cls, value: list[LatencyTarget]) -> list[LatencyTarget]:
+        return _validate_target_list(value, "latency")
 
 
 # --------------------------------------------------------------------------- #
@@ -174,6 +352,7 @@ class CollectorSettings(BaseSettings):
     tcp: TcpConfig = TcpConfig()
     http: HttpConfig = HttpConfig()
     dns: DnsConfig = DnsConfig()
+    latency: LatencyConfig = LatencyConfig()
     log_level: str = "INFO"
     data_dir: str = "/var/lib/analyselaptop/data"
     # Shared semaphore size capping total concurrent check network operations

@@ -13,7 +13,7 @@ import structlog
 from opentelemetry.metrics import Meter
 
 from collector.checks import BaseCheck, CheckResult
-from collector.config import CollectorSettings
+from collector.config import CollectorSettings, HttpTarget
 
 log = structlog.get_logger()
 
@@ -63,13 +63,25 @@ class HttpCheck(BaseCheck):
         self,
         config: CollectorSettings,
         meter: Meter | None,
-        target: str,
+        target: HttpTarget,
         *,
         semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         super().__init__(config, meter, semaphore=semaphore)
         self.target = target
         self.interval_s = config.http.interval_s
+        self._response_seconds = (
+            meter.create_histogram(
+                "sentinel_collector_http_response_seconds",
+                description="HTTP response time",
+                unit="s",
+            )
+            if meter is not None
+            else None
+        )
+
+    def is_enabled(self) -> bool:
+        return super().is_enabled() and self.config.http.enabled
 
     @classmethod
     async def _get_session(cls) -> aiohttp.ClientSession:
@@ -94,21 +106,35 @@ class HttpCheck(BaseCheck):
         try:
             session = await self._get_session()
             response_ms, status = await http_probe(
-                self.target,
+                self.target.url,
                 timeout_s=self.config.http.timeout_s,
                 verify_tls=self.config.http.verify_tls,
                 session=session,
             )
-            labels = {"target": self.target, "status_code": str(status)}
             # Strict 2xx-only success, not "< 400" or "< 500" — the v1
             # monitor's CWE-252 finding (docs/security/code-scanning-
             # remediation.md) showed a lenient range reports 401/403/404 as
             # healthy, masking auth failures and dead endpoints.
+            ok = 200 <= status < 300
+            if self._response_seconds is not None:
+                # Only a bounded target_id + ok/error state ever reaches a
+                # metric attribute — the raw URL and status code stay in
+                # CheckResult/structured logs, never an exported label.
+                self._response_seconds.record(
+                    response_ms / 1000.0,
+                    attributes={
+                        "target_id": self.target.target_id,
+                        "state": "ok" if ok else "error",
+                    },
+                )
+            labels = {"target": self.target.url, "status_code": str(status)}
             return CheckResult(
-                ok=200 <= status < 300,
+                ok=ok,
                 metrics={"http_response_ms": response_ms},
                 labels=labels,
             )
         except Exception as exc:
-            log.warning("check.degraded", check=self.name, target=self.target, error=str(exc))
-            return CheckResult(ok=False, labels={"target": self.target}, error=str(exc))
+            log.warning(
+                "check.degraded", check=self.name, target=self.target.url, error=str(exc)
+            )
+            return CheckResult(ok=False, labels={"target": self.target.url}, error=str(exc))

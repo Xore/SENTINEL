@@ -46,6 +46,18 @@ class TcpCheck(BaseCheck):
         super().__init__(config, meter, semaphore=semaphore)
         self.target = target
         self.interval_s = config.tcp.interval_s
+        self._connect_seconds = (
+            meter.create_histogram(
+                "sentinel_collector_tcp_connect_seconds",
+                description="TCP connect time",
+                unit="s",
+            )
+            if meter is not None
+            else None
+        )
+
+    def is_enabled(self) -> bool:
+        return super().is_enabled() and self.config.tcp.enabled
 
     async def run(self) -> CheckResult:
         labels = {"target": self.target.host, "port": str(self.target.port)}
@@ -53,6 +65,10 @@ class TcpCheck(BaseCheck):
             connect_ms = await tcp_connect(
                 self.target.host, self.target.port, self.config.tcp.timeout_s
             )
+            if self._connect_seconds is not None:
+                self._connect_seconds.record(
+                    connect_ms / 1000.0, attributes={"target_id": self.target.target_id}
+                )
             return CheckResult(ok=True, metrics={"tcp_connect_ms": connect_ms}, labels=labels)
         except Exception as exc:
             log.warning(

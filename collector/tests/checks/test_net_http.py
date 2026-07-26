@@ -7,7 +7,7 @@ from unittest.mock import patch
 import aiohttp
 import pytest
 from collector.checks.net_http import HttpCheck, http_probe
-from collector.config import load_settings
+from collector.config import HttpTarget, load_settings
 
 
 class _FakeResponse:
@@ -36,6 +36,24 @@ class _FakeSession:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _FakeHistogram:
+    def __init__(self):
+        self.calls: list[tuple[float, dict]] = []
+
+    def record(self, amount, attributes=None):
+        self.calls.append((amount, attributes or {}))
+
+
+class _FakeMeter:
+    def __init__(self):
+        self.instruments: dict[str, object] = {}
+
+    def create_histogram(self, name, description=None, unit=None):
+        instrument = _FakeHistogram()
+        self.instruments[name] = instrument
+        return instrument
 
 
 @pytest.fixture(autouse=True)
@@ -71,9 +89,7 @@ class TestHttpProbe:
 
     async def test_creates_and_closes_own_session_when_not_provided(self):
         fake_session = _FakeSession(_FakeResponse(200))
-        with patch(
-            "collector.checks.net_http.aiohttp.ClientSession", return_value=fake_session
-        ):
+        with patch("collector.checks.net_http.aiohttp.ClientSession", return_value=fake_session):
             await http_probe("https://10.0.0.1/", timeout_s=1.0, verify_tls=True)
         assert fake_session.closed is True
 
@@ -91,8 +107,12 @@ class TestHttpProbe:
 class TestHttpCheckSharedSession:
     async def test_get_session_creates_once(self):
         settings = load_settings(collector_id="c")
-        check_a = HttpCheck(settings, meter=None, target="https://10.0.0.1/a")
-        check_b = HttpCheck(settings, meter=None, target="https://10.0.0.1/b")
+        check_a = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="a", url="https://10.0.0.1/a")
+        )
+        check_b = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="b", url="https://10.0.0.1/b")
+        )
 
         session_a = await check_a._get_session()
         session_b = await check_b._get_session()
@@ -101,7 +121,9 @@ class TestHttpCheckSharedSession:
 
     async def test_get_session_recreates_after_close(self):
         settings = load_settings(collector_id="c")
-        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+        check = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="root", url="https://10.0.0.1/")
+        )
 
         first = await check._get_session()
         await first.close()
@@ -112,7 +134,9 @@ class TestHttpCheckSharedSession:
 
     async def test_aclose_closes_the_shared_session(self):
         settings = load_settings(collector_id="c")
-        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+        check = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="root", url="https://10.0.0.1/")
+        )
 
         session = await check._get_session()
         assert not session.closed
@@ -126,8 +150,12 @@ class TestHttpCheckSharedSession:
         via one instance must close it for all of them, since the scheduler
         may call aclose() on whichever check instance it happens to hold."""
         settings = load_settings(collector_id="c")
-        check_a = HttpCheck(settings, meter=None, target="https://10.0.0.1/a")
-        check_b = HttpCheck(settings, meter=None, target="https://10.0.0.1/b")
+        check_a = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="a", url="https://10.0.0.1/a")
+        )
+        check_b = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="b", url="https://10.0.0.1/b")
+        )
 
         session = await check_a._get_session()
         await check_b.aclose()
@@ -136,12 +164,16 @@ class TestHttpCheckSharedSession:
 
     async def test_aclose_is_safe_when_no_session_was_ever_created(self):
         settings = load_settings(collector_id="c")
-        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+        check = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="root", url="https://10.0.0.1/")
+        )
         await check.aclose()  # must not raise
 
     async def test_aclose_is_safe_to_call_twice(self):
         settings = load_settings(collector_id="c")
-        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+        check = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="root", url="https://10.0.0.1/")
+        )
         await check._get_session()
 
         await check.aclose()
@@ -151,18 +183,29 @@ class TestHttpCheckSharedSession:
 class TestHttpCheck:
     def test_interval_s_from_config(self):
         settings = load_settings(collector_id="c", http={"interval_s": 20})
-        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+        check = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="root", url="https://10.0.0.1/")
+        )
         assert check.interval_s == 20
 
     def test_semaphore_stored(self):
         settings = load_settings(collector_id="c")
         sem = asyncio.Semaphore(3)
-        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/", semaphore=sem)
+        check = HttpCheck(
+            settings,
+            meter=None,
+            target=HttpTarget(target_id="root", url="https://10.0.0.1/"),
+            semaphore=sem,
+        )
         assert check.semaphore is sem
 
     async def test_run_ok_on_2xx(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/health")
+        check = HttpCheck(
+            settings,
+            meter=None,
+            target=HttpTarget(target_id="health", url="https://10.0.0.1/health"),
+        )
 
         async def fake_probe(url, *, timeout_s, verify_tls, session=None):
             return 8.0, 200
@@ -176,7 +219,11 @@ class TestHttpCheck:
 
     async def test_run_not_ok_on_404(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/missing")
+        check = HttpCheck(
+            settings,
+            meter=None,
+            target=HttpTarget(target_id="missing", url="https://10.0.0.1/missing"),
+        )
 
         async def fake_probe(url, *, timeout_s, verify_tls, session=None):
             return 5.0, 404
@@ -190,7 +237,11 @@ class TestHttpCheck:
 
     async def test_run_not_ok_on_401(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/private")
+        check = HttpCheck(
+            settings,
+            meter=None,
+            target=HttpTarget(target_id="private", url="https://10.0.0.1/private"),
+        )
 
         async def fake_probe(url, *, timeout_s, verify_tls, session=None):
             return 5.0, 401
@@ -200,9 +251,26 @@ class TestHttpCheck:
 
         assert result.ok is False
 
+    async def test_run_never_raises_on_timeout(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        check = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="root", url="https://10.0.0.1/")
+        )
+
+        async def timing_out_probe(url, *, timeout_s, verify_tls, session=None):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr("collector.checks.net_http.http_probe", timing_out_probe)
+        result = await check.run()
+
+        assert result.ok is False
+        assert "timed out" in result.error
+
     async def test_run_never_raises_on_connection_error(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+        check = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="root", url="https://10.0.0.1/")
+        )
 
         async def failing_probe(url, *, timeout_s, verify_tls, session=None):
             raise aiohttp.ClientConnectionError("refused")
@@ -215,7 +283,9 @@ class TestHttpCheck:
 
     async def test_run_passes_shared_session_to_http_probe(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+        check = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="root", url="https://10.0.0.1/")
+        )
         seen = {}
 
         async def fake_probe(url, *, timeout_s, verify_tls, session=None):
@@ -227,3 +297,68 @@ class TestHttpCheck:
 
         assert seen["session"] is HttpCheck._session
         assert seen["session"] is not None
+
+    def test_is_enabled_false_when_http_config_disabled(self):
+        settings = load_settings(collector_id="c", http={"enabled": False})
+        check = HttpCheck(
+            settings, meter=None, target=HttpTarget(target_id="root", url="https://10.0.0.1/")
+        )
+        assert check.is_enabled() is False
+
+    async def test_run_ok_emits_canonical_metric_with_target_id_and_ok_state(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        meter = _FakeMeter()
+        check = HttpCheck(
+            settings,
+            meter=meter,
+            target=HttpTarget(target_id="health", url="https://10.0.0.1/health?token=secret"),
+        )
+
+        async def fake_probe(url, *, timeout_s, verify_tls, session=None):
+            return 8.0, 200
+
+        monkeypatch.setattr("collector.checks.net_http.http_probe", fake_probe)
+        await check.run()
+
+        calls = meter.instruments["sentinel_collector_http_response_seconds"].calls
+        assert calls == [(0.008, {"target_id": "health", "state": "ok"})]
+        # The raw URL (with its query string) must never reach a metric
+        # attribute — only the bounded target_id and ok/error state do.
+        for _, attributes in calls:
+            assert set(attributes) == {"target_id", "state"}
+            assert "url" not in attributes
+            assert all("secret" not in str(v) for v in attributes.values())
+
+    async def test_run_non_2xx_emits_canonical_metric_with_error_state(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        meter = _FakeMeter()
+        check = HttpCheck(
+            settings,
+            meter=meter,
+            target=HttpTarget(target_id="missing", url="https://10.0.0.1/missing"),
+        )
+
+        async def fake_probe(url, *, timeout_s, verify_tls, session=None):
+            return 5.0, 404
+
+        monkeypatch.setattr("collector.checks.net_http.http_probe", fake_probe)
+        await check.run()
+
+        calls = meter.instruments["sentinel_collector_http_response_seconds"].calls
+        assert calls == [(0.005, {"target_id": "missing", "state": "error"})]
+
+    async def test_run_connection_error_does_not_emit_metric(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        meter = _FakeMeter()
+        check = HttpCheck(
+            settings, meter=meter, target=HttpTarget(target_id="root", url="https://10.0.0.1/")
+        )
+
+        async def failing_probe(url, *, timeout_s, verify_tls, session=None):
+            raise aiohttp.ClientConnectionError("refused")
+
+        monkeypatch.setattr("collector.checks.net_http.http_probe", failing_probe)
+        await check.run()
+
+        calls = meter.instruments["sentinel_collector_http_response_seconds"].calls
+        assert calls == []

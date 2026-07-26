@@ -16,7 +16,7 @@ from collector.checks.net_icmp import (
     ping,
     target_identifier,
 )
-from collector.config import load_settings
+from collector.config import IcmpTarget, load_settings
 
 
 def _reply_packet(identifier: int, sequence: int, icmp_type: int = ICMP_ECHO_REPLY) -> bytes:
@@ -110,7 +110,7 @@ class TestPingOnceBlocking:
         fake_sock.close.assert_called_once()
 
 
-async def test_ping_delegates_to_blocking_helper_via_to_thread():
+async def test_ping_delegates_to_blocking_helper_via_run_in_thread():
     fake_sock = MagicMock()
     fake_sock.recvfrom.return_value = (_reply_packet(5, 1), ("10.0.0.1", 0))
     with patch("collector.checks.net_icmp.socket.socket", return_value=fake_sock):
@@ -118,21 +118,65 @@ async def test_ping_delegates_to_blocking_helper_via_to_thread():
     assert rtt_ms >= 0
 
 
+class _FakeHistogram:
+    def __init__(self):
+        self.calls: list[tuple[float, dict]] = []
+
+    def record(self, amount, attributes=None):
+        self.calls.append((amount, attributes or {}))
+
+
+class _FakeGauge:
+    def __init__(self):
+        self.calls: list[tuple[float, dict]] = []
+
+    def set(self, amount, attributes=None):
+        self.calls.append((amount, attributes or {}))
+
+
+class _FakeMeter:
+    def __init__(self):
+        self.instruments: dict[str, object] = {}
+
+    def create_histogram(self, name, description=None, unit=None):
+        instrument = _FakeHistogram()
+        self.instruments[name] = instrument
+        return instrument
+
+    def create_gauge(self, name, description=None, unit=None):
+        instrument = _FakeGauge()
+        self.instruments[name] = instrument
+        return instrument
+
+
+_TARGET = IcmpTarget(target_id="core-switch", host="10.0.0.1")
+
+
 class TestIcmpCheck:
     def test_interval_s_from_config(self):
         settings = load_settings(collector_id="c", icmp={"interval_s": 5})
-        check = IcmpCheck(settings, meter=None, target="10.0.0.1")
+        check = IcmpCheck(settings, meter=None, target=_TARGET)
         assert check.interval_s == 5
 
     def test_semaphore_stored(self):
         settings = load_settings(collector_id="c")
         sem = asyncio.Semaphore(3)
-        check = IcmpCheck(settings, meter=None, target="10.0.0.1", semaphore=sem)
+        check = IcmpCheck(settings, meter=None, target=_TARGET, semaphore=sem)
         assert check.semaphore is sem
 
+    def test_is_enabled_false_when_icmp_config_disabled(self):
+        settings = load_settings(collector_id="c", icmp={"enabled": False})
+        check = IcmpCheck(settings, meter=None, target=_TARGET)
+        assert check.is_enabled() is False
+
+    def test_is_enabled_true_when_icmp_config_enabled(self):
+        settings = load_settings(collector_id="c", icmp={"enabled": True})
+        check = IcmpCheck(settings, meter=None, target=_TARGET)
+        assert check.is_enabled() is True
+
     async def test_run_ok_result(self, monkeypatch):
-        settings = load_settings(collector_id="c", icmp={"targets": ["10.0.0.1"]})
-        check = IcmpCheck(settings, meter=None, target="10.0.0.1")
+        settings = load_settings(collector_id="c")
+        check = IcmpCheck(settings, meter=None, target=_TARGET)
 
         async def fake_ping(target, *, identifier, sequence, timeout_s):
             return 12.5
@@ -147,8 +191,8 @@ class TestIcmpCheck:
         assert result.error is None
 
     async def test_run_never_raises_on_failure(self, monkeypatch):
-        settings = load_settings(collector_id="c", icmp={"targets": ["10.0.0.1"]})
-        check = IcmpCheck(settings, meter=None, target="10.0.0.1")
+        settings = load_settings(collector_id="c")
+        check = IcmpCheck(settings, meter=None, target=_TARGET)
 
         async def failing_ping(target, *, identifier, sequence, timeout_s):
             raise TimeoutError("no reply from 10.0.0.1 within 2.0s")
@@ -163,7 +207,7 @@ class TestIcmpCheck:
 
     async def test_run_increments_sequence_each_call(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        check = IcmpCheck(settings, meter=None, target="10.0.0.1")
+        check = IcmpCheck(settings, meter=None, target=_TARGET)
         seen_sequences = []
 
         async def fake_ping(target, *, identifier, sequence, timeout_s):
@@ -175,3 +219,48 @@ class TestIcmpCheck:
         await check.run()
 
         assert seen_sequences == [1, 2]
+
+    async def test_run_ok_emits_canonical_metrics_with_target_id_label(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        meter = _FakeMeter()
+        check = IcmpCheck(settings, meter=meter, target=_TARGET)
+
+        async def fake_ping(target, *, identifier, sequence, timeout_s):
+            return 20.0
+
+        monkeypatch.setattr("collector.checks.net_icmp.ping", fake_ping)
+        await check.run()
+
+        rtt_calls = meter.instruments["sentinel_collector_icmp_rtt_seconds"].calls
+        loss_calls = meter.instruments["sentinel_collector_icmp_loss_ratio"].calls
+        assert rtt_calls == [(0.02, {"target_id": "core-switch"})]
+        assert loss_calls == [(0.0, {"target_id": "core-switch"})]
+
+    async def test_run_failure_emits_loss_ratio_but_not_rtt(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        meter = _FakeMeter()
+        check = IcmpCheck(settings, meter=meter, target=_TARGET)
+
+        async def failing_ping(target, *, identifier, sequence, timeout_s):
+            raise TimeoutError("no reply")
+
+        monkeypatch.setattr("collector.checks.net_icmp.ping", failing_ping)
+        await check.run()
+
+        rtt_calls = meter.instruments["sentinel_collector_icmp_rtt_seconds"].calls
+        loss_calls = meter.instruments["sentinel_collector_icmp_loss_ratio"].calls
+        assert rtt_calls == []
+        assert loss_calls == [(1.0, {"target_id": "core-switch"})]
+
+    async def test_permission_denied_is_contained_not_raised(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        check = IcmpCheck(settings, meter=None, target=_TARGET)
+
+        async def denied_ping(target, *, identifier, sequence, timeout_s):
+            raise PermissionError("Operation not permitted")
+
+        monkeypatch.setattr("collector.checks.net_icmp.ping", denied_ping)
+        result = await check.run()
+
+        assert result.ok is False
+        assert "not permitted" in result.error

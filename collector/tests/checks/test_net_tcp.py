@@ -16,6 +16,24 @@ def _fake_open_connection(reader=None, writer=None):
     return _open
 
 
+class _FakeHistogram:
+    def __init__(self):
+        self.calls: list[tuple[float, dict]] = []
+
+    def record(self, amount, attributes=None):
+        self.calls.append((amount, attributes or {}))
+
+
+class _FakeMeter:
+    def __init__(self):
+        self.instruments: dict[str, object] = {}
+
+    def create_histogram(self, name, description=None, unit=None):
+        instrument = _FakeHistogram()
+        self.instruments[name] = instrument
+        return instrument
+
+
 class TestTcpConnect:
     async def test_returns_connect_time_on_success(self):
         writer = MagicMock()
@@ -54,20 +72,20 @@ class TestTcpConnect:
 class TestTcpCheck:
     def test_interval_s_from_config(self):
         settings = load_settings(collector_id="c", tcp={"interval_s": 15})
-        check = TcpCheck(settings, meter=None, target=TcpTarget(host="h", port=1))
+        check = TcpCheck(settings, meter=None, target=TcpTarget(target_id="t", host="h", port=1))
         assert check.interval_s == 15
 
     def test_semaphore_stored(self):
         settings = load_settings(collector_id="c")
         sem = asyncio.Semaphore(3)
         check = TcpCheck(
-            settings, meter=None, target=TcpTarget(host="h", port=1), semaphore=sem
+            settings, meter=None, target=TcpTarget(target_id="t", host="h", port=1), semaphore=sem
         )
         assert check.semaphore is sem
 
     async def test_run_ok_result(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        target = TcpTarget(host="10.0.0.1", port=443)
+        target = TcpTarget(target_id="web", host="10.0.0.1", port=443)
         check = TcpCheck(settings, meter=None, target=target)
 
         async def fake_connect(host, port, timeout_s):
@@ -83,7 +101,7 @@ class TestTcpCheck:
 
     async def test_run_never_raises_on_failure(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        target = TcpTarget(host="10.0.0.1", port=443)
+        target = TcpTarget(target_id="web", host="10.0.0.1", port=443)
         check = TcpCheck(settings, meter=None, target=target)
 
         async def failing_connect(host, port, timeout_s):
@@ -96,3 +114,38 @@ class TestTcpCheck:
         assert result.metrics == {}
         assert result.labels == {"target": "10.0.0.1", "port": "443"}
         assert "refused" in result.error
+
+    def test_is_enabled_false_when_tcp_config_disabled(self):
+        settings = load_settings(collector_id="c", tcp={"enabled": False})
+        check = TcpCheck(settings, meter=None, target=TcpTarget(target_id="t", host="h", port=1))
+        assert check.is_enabled() is False
+
+    async def test_run_ok_emits_canonical_metric_with_target_id_label(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        meter = _FakeMeter()
+        target = TcpTarget(target_id="web", host="10.0.0.1", port=443)
+        check = TcpCheck(settings, meter=meter, target=target)
+
+        async def fake_connect(host, port, timeout_s):
+            return 15.0
+
+        monkeypatch.setattr("collector.checks.net_tcp.tcp_connect", fake_connect)
+        await check.run()
+
+        calls = meter.instruments["sentinel_collector_tcp_connect_seconds"].calls
+        assert calls == [(0.015, {"target_id": "web"})]
+
+    async def test_run_failure_does_not_emit_metric(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        meter = _FakeMeter()
+        target = TcpTarget(target_id="web", host="10.0.0.1", port=443)
+        check = TcpCheck(settings, meter=meter, target=target)
+
+        async def failing_connect(host, port, timeout_s):
+            raise ConnectionRefusedError("refused")
+
+        monkeypatch.setattr("collector.checks.net_tcp.tcp_connect", failing_connect)
+        await check.run()
+
+        calls = meter.instruments["sentinel_collector_tcp_connect_seconds"].calls
+        assert calls == []

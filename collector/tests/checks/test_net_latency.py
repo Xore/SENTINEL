@@ -5,7 +5,27 @@ import asyncio
 
 import pytest
 from collector.checks.net_latency import LatencyCheck, compute_jitter_ms
-from collector.config import load_settings
+from collector.config import LatencyTarget, load_settings
+
+_TARGET = LatencyTarget(target_id="core-switch", host="10.0.0.1")
+
+
+class _FakeGauge:
+    def __init__(self):
+        self.calls: list[tuple[float, dict]] = []
+
+    def set(self, amount, attributes=None):
+        self.calls.append((amount, attributes or {}))
+
+
+class _FakeMeter:
+    def __init__(self):
+        self.instruments: dict[str, object] = {}
+
+    def create_gauge(self, name, description=None, unit=None):
+        instrument = _FakeGauge()
+        self.instruments[name] = instrument
+        return instrument
 
 
 class TestComputeJitterMs:
@@ -24,20 +44,41 @@ class TestComputeJitterMs:
 
 
 class TestLatencyCheck:
-    def test_interval_s_from_icmp_config(self):
-        settings = load_settings(collector_id="c", icmp={"interval_s": 7})
-        check = LatencyCheck(settings, meter=None, target="10.0.0.1")
+    def test_interval_s_from_latency_config(self):
+        settings = load_settings(collector_id="c", latency={"interval_s": 7})
+        check = LatencyCheck(settings, meter=None, target=_TARGET)
         assert check.interval_s == 7
+
+    def test_sample_count_defaults_from_latency_config(self):
+        settings = load_settings(collector_id="c", latency={"sample_count": 9})
+        check = LatencyCheck(settings, meter=None, target=_TARGET)
+        assert check.sample_count == 9
+
+    def test_sample_count_constructor_override_wins(self):
+        settings = load_settings(collector_id="c", latency={"sample_count": 9})
+        check = LatencyCheck(settings, meter=None, target=_TARGET, sample_count=2)
+        assert check.sample_count == 2
+
+    def test_is_enabled_false_by_default(self):
+        # LatencyConfig.enabled defaults to False (Q-4's resolution).
+        settings = load_settings(collector_id="c")
+        check = LatencyCheck(settings, meter=None, target=_TARGET)
+        assert check.is_enabled() is False
+
+    def test_is_enabled_true_when_latency_config_enabled(self):
+        settings = load_settings(collector_id="c", latency={"enabled": True})
+        check = LatencyCheck(settings, meter=None, target=_TARGET)
+        assert check.is_enabled() is True
 
     def test_semaphore_stored(self):
         settings = load_settings(collector_id="c")
         sem = asyncio.Semaphore(3)
-        check = LatencyCheck(settings, meter=None, target="10.0.0.1", semaphore=sem)
+        check = LatencyCheck(settings, meter=None, target=_TARGET, semaphore=sem)
         assert check.semaphore is sem
 
     async def test_all_samples_succeed(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        check = LatencyCheck(settings, meter=None, target="10.0.0.1", sample_count=3)
+        check = LatencyCheck(settings, meter=None, target=_TARGET, sample_count=3)
         rtts = iter([10.0, 12.0, 9.0])
 
         async def fake_ping(target, *, identifier, sequence, timeout_s):
@@ -54,7 +95,7 @@ class TestLatencyCheck:
 
     async def test_partial_failures_reflected_in_loss_and_jitter(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        check = LatencyCheck(settings, meter=None, target="10.0.0.1", sample_count=4)
+        check = LatencyCheck(settings, meter=None, target=_TARGET, sample_count=4)
         outcomes = iter([10.0, TimeoutError("no reply"), 12.0, TimeoutError("no reply")])
 
         async def fake_ping(target, *, identifier, sequence, timeout_s):
@@ -73,7 +114,7 @@ class TestLatencyCheck:
 
     async def test_all_samples_fail(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        check = LatencyCheck(settings, meter=None, target="10.0.0.1", sample_count=3)
+        check = LatencyCheck(settings, meter=None, target=_TARGET, sample_count=3)
 
         async def failing_ping(target, *, identifier, sequence, timeout_s):
             raise TimeoutError("no reply")
@@ -87,7 +128,7 @@ class TestLatencyCheck:
 
     async def test_uses_distinct_sequence_per_sample(self, monkeypatch):
         settings = load_settings(collector_id="c")
-        check = LatencyCheck(settings, meter=None, target="10.0.0.1", sample_count=3)
+        check = LatencyCheck(settings, meter=None, target=_TARGET, sample_count=3)
         seen_sequences: list[int] = []
 
         async def fake_ping(target, *, identifier, sequence, timeout_s):
@@ -98,3 +139,57 @@ class TestLatencyCheck:
         await check.run()
 
         assert seen_sequences == [1, 2, 3]
+
+    async def test_run_ok_emits_canonical_gauges_with_target_id_label(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        meter = _FakeMeter()
+        check = LatencyCheck(settings, meter=meter, target=_TARGET, sample_count=3)
+        rtts = iter([10.0, 12.0, 9.0])
+
+        async def fake_ping(target, *, identifier, sequence, timeout_s):
+            return next(rtts)
+
+        monkeypatch.setattr("collector.checks.net_latency.ping", fake_ping)
+        await check.run()
+
+        rtt_calls = meter.instruments["sentinel_collector_latency_rtt_seconds"].calls
+        jitter_calls = meter.instruments["sentinel_collector_latency_jitter_seconds"].calls
+        loss_calls = meter.instruments["sentinel_collector_latency_loss_ratio"].calls
+
+        assert len(rtt_calls) == 1
+        assert rtt_calls[0][0] == pytest.approx(31.0 / 3 / 1000.0)
+        assert rtt_calls[0][1] == {"target_id": "core-switch"}
+        assert jitter_calls == [(0.0025, {"target_id": "core-switch"})]
+        assert loss_calls == [(0.0, {"target_id": "core-switch"})]
+
+    async def test_external_cancellation_during_burst_is_not_swallowed(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        check = LatencyCheck(settings, meter=None, target=_TARGET, sample_count=3)
+
+        async def slow_ping(target, *, identifier, sequence, timeout_s):
+            await asyncio.sleep(10.0)
+            return 1.0  # pragma: no cover — never reached
+
+        monkeypatch.setattr("collector.checks.net_latency.ping", slow_ping)
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(check.run(), timeout=0.05)
+
+    async def test_all_samples_fail_emits_only_loss_ratio(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        meter = _FakeMeter()
+        check = LatencyCheck(settings, meter=meter, target=_TARGET, sample_count=3)
+
+        async def failing_ping(target, *, identifier, sequence, timeout_s):
+            raise TimeoutError("no reply")
+
+        monkeypatch.setattr("collector.checks.net_latency.ping", failing_ping)
+        await check.run()
+
+        rtt_calls = meter.instruments["sentinel_collector_latency_rtt_seconds"].calls
+        jitter_calls = meter.instruments["sentinel_collector_latency_jitter_seconds"].calls
+        loss_calls = meter.instruments["sentinel_collector_latency_loss_ratio"].calls
+
+        assert rtt_calls == []
+        assert jitter_calls == []
+        assert loss_calls == [(1.0, {"target_id": "core-switch"})]

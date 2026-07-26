@@ -12,7 +12,7 @@ import structlog
 from opentelemetry.metrics import Meter
 
 from collector.checks import BaseCheck, CheckResult
-from collector.config import CollectorSettings
+from collector.config import CollectorSettings, DnsTarget
 
 log = structlog.get_logger()
 
@@ -48,7 +48,7 @@ class DnsCheck(BaseCheck):
         self,
         config: CollectorSettings,
         meter: Meter | None,
-        target: str,
+        target: DnsTarget,
         record_type: str = "A",
         *,
         semaphore: asyncio.Semaphore | None = None,
@@ -60,22 +60,42 @@ class DnsCheck(BaseCheck):
         self._resolver = dns.asyncresolver.Resolver()
         if config.dns.resolvers:
             self._resolver.nameservers = config.dns.resolvers
+        self._resolve_seconds = (
+            meter.create_histogram(
+                "sentinel_collector_dns_resolve_seconds",
+                description="DNS resolution time",
+                unit="s",
+            )
+            if meter is not None
+            else None
+        )
+
+    def is_enabled(self) -> bool:
+        return super().is_enabled() and self.config.dns.enabled
 
     async def run(self) -> CheckResult:
-        labels = {"target": self.target, "record_type": self.record_type}
+        labels = {"target": self.target.hostname, "record_type": self.record_type}
         try:
             resolve_ms = await dns_resolve(
-                self.target,
+                self.target.hostname,
                 self.record_type,
                 timeout_s=self.config.dns.timeout_s,
                 resolver=self._resolver,
             )
+            if self._resolve_seconds is not None:
+                self._resolve_seconds.record(
+                    resolve_ms / 1000.0,
+                    attributes={
+                        "target_id": self.target.target_id,
+                        "record_type": self.record_type,
+                    },
+                )
             return CheckResult(ok=True, metrics={"dns_resolve_ms": resolve_ms}, labels=labels)
         except Exception as exc:
             log.warning(
                 "check.degraded",
                 check=self.name,
-                target=self.target,
+                target=self.target.hostname,
                 record_type=self.record_type,
                 error=str(exc),
             )

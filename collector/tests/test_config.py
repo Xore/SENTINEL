@@ -31,6 +31,8 @@ class TestDefaults:
         assert settings.http.verify_tls is True
         assert settings.dns.record_types == ["A"]
         assert settings.max_concurrent_probes == 20
+        assert settings.latency.enabled is False
+        assert settings.latency.targets == []
 
     def test_max_concurrent_probes_env_override(self, monkeypatch):
         monkeypatch.setenv("COLLECTOR_ID", "c")
@@ -80,17 +82,136 @@ class TestDefaults:
             load_settings(collector_id="c", mtr={"max_hops": 999})
 
     def test_icmp_targets_accepted(self):
-        s = load_settings(collector_id="c", icmp={"targets": ["10.0.0.1", "1.1.1.1"]})
-        assert s.icmp.targets == ["10.0.0.1", "1.1.1.1"]
+        s = load_settings(
+            collector_id="c",
+            icmp={
+                "targets": [
+                    {"target_id": "core-switch", "host": "10.0.0.1"},
+                    {"target_id": "upstream-dns", "host": "1.1.1.1"},
+                ]
+            },
+        )
+        assert [t.target_id for t in s.icmp.targets] == ["core-switch", "upstream-dns"]
+        assert [t.host for t in s.icmp.targets] == ["10.0.0.1", "1.1.1.1"]
 
     def test_tcp_target_requires_host_and_port(self):
-        s = load_settings(collector_id="c", tcp={"targets": [{"host": "10.0.0.1", "port": 443}]})
+        s = load_settings(
+            collector_id="c",
+            tcp={"targets": [{"target_id": "web", "host": "10.0.0.1", "port": 443}]},
+        )
+        assert s.tcp.targets[0].target_id == "web"
         assert s.tcp.targets[0].host == "10.0.0.1"
         assert s.tcp.targets[0].port == 443
 
     def test_tcp_target_port_out_of_range_rejected(self):
         with pytest.raises(ConfigError):
-            load_settings(collector_id="c", tcp={"targets": [{"host": "h", "port": 70000}]})
+            load_settings(
+                collector_id="c",
+                tcp={"targets": [{"target_id": "web", "host": "h", "port": 70000}]},
+            )
+
+
+class TestTargetValidation:
+    """S2-02: structured target_id-bearing targets for ICMP/TCP/HTTP/DNS/
+    latency, per docs/contracts/METRICS.md's Phase 2 core network families.
+    """
+
+    @pytest.mark.parametrize("bad_target_id", ["Core-Switch", "core_switch", "-core", "core-", ""])
+    def test_invalid_target_id_rejected(self, bad_target_id):
+        with pytest.raises(ConfigError):
+            load_settings(
+                collector_id="c",
+                icmp={"targets": [{"target_id": bad_target_id, "host": "10.0.0.1"}]},
+            )
+
+    def test_duplicate_target_id_rejected(self):
+        with pytest.raises(ConfigError):
+            load_settings(
+                collector_id="c",
+                icmp={
+                    "targets": [
+                        {"target_id": "dup", "host": "10.0.0.1"},
+                        {"target_id": "dup", "host": "10.0.0.2"},
+                    ]
+                },
+            )
+
+    def test_more_than_32_targets_rejected(self):
+        targets = [{"target_id": f"t{i}", "host": "10.0.0.1"} for i in range(33)]
+        with pytest.raises(ConfigError):
+            load_settings(collector_id="c", icmp={"targets": targets})
+
+    def test_exactly_32_targets_accepted(self):
+        targets = [{"target_id": f"t{i}", "host": "10.0.0.1"} for i in range(32)]
+        s = load_settings(collector_id="c", icmp={"targets": targets})
+        assert len(s.icmp.targets) == 32
+
+    @pytest.mark.parametrize("bad_host", ["", "  ", "host with spaces", "a" * 254])
+    def test_invalid_icmp_host_rejected(self, bad_host):
+        with pytest.raises(ConfigError):
+            load_settings(
+                collector_id="c",
+                icmp={"targets": [{"target_id": "t", "host": bad_host}]},
+            )
+
+    def test_valid_hostname_and_ip_accepted(self):
+        s = load_settings(
+            collector_id="c",
+            icmp={
+                "targets": [
+                    {"target_id": "by-ip", "host": "10.0.0.1"},
+                    {"target_id": "by-name", "host": "core.example.com"},
+                    {"target_id": "by-ipv6", "host": "::1"},
+                ]
+            },
+        )
+        assert [t.host for t in s.icmp.targets] == ["10.0.0.1", "core.example.com", "::1"]
+
+    @pytest.mark.parametrize("bad_url", ["not-a-url", "ftp://host/path", "http://"])
+    def test_invalid_http_url_rejected(self, bad_url):
+        with pytest.raises(ConfigError):
+            load_settings(
+                collector_id="c",
+                http={"targets": [{"target_id": "t", "url": bad_url}]},
+            )
+
+    def test_valid_http_url_accepted(self):
+        s = load_settings(
+            collector_id="c",
+            http={"targets": [{"target_id": "app", "url": "https://10.0.0.1/health"}]},
+        )
+        assert s.http.targets[0].url == "https://10.0.0.1/health"
+
+    def test_dns_target_requires_hostname(self):
+        s = load_settings(
+            collector_id="c",
+            dns={"targets": [{"target_id": "app-dns", "hostname": "example.com"}]},
+        )
+        assert s.dns.targets[0].hostname == "example.com"
+
+    @pytest.mark.parametrize("bad_record_type", ["ANY", "a", "BOGUS"])
+    def test_invalid_dns_record_type_rejected(self, bad_record_type):
+        with pytest.raises(ConfigError):
+            load_settings(collector_id="c", dns={"record_types": [bad_record_type]})
+
+    @pytest.mark.parametrize(
+        "record_type", ["A", "AAAA", "CNAME", "MX", "NS", "PTR", "SRV", "TXT"]
+    )
+    def test_allowed_dns_record_types_accepted(self, record_type):
+        s = load_settings(collector_id="c", dns={"record_types": [record_type]})
+        assert s.dns.record_types == [record_type]
+
+    def test_latency_disabled_by_default(self):
+        s = load_settings(collector_id="c")
+        assert s.latency.enabled is False
+
+    def test_latency_target_accepted_when_enabled(self):
+        s = load_settings(
+            collector_id="c",
+            latency={"enabled": True, "targets": [{"target_id": "core", "host": "10.0.0.1"}]},
+        )
+        assert s.latency.enabled is True
+        assert s.latency.targets[0].target_id == "core"
 
 
 class TestIdentityDnsLabels:
