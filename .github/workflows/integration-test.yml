@@ -82,11 +82,13 @@ jobs:
         env:
           SSL_CERT_FILE: ${{ runner.temp }}/sentinel-dev-ca.crt
           BACKEND__PKI_DIR: ${{ runner.temp }}/dev-node-1-pki
+          PYTHONPATH: ${{ github.workspace }}/collector
         run: |
           set -euo pipefail
           collector_log="${RUNNER_TEMP}/collector.log"
           query_result="${RUNNER_TEMP}/vm-query.json"
 
+          python -c "import collector; print(collector.__file__)"
           python -m collector >"${collector_log}" 2>&1 &
           collector_pid=$!
 
