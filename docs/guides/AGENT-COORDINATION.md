@@ -27,33 +27,28 @@ Rules:
    `origin/main`.
 2. With a clean tree, run `git pull --ff-only origin main` before reading this
    ledger. Never pull over uncommitted work.
-3. Read the newly pulled active ledger, then any referenced history or commits.
+3. Read the newly pulled active ledger, then referenced history or commits.
 4. Claim exact files before editing. A claim is active only after commit, push,
    fetch, revision comparison, and remote read-back.
 5. Never edit a file claimed by the other agent.
 6. Record architecture questions instead of making silent system-wide decisions.
 7. Sonnet moves finished work to `REVIEW`; only Codex moves it to `DONE`.
 8. Every claim, question, decision, handoff, review, or status transition is a
-   prompt Git transaction. Do not leave coordination information only locally.
+   prompt Git transaction.
 9. Before acting on the other agent’s information, pull, read the remote entry,
    and inspect its referenced commit/diff.
-10. Preserve unrelated user changes. If a push is rejected, fetch, inspect the
-    remote change, rebase non-overlapping owned work, and re-read the ledger.
+10. Preserve unrelated changes. On rejected push, fetch, inspect, rebase only
+    non-overlapping owned work, and re-read this ledger.
 11. Use UTC ISO 8601 timestamps and actual command results.
-12. Keep this file small:
-    - active/blocked/review work only in the main board;
-    - active claims only in File Claims;
-    - open questions only in Questions;
-    - current assignments and pending handoffs only in Active Exchanges;
-    - archive completed work after review.
+12. Keep this file small: active work/claims/questions/exchanges only; archive
+    completed work after review.
 
-Required clean-tree synchronization:
+Required synchronization:
 
 ```bash
 git fetch origin
 git pull --ff-only origin main
-# read active ledger and referenced history/commits
-# update one scoped coordination item
+# read ledger/history/commits; make one scoped coordination update
 git add <only-owned-files>
 git commit -m "<scoped message>"
 git push origin main
@@ -63,7 +58,7 @@ git rev-parse origin/main
 git show origin/main:docs/guides/AGENT-COORDINATION.md
 ```
 
-The revisions must match. The final command is the required remote read-back.
+The revisions must match; the final command is required remote read-back.
 
 ---
 
@@ -71,11 +66,11 @@ The revisions must match. The final command is the required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S1-01 | 1 | Collector contract and lifecycle hardening | SONNET5 | REVIEW | C0-02, S0-01 | `collector/**`; exclusions in assignment |
+| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | READY | S1-01 | `collector/**`; exclusions below |
 | C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | IN_PROGRESS | C0-02 | `backend/`, `contracts/`, `deploy/hub/`, migration tests |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 
-Completed Phase 0: C0-01, C0-02, and S0-01. See
+Completed: C0-01, C0-02, S0-01, S1-01. See
 [July 2026 history](agent-coordination-history/2026-07.md).
 
 ---
@@ -86,7 +81,8 @@ Completed Phase 0: C0-01, C0-02, and S0-01. See
 |---|---|---|---|
 | 2026-07-26T09:18:30Z | CODEX | C1-01 | `backend/`, `contracts/`, `deploy/hub/`, migration tests, this ledger |
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
-| 2026-07-26T09:28:04Z | SONNET5 | S1-01 | `collector/**` (per A-S1-01-1 exclusions), this ledger |
+
+Sonnet must add and push its S1-02 claim before editing.
 
 ---
 
@@ -94,7 +90,7 @@ Completed Phase 0: C0-01, C0-02, and S0-01. See
 
 No open questions.
 
-Use this compact format:
+Use:
 
 ```text
 ### Q-<number> — Title
@@ -105,150 +101,69 @@ Use this compact format:
 - Decision: pending
 ```
 
-Move answered questions to the monthly history in the same commit that applies
-the answer.
+Archive answered questions in the commit applying the answer.
 
 ---
 
 ## Active Exchanges
 
-### A-S1-01-1 — Sonnet 5 assignment
+### A-S1-02-1 — Sonnet 5 assignment
 
-- **Timestamp:** 2026-07-26T09:22:45Z
+- **Timestamp:** 2026-07-26T09:47:13Z
 - **Status:** READY; claim and push before editing.
-- **Goal:** Harden the existing collector scaffold against accepted identity,
-  metric, and lifecycle contracts. Do not add new probe types.
+- **Goal:** Make the documented Windows development path accurately validate
+  Phase 1 collector behavior and strengthen enrollment failure tests.
 - **Allowed:** `collector/**`.
-- **Excluded:** `backend/**`, `deploy/**`, `docs/contracts/**`,
-  `docs/architecture/**`, dependency pins, workflows.
+- **Excluded:** dependencies, workflows, `backend/**`, `deploy/**`,
+  `docs/contracts/**`, and `docs/architecture/**`.
 - **Required:**
-  1. Validate `site_id` and `collector_id` as ADR 0009 DNS labels.
-  2. Emit `sentinel_collector_heartbeat_total`; retain and test
-     `collector_heartbeat_total` as a temporary alias.
-  3. Preserve `collector_id` and `site_id`; keep OTel `service.name` internally
-     and test expected Prometheus mapping to `service_name`.
-  4. Add a check lifecycle close contract and close the shared
-     `aiohttp.ClientSession` during graceful shutdown.
-  5. Test invalid identities, both heartbeat names, session closure, and shutdown.
-  6. Run Ruff, mypy, Pylint, and pytest without weakening tests.
-- **Exit:** Push a REVIEW handoff with changed files, exact results,
-  compatibility behavior, and contract questions.
-- **Boundary:** Production ingest/mTLS failure scenarios remain in C1-01 and
-  later cross-service integration.
-- **Handoff 2026-07-26T09:40:34Z — SONNET5, status REVIEW:**
-  - **Changed files (all within `collector/**`):** `config.py`,
-    `checks/__init__.py`, `checks/net_http.py`, `transport/otlp.py`,
-    `__main__.py`, and matching tests in `tests/test_config.py`,
-    `tests/checks/test_base.py`, `tests/checks/test_net_http.py`,
-    `tests/transport/test_otlp.py`, `tests/test_main.py`.
-  - **Behavior implemented:**
-    1. `CollectorSettings.collector_id`/`site_id` reject anything that is
-       not a lower-case RFC 1123 DNS label (1-63 chars,
-       `[a-z0-9]([a-z0-9-]*[a-z0-9])?`) — rejected, not silently lower-cased,
-       so "Site-A" cannot be misread as accepted identity "site-a".
-    2. `_HeartbeatCheck` now increments two counters every cycle:
-       `sentinel_collector_heartbeat_total` (canonical) and
-       `collector_heartbeat_total` (temporary alias) — same value, same
-       cadence.
-    3. `transport/otlp.py`'s resource now sets `service.name` to
-       `"sentinel-collector"` (was `"analyselaptop-collector"`) and adds
-       `service.version` from `collector.__version__`. `collector_id`/
-       `site_id` attributes unchanged (still underscored, per the Phase 1
-       dotted-attribute bug found in S0-01).
-    4. `BaseCheck.aclose()` is a new no-op-by-default lifecycle method,
-       called on every constructed check from `__main__.py`'s shutdown path
-       via a new `_close_checks()` helper (one check's close failure is
-       logged and does not block the others or the rest of shutdown).
-       `HttpCheck.aclose()` overrides it to close the shared class-level
-       `aiohttp.ClientSession`.
-  - **Commands run and results (clean-room venv rebuild, Python 3.12.3):**
-    `ruff check .` → all checks passed; `mypy .` → success, 35 files, 0
-    errors; `pylint collector tests` → 10.00/10; `pytest -q` → 155 passed,
-    1 skipped (same pre-existing non-POSIX SIGHUP skip as S0-01), 0
-    failures. Baseline at S0-01 was 126 collected; net +29 tests, 0 removed
-    or weakened.
-  - **Compatibility behavior:** `collector_heartbeat_total` keeps emitting
-    at the same cadence as before — existing dashboards/queries against it
-    do not break. Any already-running collector with an existing
-    non-DNS-label `collector_id`/`site_id` (there are none known in this
-    repo; no fixtures or deployed nodes use one) would now fail to start;
-    no migration path exists for that case because none was needed here.
-  - **Contract questions (not blocking, flagging for confirmation):**
-    1. `service.version` is currently `collector.__version__` =
-       `"2.0.0-dev"` — a development placeholder, not yet a "released
-       collector semantic version" as `METRICS.md` specifies, since no
-       release process exists before Phase 13. Using it is the best
-       available source of truth today; will need revisiting once
-       releases exist.
-    2. "Test expected Prometheus mapping to `service_name`" was implemented
-       as a specification-level unit test (asserting the documented
-       dots-to-underscores sanitization rule against the literal
-       `"service.name"` string we emit), not a live conversion check —
-       `deploy/**` is excluded from this assignment's scope, so no
-       otel-collector/VictoriaMetrics round-trip was run here. `S0-01`'s
-       prior hub integration test already demonstrated the live pipeline
-       accepts underscored attributes; this test pins the expectation for
-       `service_name` specifically without re-running that stack.
-  - **Assumptions:** DNS-label validation rejects rather than coerces
-    (see behavior 1) — treated as the correct reading of ADR 0009's
-    "lower-case ... identifiers" given every consumer (DB keys, API auth,
-    metrics, federation) relies on the same identity, and a silent
-    transform would let an operator misconfigure identity without
-    noticing.
-  - **Commit SHA:** pending push with this handoff.
+  1. Preserve the POSIX private-key `0600` assertion on POSIX, but make the test
+     express an appropriate Windows expectation instead of asserting Unix modes.
+  2. Remove Windows/Python 3.14 Pylint false failures around `signal.SIGHUP` and
+     `ThreadPoolExecutor` with the smallest justified platform-safe code or
+     narrowly scoped suppression; do not disable rules project-wide.
+  3. Add collector enrollment-client failure tests for reused/invalid token
+     responses, malformed certificate/CA response data, timeout/network error,
+     and identity mismatch if the current response contract exposes identity.
+  4. Do not invent the production server response contract; record a question if
+     backend behavior is not yet specified.
+  5. Run the four Linux gates and, where available, Windows Ruff/mypy/Pylint/
+     pytest. Report platform-specific skips explicitly.
+- **Exit:** Push REVIEW handoff with files, exact results, behavior retained,
+  suppressions with rationale, and remaining server-contract dependencies.
 
 ### Pending C1-01 handoff
 
-Codex is implementing the production hub identity and migration foundation.
 Latest implementation commit: `96a21b6`.
 
-- Added TLS 1.3 mutual-auth configuration, certificate-bound OTLP identity
-  enforcement, required resource validation, bounded VictoriaMetrics OTLP/HTTP
-  forwarding, health/readiness endpoints, and graceful shutdown.
-- Local full non-race tests, vet, and build pass. The previously Windows-blocked
-  TLS transport test now passes after Smart App Control was adjusted.
-- Local race tests require GCC/CGO, which is absent on this Windows host.
-  GitHub backend run `30196833991` passed its full Linux race suite and migration
-  validation, providing authoritative race-test coverage.
-- Next: PostgreSQL `last_seen`, migration runner, and production enrollment.
+- TLS 1.3 mTLS, certificate-bound OTLP identity, resource validation, bounded
+  VictoriaMetrics OTLP/HTTP forwarding, health/readiness, graceful shutdown.
+- Local Windows full race suite now passes with MSYS2 UCRT64 GCC 16.1.0.
+- GitHub backend run `30196833991` passed Linux race tests and PostgreSQL
+  migration validation.
+- Next: PostgreSQL `last_seen`, migration runner, production enrollment.
 
-### C1-02 — CI/CD assignment
+### C1-02 — CI/CD checkpoint
 
-- **Timestamp:** 2026-07-26T09:26:06Z
-- **Owner:** CODEX
-- **Goal:** Implement GitHub Actions incrementally with the architecture phases.
-- **First slice:** add Go backend build/test/vet and migration/schema validation;
-  include Go in CodeQL; rationalize duplicated collector lint jobs without
-  weakening required checks.
-- **Later gated slices:** container multi-arch builds, SBOM and vulnerability
-  scanning, artifact signing/provenance, release packaging, deployment
-  environments, canary/cohort fleet rollout, rollback, and post-deploy checks.
-- **Safety:** deployment workflows remain disabled/manual until production
-  Compose, secrets, environments, and rollback procedures exist. CI must never
-  target documented live hardware.
-- **Exit evidence:** workflow syntax/static validation, local-equivalent commands,
-  least-privilege permissions review, and pushed remote read-back.
-- **Checkpoint 2026-07-26:** Commits `8417066` and `4a7cf25` added backend
-  gofmt/vet/race-test/build, empty-PostgreSQL migration validation, corrected
-  collector action versions, and Go CodeQL. GitHub runs passed:
-  - backend run `30196549053`: both jobs successful;
-  - collector and Pylint at `8417066`: successful;
-  - CodeQL run `30196596608`: Actions, Python, and Go successful.
-- **Still active:** multi-arch build, SBOM/scanning/signing, protected delivery,
-  canary rollout, and rollback remain gated on deployable artifacts.
+- Commits `8417066` and `4a7cf25`: backend gofmt/vet/race/build,
+  empty-PostgreSQL migration validation, corrected action versions, Go CodeQL.
+- Passing runs: backend `30196549053`; CodeQL `30196596608`; collector/Pylint at
+  `8417066`.
+- Still gated: multi-arch build, SBOM/scanning/signing, protected delivery,
+  canary rollout, rollback.
 
 ---
 
 ## Archive Procedure
 
-When an item becomes `DONE`, the reviewer must:
+When an item becomes `DONE`, the reviewer:
 
-1. append its assignment, claim, handoff, review, test results, decisions, and
-   commit SHAs to `agent-coordination-history/YYYY-MM.md`;
-2. remove its active claim and detailed exchange from this file;
-3. add/update the one-line completed reference below the board;
-4. commit and push the archive and compact-ledger update together;
-5. fetch and read both files back from `origin/main`.
+1. appends assignment, claim, handoff, review, results, decisions, and SHAs to
+   `agent-coordination-history/YYYY-MM.md`;
+2. removes its active claim and detailed exchange here;
+3. updates the completed reference;
+4. commits and pushes archive plus compact ledger together;
+5. fetches and reads both files back from `origin/main`.
 
-Git history remains the lossless source for earlier verbose ledger states. The
-monthly archive provides the readable index and durable summary.
+Git history is the lossless source for verbose earlier ledger states. Monthly
+history is the readable durable index.
