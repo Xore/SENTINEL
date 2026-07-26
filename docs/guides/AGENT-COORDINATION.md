@@ -67,10 +67,9 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | IN_PROGRESS | S1-01 | `collector/**`; exclusions below |
-| C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | IN_PROGRESS | C0-02 | `backend/`, `contracts/`, `deploy/hub/`, migration tests |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 
-Completed: C0-01, C0-02, S0-01, S1-01. See
+Completed: C0-01, C0-02, S0-01, S1-01, C1-01. See
 [July 2026 history](agent-coordination-history/2026-07.md).
 
 ---
@@ -79,7 +78,6 @@ Completed: C0-01, C0-02, S0-01, S1-01. See
 
 | Timestamp (UTC) | Agent | Work ID | Files/directories |
 |---|---|---|---|
-| 2026-07-26T09:18:30Z | CODEX | C1-01 | `backend/`, `contracts/`, `deploy/hub/`, migration tests, this ledger |
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-26T09:52:33Z | SONNET5 | S1-02 | `collector/**` (per A-S1-02-1 exclusions), this ledger |
 
@@ -253,41 +251,12 @@ Implementation commit: `6745750`.
   identity/key validation described in the decision above, with focused tests.
   The canonical URI is already implemented by
   `backend/ingest/internal/identity.SPIFFEURI`.
-
-### Pending C1-01 handoff
-
-Latest implementation commit: `5013b7d`.
-
-- TLS 1.3 mTLS, certificate-bound OTLP identity, resource validation, bounded
-  VictoriaMetrics OTLP/HTTP forwarding, health/readiness, graceful shutdown.
-- PostgreSQL collector authorization now rejects unknown, disabled, or
-  certificate-mismatched collectors and updates `last_seen` on accepted
-  requests.
-- Local Windows full race suite now passes with MSYS2 UCRT64 GCC 16.1.0.
-- GitHub backend run `30197250309` passed Linux race tests, PostgreSQL registry
-  integration tests, and migration validation for `8fbe62f`.
-- Ubuntu 24.04 lab host `192.168.50.33` independently passed `go test -race
-  -count=1 ./...`, `go vet ./...`, and `go build ./...` at exact commit
-  `8fbe62f` with Go 1.26.3 and GCC 13.3.0.
-- Lab safety boundary: `.33` is user-authorized for disposable integration and
-  deployment tests, including service teardown when required. Never operate on
-  `.32`.
-- The embedded migration runner now holds a global advisory lock, applies each
-  file transactionally, records SHA-256, is idempotent, and rejects changed,
-  gapped, or future histories. GitHub backend run `30197581879` passed Go
-  race/vet/build plus empty/current schema and tamper integration gates.
-- Production HTTPS enrollment now validates CSR identity/signature, atomically
-  consumes a SHA-256 one-time token, signs a client-auth leaf with the canonical
-  SPIFFE URI SAN, and registers its serial/expiry. The response and retry
-  contract is `docs/contracts/ENROLLMENT.md`.
-- GitHub backend run `30197933702` passed all Go and PostgreSQL gates, including
-  one-time-token reuse rejection and signed certificate identity verification.
-- Ubuntu 24.04 lab host `.33` independently passed exact commit `5013b7d`:
-  migration apply plus idempotent rerun, enrollment PostgreSQL integration,
-  full race tests, vet, and build. PostgreSQL 16.14 is now installed and active;
-  the temporary integration database was dropped after the run.
-- Next: replace the dev stub PKI/OTel ingest path with the production Go ingest
-  and migration runner, then execute the Phase 1 end-to-end gate on `.33`.
+- **Additional Linux finding:** on `.33`, `SCAN_LEVEL_MAX=1` failed settings
+  validation because the environment value remained string `"1"` for
+  `Literal[1,2,3]`. Enrollment did not run and the one-time token was not
+  consumed. Add a focused environment-loading regression test and the smallest
+  safe coercion within S1-02. The Phase 1 E2E passed after omitting this
+  optional override and using the default scan level.
 
 ### C1-02 — CI/CD checkpoint
 
@@ -295,6 +264,8 @@ Latest implementation commit: `5013b7d`.
   empty-PostgreSQL migration validation, corrected action versions, Go CodeQL.
 - Passing runs: backend `30196549053`; CodeQL `30196596608`; collector/Pylint at
   `8417066`.
+- Backend run `30198152790` additionally passed the production ingest container
+  build and dev Compose validation at `45f8e65`.
 - Still gated: multi-arch build, SBOM/scanning/signing, protected delivery,
   canary rollout, rollback.
 
