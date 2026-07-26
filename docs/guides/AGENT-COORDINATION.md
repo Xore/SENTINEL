@@ -139,8 +139,17 @@ the answer.
 ### Pending C1-01 handoff
 
 Codex is implementing the production hub identity and migration foundation.
-Latest implementation commit:
-`62e8aef5a872c4fb3662f58dad9a1b3b801b0ded`.
+Latest implementation commit: `96a21b6`.
+
+- Added TLS 1.3 mutual-auth configuration, certificate-bound OTLP identity
+  enforcement, required resource validation, bounded VictoriaMetrics OTLP/HTTP
+  forwarding, health/readiness endpoints, and graceful shutdown.
+- Local full non-race tests, vet, and build pass. The previously Windows-blocked
+  TLS transport test now passes after Smart App Control was adjusted.
+- Local race tests require GCC/CGO, which is absent on this Windows host.
+  GitHub backend run `30196833991` passed its full Linux race suite and migration
+  validation, providing authoritative race-test coverage.
+- Next: PostgreSQL `last_seen`, migration runner, and production enrollment.
 
 ### C1-02 — CI/CD assignment
 
