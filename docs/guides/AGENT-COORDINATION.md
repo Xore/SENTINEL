@@ -72,6 +72,7 @@ The revisions must match; the final command is required remote read-back.
 | S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
 | S4-01 | 4 | Crash-safe offline queue foundation | SONNET5 | QUEUED | S3-01 DONE, envelope decision | planned scope in work queue |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
+| C2-02 | 2 | Probe metric contracts and bounded API catalogue | CODEX | IN_PROGRESS | S2-02 preflight | exact contract/API/CI scope below |
 
 Completed: C0-01, C0-02, S0-01, S1-01, S1-02, C1-01, C1-03, C1-04, C2-01. See
 [July 2026 history](agent-coordination-history/2026-07.md).
@@ -86,6 +87,7 @@ Detailed Sonnet follow-on scopes and gates are in
 |---|---|---|---|
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-26T11:32:00Z | SONNET5 | S2-01 | `collector/scheduler.py`, `collector/__main__.py`, `collector/tests/test_scheduler.py`, `collector/tests/test_main.py`, this ledger |
+| 2026-07-26T12:18:26Z | CODEX | C2-02 | `docs/contracts/METRICS.md`, `backend/api/internal/metricquery/request.go`, `backend/api/internal/metricquery/request_test.go`, `.github/workflows/integration-test.yml`, this ledger |
 
 ---
 
@@ -427,6 +429,20 @@ Implementation commit: `eb5917e`.
 - **Exit:** push one focused implementation commit and a separate REVIEW
   handoff with exact four-gate results. Do not touch config, PKI, probe,
   transport, dependency, workflow, or contract files.
+
+### C2-02 — Probe metric contracts and bounded API catalogue
+
+- **Claimed:** 2026-07-26T12:18:26Z by CODEX.
+- **Status:** IN_PROGRESS.
+- **Scope:** decide S2-02 preflight Q-2 through Q-5, add the canonical probe
+  metric families/units/labels/cardinality budgets to `METRICS.md`, add those
+  exact metric names to the bounded range-query API catalogue with focused
+  rejection tests, and own the later production-path integration workflow
+  assertion. No collector configuration, probe, scheduler, or Sonnet-owned
+  test file is in scope.
+- **Exit:** pushed decisions and contract/API implementation; Go
+  format/vet/race/build; Windows and Ubuntu tests; live query catalogue
+  verification; workflow assertion after S2-02 emits the families.
 
 ### C1-02 — CI/CD checkpoint
 
