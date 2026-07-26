@@ -158,6 +158,14 @@ Latest implementation commit:
   target documented live hardware.
 - **Exit evidence:** workflow syntax/static validation, local-equivalent commands,
   least-privilege permissions review, and pushed remote read-back.
+- **Checkpoint 2026-07-26:** Commits `8417066` and `4a7cf25` added backend
+  gofmt/vet/race-test/build, empty-PostgreSQL migration validation, corrected
+  collector action versions, and Go CodeQL. GitHub runs passed:
+  - backend run `30196549053`: both jobs successful;
+  - collector and Pylint at `8417066`: successful;
+  - CodeQL run `30196596608`: Actions, Python, and Go successful.
+- **Still active:** multi-arch build, SBOM/scanning/signing, protected delivery,
+  canary rollout, and rollback remain gated on deployable artifacts.
 
 ---
 
