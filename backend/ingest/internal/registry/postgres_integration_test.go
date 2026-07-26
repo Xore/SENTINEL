@@ -89,7 +89,7 @@ func TestPostgresRejectsMismatchedAndDisabledCollectors(t *testing.T) {
 		INSERT INTO collectors (
 			site_id, collector_id, certificate_serial, disabled_at
 		) VALUES (
-			'disabled-site', 'probe-01', '42', now()
+			'disabled-site', 'probe-01', '43', now()
 		)
 		ON CONFLICT (site_id, collector_id)
 		DO UPDATE SET certificate_serial = EXCLUDED.certificate_serial,
@@ -101,7 +101,7 @@ func TestPostgresRejectsMismatchedAndDisabledCollectors(t *testing.T) {
 	}
 
 	cases := []identity.Collector{
-		{SiteID: "disabled-site", CollectorID: "probe-01", CertificateSerial: "42"},
+		{SiteID: "disabled-site", CollectorID: "probe-01", CertificateSerial: "43"},
 		{SiteID: "disabled-site", CollectorID: "probe-01", CertificateSerial: "wrong"},
 		{SiteID: "disabled-site", CollectorID: "unknown", CertificateSerial: "42"},
 	}
