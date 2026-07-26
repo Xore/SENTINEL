@@ -68,7 +68,7 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | IN_PROGRESS | S1-01 | exact narrowed claim below |
-| S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | IN_PROGRESS | pushed S1-02 REVIEW | exact scope in work queue |
+| S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | REVIEW | pushed S1-02 REVIEW | exact scope in work queue |
 | S2-02 | 2 | Core network probe activation and hardening | SONNET5 | QUEUED | S1-02, S2-01 DONE | planned scope in work queue |
 | S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
 | S4-01 | 4 | Crash-safe offline queue foundation | SONNET5 | QUEUED | S3-01 DONE, envelope decision | planned scope in work queue |
@@ -359,9 +359,7 @@ Implementation commit: `322de04`.
 ### A-S2-01-1 — Sonnet 5 claim
 
 - **Timestamp:** 2026-07-26T11:32:00Z
-- **Status:** IN_PROGRESS — claimed immediately after pushing the S1-02
-  REVIEW handoff, per the work queue's disjoint-scope allowance (Codex
-  approval of S1-02 not required to start this).
+- **Status:** REVIEW — handoff below.
 - **Scope (from `SONNET-5-WORK-QUEUE.md`):** `collector/scheduler.py`,
   `collector/__main__.py`, `collector/tests/test_scheduler.py`,
   `collector/tests/test_main.py`, this ledger. Not touching probe
@@ -384,6 +382,73 @@ Implementation commit: `322de04`.
      no pending task after shutdown.
 - **Exit:** push REVIEW handoff with files, exact gate results, and
   behavior retained, following the same synchronization sequence as S1-02.
+
+#### S2-01 handoff
+
+Implementation commit: `eb5917e`.
+
+- **Files:** `collector/scheduler.py`, `collector/__main__.py`,
+  `collector/tests/test_scheduler.py`, `collector/tests/test_main.py` —
+  exactly the claimed scope.
+- **Req 1 (containment):** `_run_one` now wraps each check's
+  `run_with_semaphore()` call; any exception other than
+  `asyncio.CancelledError` is caught and recorded as one failed run
+  (`outcome="exception"`), logged via `scheduler.check_exception`. The
+  surrounding `TaskGroup` therefore never sees an exception from a check
+  again, so a broken check can't cancel siblings or crash the scheduler.
+  `CancelledError` is not caught, so shutdown cancellation still
+  propagates and exits the `TaskGroup` immediately.
+- **Req 2 (timeout):** added `check_timeout_s` parameter to
+  `run_scheduler` (default `DEFAULT_CHECK_TIMEOUT_S = 30.0`), enforced per
+  check via `asyncio.timeout()` inside `_run_one`. A timeout is recorded
+  as a failed run (`outcome="timeout"`) with the check's own task ending
+  cleanly — nothing is left running past the timeout window.
+- **Req 3 (canonical telemetry):** added `_SchedulerMetrics`, constructed
+  once per `run_scheduler` call from an optional `meter` (no-op if
+  `None`). Emits exactly the three Phase 1 families from
+  `docs/contracts/METRICS.md`: `sentinel_collector_check_runs_total`
+  (counter, unit `1`, labels `check`+`outcome`),
+  `sentinel_collector_check_duration_seconds` (histogram, unit `s`, label
+  `check`), `sentinel_collector_cycle_duration_seconds` (histogram, unit
+  `s`, no labels). `collector/__main__.py` now passes the real `meter`
+  into `run_scheduler()` so this exports in production, not just tests.
+- **Req 4 (no exception text in metrics):** `outcome` is one of exactly
+  `ok`/`failed`/`timeout`/`exception` — the actual exception/error string
+  only ever reaches structured logs (`scheduler.check_failed`/
+  `check_timeout`/`check_exception`), never a metric attribute. Verified
+  by `test_canonical_metrics_names_units_and_labels`, which asserts every
+  recorded attribute set is exactly `{check, outcome}`.
+- **Req 5 (tests):** `collector/tests/test_scheduler.py` —
+  `test_exception_escaping_run_is_contained_not_raised`,
+  `test_broken_check_does_not_cancel_healthy_sibling`,
+  `test_hanging_check_is_timed_out_not_leaked`,
+  `test_timed_out_check_does_not_block_healthy_sibling`,
+  `test_no_pending_tasks_after_shutdown`,
+  `test_canonical_metrics_names_units_and_labels` (names/units/labels via
+  a fake meter), plus the 5 pre-existing scheduling tests all still pass
+  unchanged. `collector/tests/test_main.py` —
+  `test_broken_check_is_contained_and_shutdown_still_runs` replaces the
+  old test that asserted the ExceptionGroup-crashes-the-scheduler
+  behavior (that was exactly the bug this item fixes); the fake meter
+  gained `create_histogram` since `run_scheduler` now always constructs
+  `_SchedulerMetrics`.
+- **Behavior retained:** disabled-check skip, multi-check same-cycle
+  batching, interval accuracy, empty-list/already-set stop_event handling,
+  and the heartbeat-check-close-on-shutdown test are all unchanged and
+  still pass.
+- **Gates, run from `collector/` with the repo's `.venv`
+  (Python 3.12.3 / pylint 3.3.7 / ruff 0.16.0 / mypy 1.20.2 / pytest
+  9.1.1):**
+  - `ruff check .` → all checks passed.
+  - `mypy .` → `Success: no issues found in 35 source files` (pre-existing
+    `annotation-unchecked` notes on untyped test bodies only).
+  - `pylint collector tests` (exact CI invocation) → 10.00/10.
+  - `pytest -q` → 179 passed, 1 skipped (`test_sighup_noop_without_signal`,
+    `non-POSIX only` — pre-existing, unrelated to this change).
+  - Windows Ruff/mypy/Pylint/pytest: **not run** — no Windows environment
+    available to this session.
+- **Remaining risk:** none identified for this scope; nothing here depends
+  on an unresolved server contract.
 
 #### S1-02 Codex review 2
 
