@@ -69,7 +69,7 @@ The revisions must match; the final command is required remote read-back.
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | SONNET5 | REVIEW | S2-01 DONE | exact scope below |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | exact new-file scope below |
-| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | IN_PROGRESS | S3-01A REVIEW | exact new-file scope below |
+| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
 | S5-00 | 5 | Signed-update read-only preflight | SONNET5 | QUEUED | S4-01A REVIEW | ledger only |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 | C2-03 | 2 | Live probe metric workflow assertion | CODEX | QUEUED | S2-02 REVIEW | `.github/workflows/integration-test.yml`, ledger |
@@ -453,6 +453,101 @@ Implementation commit: `8e96e8c`.
 - **Exit:** push implementation + separate REVIEW handoff with exact gate
   results, per the work queue. LMDB hot tier, configuration, and transport
   integration remain later, separately reviewed claims.
+
+#### S4-01A handoff
+
+Implementation commit: `d9bef65`.
+
+- **Files:** exactly the claimed new-file scope — `collector/store/__init__.py`,
+  `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, and three
+  matching new test modules. No existing file was edited; S1-02/S2-01/S2-02/
+  S3-01A remain untouched.
+- **`envelope.py`:** frozen `Envelope` dataclass, version `1` (rejected at
+  both construction and `from_bytes` for any other value). `event_id` is
+  canonicalized via `uuid.UUID`; `site_id`/`collector_id` reuse the ADR 0009
+  DNS-label rule, duplicated locally as a 1-line regex since `config.py` is
+  frozen/out of scope this claim (not imported from there). `observed_at`/
+  `created_at`/`expires_at` must be aware UTC; `expires_at` must be strictly
+  after both `observed_at` and `created_at` — this is enforced at
+  construction, so an already-expired envelope cannot be built in the first
+  place. `checksum` is a SHA-256 digest of `payload` computed automatically
+  in `__post_init__` (any caller-supplied value is ignored). `to_bytes`/
+  `from_bytes` use deterministic sorted-key, no-whitespace JSON with
+  base64-encoded payload bytes; `from_bytes` re-verifies the stored checksum
+  against a fresh digest of the decoded payload, so a bit-flip in either the
+  payload or the checksum field itself is caught as corruption, not silently
+  accepted. `with_attempt_incremented()` returns a copy (`dataclasses.replace`)
+  since the envelope is frozen.
+- **`sqlite_queue.py`:** stdlib `sqlite3` only (no async — this is a
+  synchronous foundation module; wrapping its blocking calls in
+  `collector.utils.thread_pool.run_in_thread` for the async collector loop is
+  explicitly a later transport-integration claim). WAL journal mode plus a
+  busy-timeout pragma set from a validated positive `busy_timeout_ms`
+  constructor argument (PRAGMA doesn't accept bound parameters, so the value
+  is int-coerced and range-checked before formatting into the statement, not
+  passed through as arbitrary SQL). `queue` table keyed by `event_id`
+  (`INSERT OR IGNORE` after an existence check gives idempotent duplicate
+  enqueue); index and `ORDER BY (created_at, event_id)` give deterministic
+  oldest-first retrieval. `_evict_for_capacity` evicts oldest-first before
+  every insert until both `max_records`/`max_bytes` are satisfied or the
+  queue is empty — a single incoming record larger than `max_bytes` is still
+  inserted rather than rejected, since there's nothing left to evict. A row
+  that fails `Envelope.from_bytes` (checksum mismatch, malformed JSON, future
+  version) is moved to a separate `quarantine` table and skipped rather than
+  raised, in `peek()` and `mark_attempt()` alike, so one corrupted record
+  can't wedge the queue. `acknowledge`/`mark_attempt` on an unknown
+  `event_id` are safe no-ops (`None`/no deletion) rather than errors. An
+  internal `threading.Lock` serializes access from multiple threads sharing
+  one instance; WAL mode plus the busy-timeout pragma handle multiple
+  separate `SqliteQueue` instances (or processes) against the same file.
+- **Tests:** round-trip/determinism (`to_bytes` is stable, `from_bytes`
+  round-trips exactly); every validation rule rejected (bad `site_id`/
+  `collector_id`, non-UUID `event_id`, naive/non-UTC datetimes, `expires_at`
+  ordering, negative `attempt_count`, empty `content_type`, non-bytes
+  `payload`, unsupported `version`); checksum corruption via a tampered
+  `payload_b64` and via a tampered `checksum` field, both at the envelope
+  layer and via direct SQLite row corruption (quarantined, not returned, not
+  raised); unknown/future version rejected at both layers; duplicate
+  `event_id` enqueue is a no-op; crash/reopen durability (an abandoned
+  connection with no explicit `close()`, then a fresh instance against the
+  same file); concurrent producer/consumer via both many threads sharing one
+  instance and two separate instances against the same file; busy/locked
+  database (a real held `BEGIN IMMEDIATE` transaction from a second
+  connection, both the raises-after-a-short-timeout and succeeds-after-
+  waiting-within-timeout cases); byte-cap and record-cap oldest-first
+  eviction, including the oversize-single-record case; expiry removal
+  (only past-expiry rows removed) and its naive-datetime rejection;
+  `(created_at, event_id)` retry order proven by enqueuing out of order;
+  acknowledgement (exactly one row removed, double-ack and unknown-id are
+  safe no-ops); attempt increment (persisted, and on a corrupted row
+  quarantines and returns `None`); a simulated 24-hour backlog of 288
+  envelopes (5-minute spacing) drained via repeated `peek`+`acknowledge`
+  entirely in chronological order with nothing left in the queue or
+  quarantine — built from fake spread-out timestamps, not real wall-clock
+  waiting.
+- **Gates, run from `collector/` with the repo's `.venv` (Python 3.12.3 /
+  pylint 3.3.7 / ruff 0.16.0 / mypy 1.20.2 / pytest 9.1.1):**
+  - `ruff check .` → all checks passed.
+  - `mypy .` → `Success: no issues found in 55 source files` (pre-existing
+    `annotation-unchecked` notes on untyped test bodies only).
+  - `pylint collector tests` (exact CI invocation) → 10.00/10. Two scoped
+    `# pylint: disable=` comments were added in the new files themselves —
+    `too-many-instance-attributes` on `Envelope` (11 fields, all individually
+    meaningful per the published envelope decision; not consolidable the way
+    S2-02's `LatencyCheck` gauges were) and `too-many-arguments` on the test
+    helper `_make()` (mirrors all 11 fields for validation-rejection tests).
+    Neither touches `pyproject.toml`, which remains out of scope for this
+    claim.
+  - `pytest -q` → 406 passed, 1 skipped (`test_sighup_noop_without_signal`,
+    `non-POSIX only` — pre-existing). The 66 new store tests were re-run
+    three times in isolation to confirm no timing flakiness in the
+    busy-timeout/concurrency tests.
+  - Windows Ruff/mypy/Pylint/pytest: **not run** — no Windows environment
+    available to this session.
+- **Remaining risk:** none identified against the current claim scope. LMDB
+  hot tier, `CollectorSettings` wiring, and transport integration (including
+  routing `SqliteQueue`'s blocking calls through `run_in_thread`) remain open
+  for later, separately reviewed claims, as the work queue anticipates.
 
 ### C2-03 — Live probe metric workflow assertion
 
