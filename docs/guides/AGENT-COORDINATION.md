@@ -73,6 +73,7 @@ The revisions must match; the final command is required remote read-back.
 | S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
 | S4-01 | 4 | Crash-safe offline queue foundation | SONNET5 | QUEUED | S3-01 DONE, envelope decision | planned scope in work queue |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
+| C1-03 | 1 | Automated collector-to-storage integration smoke test | CODEX | IN_PROGRESS | C1-01 | exact claim below |
 
 Completed: C0-01, C0-02, S0-01, S1-01, C1-01. See
 [July 2026 history](agent-coordination-history/2026-07.md).
@@ -87,6 +88,7 @@ Detailed Sonnet follow-on scopes and gates are in
 |---|---|---|---|
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-26T10:38:14Z | SONNET5 | S1-02 | `collector/config.py`, `collector/pki/enroll.py`, `collector/utils/thread_pool.py`, `collector/tests/test_config.py`, `collector/tests/pki/test_enroll.py`, corresponding narrowly focused tests, this ledger |
+| 2026-07-26T10:42:27Z | CODEX | C1-03 | `.github/workflows/integration-test.yml`, this ledger |
 
 ---
 
@@ -300,6 +302,24 @@ Implementation commit: `6745750`.
   `collector/utils/thread_pool.py:13 E0611`, rating 9.96/10.
 - Still gated: intentional tag-path verification, protected delivery, canary
   rollout, and rollback.
+
+### A-C1-03-1 — Codex integration smoke assignment
+
+- **Timestamp:** 2026-07-26T10:42:27Z.
+- **Status:** IN_PROGRESS.
+- **Goal:** Automate the already proven Phase 1 production path in GitHub
+  Actions: disposable PostgreSQL and VictoriaMetrics, migrations and seeded
+  enrollment identity, real Go enrollment/mTLS ingest, real Python collector,
+  and a query assertion for the canonical heartbeat with the expected site and
+  collector labels.
+- **Allowed:** `.github/workflows/integration-test.yml` and this ledger.
+- **Excluded:** all Sonnet-owned collector files, backend/runtime code,
+  deployment definitions, dependencies, and contracts.
+- **Required:** bounded readiness/query polling; collector and Compose
+  diagnostics on failure; unconditional cleanup; no long-lived credentials;
+  path filters for every component used by the smoke test.
+- **Exit:** GitHub-hosted run passes and its run URL/results are pushed in a
+  REVIEW checkpoint.
 
 ---
 
