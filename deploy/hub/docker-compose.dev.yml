@@ -23,8 +23,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev-only-not-a-real-secret}
     volumes:
       - pg_data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-analyselaptop}"]
       interval: 2s
