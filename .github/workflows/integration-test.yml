@@ -4,12 +4,14 @@ on:
   push:
     branches: [main]
     paths:
+      - "backend/api/**"
       - "backend/ingest/**"
       - "collector/**"
       - "deploy/hub/**"
       - ".github/workflows/integration-test.yml"
   pull_request:
     paths:
+      - "backend/api/**"
       - "backend/ingest/**"
       - "collector/**"
       - "deploy/hub/**"
