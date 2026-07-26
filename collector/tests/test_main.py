@@ -26,15 +26,32 @@ class _FakeCounter:
         self.value += amount
 
 
+class _FakeHistogram:
+    def __init__(self):
+        self.values: list[float] = []
+
+    def record(self, amount, attributes=None):  # pylint: disable=unused-argument
+        self.values.append(amount)
+
+
 class _FakeMeter:
     def __init__(self):
         self.counters: dict[str, _FakeCounter] = {}
+        self.histograms: dict[str, _FakeHistogram] = {}
 
     # description/unit are unused for the same duck-typing reason as above.
     def create_counter(self, name, description=None, unit=None):  # pylint: disable=unused-argument
         counter = _FakeCounter()
         self.counters[name] = counter
         return counter
+
+    # collector.scheduler creates histograms for canonical run/duration
+    # telemetry (docs/contracts/METRICS.md); this fake must duck-type that
+    # too now that run_scheduler() is called with a real meter in main().
+    def create_histogram(self, name, description=None, unit=None):  # pylint: disable=unused-argument
+        histogram = _FakeHistogram()
+        self.histograms[name] = histogram
+        return histogram
 
 
 class _FakeMeterProvider:
@@ -84,14 +101,18 @@ async def test_wires_up_and_emits_heartbeat(monkeypatch, enrolled_pki_dir, capsy
     )
 
 
-async def test_shutdown_still_runs_when_scheduler_raises(monkeypatch, enrolled_pki_dir, capsys):
-    """A check that bypasses BaseCheck's never-raise contract cancels the
-    TaskGroup (scheduler + watchdog) and re-raises as ExceptionGroup — the
-    provider must still be shut down via the surrounding try/finally.
+async def test_broken_check_is_contained_and_shutdown_still_runs(
+    monkeypatch, enrolled_pki_dir, capsys
+):
+    """S2-01: a check that bypasses BaseCheck's never-raise contract must be
+    contained as a failed run by the scheduler, not crash it — main() keeps
+    running (and later shuts down cleanly on stop_event) instead of
+    propagating an ExceptionGroup.
     """
     monkeypatch.setenv("COLLECTOR_ID", "node-1")
     monkeypatch.setenv("BACKEND__PKI_DIR", str(enrolled_pki_dir))
     monkeypatch.setenv("BACKEND__URL", "https://localhost:4317")
+    monkeypatch.setattr(main_module, "HEARTBEAT_INTERVAL_S", 0.01)
 
     fake_provider = _FakeMeterProvider()
     shutdown_calls = []
@@ -105,11 +126,13 @@ async def test_shutdown_still_runs_when_scheduler_raises(monkeypatch, enrolled_p
 
     monkeypatch.setattr(main_module, "_HeartbeatCheck", _BrokenHeartbeat)
 
-    with pytest.raises(ExceptionGroup):
-        await main()
+    stop_event = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.05, stop_event.set)
+    await main(stop_event=stop_event)  # must not raise
 
     assert shutdown_calls == [fake_provider]
     out = capsys.readouterr().out
+    assert "scheduler.check_exception" in out
     assert "collector.shutdown" in out
 
 

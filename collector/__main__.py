@@ -171,7 +171,9 @@ async def main(*, stop_event: asyncio.Event | None = None) -> None:
     log.info("collector.started", heartbeat_interval_s=HEARTBEAT_INTERVAL_S)
     try:
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(run_scheduler(checks, stop_event=stop_event), name="scheduler")
+            tg.create_task(
+                run_scheduler(checks, stop_event=stop_event, meter=meter), name="scheduler"
+            )
             tg.create_task(loop_latency_watchdog(stop_event=stop_event), name="loop_watchdog")
     finally:
         await _close_checks(checks, log)
