@@ -73,6 +73,7 @@ The revisions must match. The final command is the required remote read-back.
 |---|---:|---|---|---|---|---|
 | S1-01 | 1 | Collector contract and lifecycle hardening | SONNET5 | READY | C0-02, S0-01 | `collector/**`; exclusions in assignment |
 | C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | IN_PROGRESS | C0-02 | `backend/`, `contracts/`, `deploy/hub/`, migration tests |
+| C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 
 Completed Phase 0: C0-01, C0-02, and S0-01. See
 [July 2026 history](agent-coordination-history/2026-07.md).
@@ -84,6 +85,7 @@ Completed Phase 0: C0-01, C0-02, and S0-01. See
 | Timestamp (UTC) | Agent | Work ID | Files/directories |
 |---|---|---|---|
 | 2026-07-26T09:18:30Z | CODEX | C1-01 | `backend/`, `contracts/`, `deploy/hub/`, migration tests, this ledger |
+| 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 
 Sonnet must add and push its S1-01 claim before editing.
 
@@ -140,6 +142,23 @@ the answer.
 Codex is implementing the production hub identity and migration foundation.
 Latest implementation commit:
 `62e8aef5a872c4fb3662f58dad9a1b3b801b0ded`.
+
+### C1-02 — CI/CD assignment
+
+- **Timestamp:** 2026-07-26T09:26:06Z
+- **Owner:** CODEX
+- **Goal:** Implement GitHub Actions incrementally with the architecture phases.
+- **First slice:** add Go backend build/test/vet and migration/schema validation;
+  include Go in CodeQL; rationalize duplicated collector lint jobs without
+  weakening required checks.
+- **Later gated slices:** container multi-arch builds, SBOM and vulnerability
+  scanning, artifact signing/provenance, release packaging, deployment
+  environments, canary/cohort fleet rollout, rollback, and post-deploy checks.
+- **Safety:** deployment workflows remain disabled/manual until production
+  Compose, secrets, environments, and rollback procedures exist. CI must never
+  target documented live hardware.
+- **Exit evidence:** workflow syntax/static validation, local-equivalent commands,
+  least-privilege permissions review, and pushed remote read-back.
 
 ---
 
