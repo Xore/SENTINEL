@@ -136,6 +136,75 @@ finishes the two reviews.
 
 ---
 
+## S2-02 Preflight (Sonnet 5, read-only)
+
+- **Timestamp:** 2026-07-26T12:35:00Z.
+- **Method:** read `SONNET-5-WORK-QUEUE.md`'s S2-02 section, all five
+  `collector/checks/net_*.py` modules and their tests, `collector/checks/
+  __init__.py` and `collector/tests/checks/test_base.py`, the `icmp`/`tcp`/
+  `http`/`dns` sections of `collector/config.py`, and the check-construction
+  code in `collector/__main__.py`. No files were edited.
+
+### Proposed S2-02 file claim (not yet active — start gate unmet)
+
+`collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`,
+`collector/checks/net_http.py`, `collector/checks/net_dns.py`,
+`collector/checks/net_latency.py`, `collector/checks/__init__.py`,
+`collector/config.py` (only the `Icmp/Tcp/Http/DnsConfig` target sections),
+`collector/__main__.py` (only check-registration wiring),
+`collector/tests/checks/test_net_icmp.py`,
+`collector/tests/checks/test_net_tcp.py`,
+`collector/tests/checks/test_net_http.py`,
+`collector/tests/checks/test_net_dns.py`,
+`collector/tests/checks/test_net_latency.py`,
+`collector/tests/checks/test_base.py`, `collector/tests/test_config.py`
+(target-validation cases only), `collector/tests/test_main.py`
+(registration-wiring cases only), this ledger.
+
+### Current-state gap table
+
+| Check | Registered in `__main__.py`? | Timeout/cancellation | Metrics emitted? | Labels vs. METRICS.md policy | Target validation |
+|---|---|---|---|---|---|
+| ICMP (`net_icmp.py`) | **No** — never constructed outside tests | Bounded by internal socket timeout, but the blocking ping runs on the default `asyncio.to_thread` pool, not the collector's own capped 2-worker `utils/thread_pool.py` executor (docs/guides/ASYNCIO-OPTIMIZATION.md §3) — bypasses the Pi 3B CPU NFR the rest of the codebase enforces. On task cancellation the thread keeps blocking until its own socket timeout elapses (bounded, but not immediate). | `CheckResult.metrics` (`icmp_rtt_ms`, `icmp_loss_pct`) computed but **never read by anything** — `scheduler._run_one` only inspects `result.ok`/`.error`. No OTel instrument exists for these values anywhere. | `labels={"target": <raw IP/host>}` — raw value, not the allowed `target_id`; `IcmpConfig.targets` has no per-target id. | `IcmpConfig.targets: list[str]` has no format validation; a malformed entry is only ever caught reactively inside `run()`. |
+| TCP (`net_tcp.py`) | **No** | `asyncio.wait_for` around `asyncio.open_connection` — real asyncio, fully cancellation-safe. | Same gap: `tcp_connect_ms` computed, never exported. | `labels={"target": host, "port": str(port)}` — `port` is not on the allowed-label list at all. | `TcpTarget.port` is bounds-checked (1–65535); `host` is an unchecked string. |
+| HTTP (`net_http.py`) | **No** | aiohttp `ClientTimeout` — cancellation-safe; shared class-level session already has a working `aclose()` (S1-01). | Same gap: `http_response_ms` computed, never exported. | `labels={"target": <raw URL>, "status_code": str(status)}` — raw URL is explicitly forbidden by the contract; `status_code` isn't an allowed label name. No query/credential redaction exists (the whole URL string is currently used verbatim as the label value). | `HttpConfig.targets: list[str]` (full URLs) has no format validation. |
+| DNS (`net_dns.py`) | **No** | dnspython's asyncio resolver bounded by `lifetime=timeout_s`; not independently verified for external-cancellation behavior beyond its own lifetime bound. | Same gap: `dns_resolve_ms` computed, never exported. | `labels={"target": hostname, "record_type": rtype}` — `record_type` isn't an allowed label name. | `DnsConfig.targets`/`record_types` have no format validation. |
+| Latency (`net_latency.py`) | **No** | Sequential `sample_count` pings, each individually bounded by `icmp.timeout_s`; worst-case wall time = `sample_count × timeout_s`, which can exceed S2-01's scheduler `check_timeout_s` default (30s) under non-default config and get truncated mid-burst by the new containment logic — correct behavior, but worth deliberate default-tuning. | Same gap: `icmp_rtt_ms`/`icmp_rtt_jitter_ms`/`icmp_loss_pct` computed, never exported. | Same `target` label issue as ICMP. | Shares `IcmpConfig.targets` — same validation gap. |
+
+Every check already satisfies "`run()` never raises" (S0-01/S1-01's contract) and has solid unit coverage for its own success/failure paths — the gap is entirely in **wiring**: nothing constructs these checks in `main()`, and nothing turns a `CheckResult`'s `metrics`/`labels` into an exported OTel instrument.
+
+### Smallest implementation order (mirrors Next Sonnet Actions step 5)
+
+1. Shared bounded target/result contract: give each of `Icmp/Http/DnsConfig` a structured target type carrying an explicit, operator-assigned `target_id` (mirroring the existing `TcpTarget` pattern), replacing bare `list[str]`; add format validation. Route `net_icmp.ping`'s blocking call through `collector.utils.thread_pool.run_in_thread` instead of raw `asyncio.to_thread`.
+2. ICMP and TCP: each check creates its own bounded OTel instruments (mirroring `_HeartbeatCheck`'s existing pattern) and emits on every `run()`, using `target_id` (not raw host/IP) as the label value.
+3. DNS: same pattern; drop `record_type` as a label (not on the allowed list) or fold it into `metric_group`/`state` — pending Q-3 below.
+4. HTTP: same pattern, plus explicit redaction — only scheme+host (no path/query/credentials) may ever reach a label, and only via `target_id`, not the literal target string.
+5. Latency.
+6. Registration/config wiring in `__main__.py`: construct one instance per configured target for each enabled check type; wire `Icmp/Tcp/Http/DnsConfig.enabled` into `is_enabled()` (currently unread — see Q-4).
+7. Focused tests (matrix below).
+8. Real collector-to-storage/query integration fixture, per the work queue's integration gate.
+
+### Deterministic test matrix (per check, in addition to existing coverage)
+
+| Case | ICMP | TCP | HTTP | DNS | Latency |
+|---|---|---|---|---|---|
+| Metric emitted with canonical name/unit/labels (fake meter) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `target_id` (not raw host/URL) is the only identifying label | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Timeout path | ✓ (existing) | ✓ (existing) | ✓ (add) | ✓ (add) | ✓ (existing, partial) |
+| Malformed target rejected at config load | ✓ (add) | n/a (already bounds-checked) | ✓ (add) | ✓ (add) | shares ICMP |
+| Permission denial (`PermissionError` from raw socket) | ✓ (add — currently untested) | n/a | n/a | n/a | shares ICMP path |
+| Cancellation mid-run leaves no leaked task/thread | ✓ (add — verify `run_in_thread` pool) | ✓ (existing, via asyncio) | ✓ (existing, via aiohttp) | ✓ (add) | ✓ (add) |
+| Registration: one instance per configured target, respecting `scan_level_max` and per-type `enabled` | new `test_main.py` cases |
+
+### Open questions raised (see Q-2 through Q-5 below)
+
+Recorded instead of silently invented: canonical per-probe metric names/units/
+cardinality budgets; the bounded `target_id` design; whether `LatencyCheck`
+runs in addition to or instead of `IcmpCheck` for the same targets; and
+whether/how `Icmp/Tcp/Http/DnsConfig.enabled` should gate registration.
+
+---
+
 ## Open Questions
 
 ### Q-1 — Enroll contract: retry-on-4xx and identity echo
@@ -170,6 +239,85 @@ finishes the two reviews.
      integration owned by C1-01. S1-02 adds the narrow retry classification and
      identity/key mismatch client tests; record a blocker if this cannot be
      isolated safely.
+
+### Q-2 — Canonical per-probe metric names, units, and cardinality budgets
+- Raised/UTC/work ID: 2026-07-26T12:35:00Z / S2-02 preflight
+- Question and affected files: `docs/contracts/METRICS.md`'s "Phase 1
+  canonical families" table lists only heartbeat + scheduler run/duration/
+  cycle/export-failure/event-loop-lag metrics — no ICMP/TCP/HTTP/DNS/
+  latency data metric exists in the catalogue, and the contract states
+  "metrics outside this catalogue are not accepted" by the API slice.
+  `collector/checks/net_*.py` currently compute `icmp_rtt_ms`,
+  `icmp_loss_pct`, `tcp_connect_ms`, `http_response_ms`, `dns_resolve_ms`,
+  `icmp_rtt_jitter_ms` inside `CheckResult.metrics`, but nothing exports
+  them as OTel instruments today.
+- Evidence: `docs/contracts/METRICS.md` lines 48–65;
+  `collector/checks/net_icmp.py:134-146` etc. (metrics computed, never
+  read downstream); `collector/scheduler.py`'s `_run_one` only reads
+  `result.ok`/`.error`.
+- Smallest reversible proposal (for Codex to confirm/amend, not decided
+  unilaterally): `sentinel_collector_icmp_rtt_seconds` (histogram,
+  seconds, labels `check`+`target_id`, budget ≤32/collector — mirrors the
+  existing check-duration budget), `sentinel_collector_icmp_loss_ratio`
+  (gauge, ratio 0.0–1.0, same labels, ≤32), `sentinel_collector_tcp_connect_seconds`
+  (histogram, seconds, ≤32), `sentinel_collector_http_response_seconds`
+  (histogram, seconds, ≤32), `sentinel_collector_dns_resolve_seconds`
+  (histogram, seconds, ≤32), `sentinel_collector_icmp_rtt_jitter_seconds`
+  (histogram, seconds, ≤32) — all converted from the existing millisecond/
+  percent internal values to seconds/ratio at export time per the
+  naming rule. `http_response_ms`'s companion `status_code` becomes a
+  bounded `state` label (`"ok"`/`"error"`), not the raw status code.
+- Decision: pending
+
+### Q-3 — Bounded `target_id` design for ICMP/HTTP/DNS targets
+- Raised/UTC/work ID: 2026-07-26T12:35:00Z / S2-02 preflight
+- Question and affected files: `collector/config.py`'s `IcmpConfig.targets`/
+  `HttpConfig.targets`/`DnsConfig.targets` are plain `list[str]` (raw
+  IP/hostname/URL) with no identifier field. METRICS.md's allowed-label
+  list includes `target_id` but not raw target strings, and explicitly
+  forbids "unbounded IP/MAC/flow tuples" and "raw URL/path/query values"
+  as labels — but nothing today derives a bounded id from these lists.
+  `TcpConfig.targets` already uses a structured `TcpTarget(host, port)`
+  model, suggesting the same structured-target pattern extends naturally,
+  but adding an explicit `id` field is a config-schema decision worth
+  confirming before every target list changes shape.
+- Evidence: `collector/config.py:95-128`; `docs/contracts/METRICS.md`
+  lines 30–42.
+- Smallest reversible proposal: add an explicit, operator-assigned
+  `id: str` (validated as a DNS-label-style slug, same pattern as
+  `collector_id`/`site_id`) to structured target entries for ICMP/HTTP/DNS
+  (mirroring `TcpTarget`), and use that `id` — never the raw host/URL — as
+  the `target_id` label value.
+- Decision: pending
+
+### Q-4 — Does `LatencyCheck` run in addition to or instead of `IcmpCheck`?
+- Raised/UTC/work ID: 2026-07-26T12:35:00Z / S2-02 preflight
+- Question and affected files: `collector/checks/net_latency.py` reuses
+  `config.icmp.targets`/`config.icmp.interval_s` and wraps the same
+  `net_icmp.ping()` helper with a 5-sample burst. Registering both
+  `IcmpCheck` and `LatencyCheck` for every ICMP target would send 6 raw
+  ICMP packets per cycle per target (1 + 5); registering only
+  `LatencyCheck` would drop the lightweight single-ping check entirely.
+- Evidence: `collector/checks/net_latency.py:35-49` (`interval_s =
+  config.icmp.interval_s`, same target list, no separate `LatencyConfig`).
+- Smallest reversible proposal: none proposed — this changes probe
+  frequency/packet volume on constrained nodes and deserves an explicit
+  call rather than a guess.
+- Decision: pending
+
+### Q-5 — Should `Icmp/Tcp/Http/DnsConfig.enabled` gate registration?
+- Raised/UTC/work ID: 2026-07-26T12:35:00Z / S2-02 preflight
+- Question and affected files: each of `IcmpConfig`/`TcpConfig`/
+  `HttpConfig`/`DnsConfig` already has an `enabled: bool = True` field, but
+  `BaseCheck.is_enabled()` only compares `scan_level_max`/`scan_level` —
+  no code path reads these per-type `enabled` flags anywhere.
+- Evidence: `collector/config.py:95-128`; `collector/checks/__init__.py:69-71`.
+- Smallest reversible proposal: each concrete check class overrides
+  `is_enabled()` to additionally require its own config section's
+  `enabled` flag (e.g. `IcmpCheck.is_enabled()` returns `super().is_enabled()
+  and self.config.icmp.enabled`) — small, mirrors the existing extension
+  point tests already use (`_CountingCheck` overrides `is_enabled()`).
+- Decision: pending
 
 Use:
 
