@@ -13,6 +13,8 @@ Read sections 1–3 first (context, constraints, repository map). Then follow se
 
 **Never skip a phase.** The dependency chain is intentional: `transport/` depends on `pki/`, `checks/` depends on `transport/`, `scheduler.py` depends on `checks/`. Building out of order creates circular imports and broken mocks.
 
+**Never build the collector without the backend, or the backend without the collector.** Every phase in §4 delivers a working slice of *both* sides simultaneously. The end-to-end integration test at the close of each phase is mandatory — if metrics do not appear in VictoriaMetrics you do not move to the next phase. The SvelteKit frontend is built last, after the full collector + backend stack is verified end-to-end.
+
 **When in doubt, read the source design doc first.** Every design decision is explained in one of the docs listed in section 2. Do not invent architecture — implement what is specified.
 
 ---
@@ -169,33 +171,45 @@ deploy/collector-inventory.json    [CREATE]  Wi-Fi-aware node inventory
 
 ## 4. Implementation Order (Phases)
 
-Follow this order strictly. Each phase produces a testable unit before the next phase begins.
+Follow this order strictly. **Each phase builds collector and backend together** — never implement one side without the other. The integration test at the end of each phase is mandatory before proceeding.
 
-### Phase 1 — Project Scaffold (Week 1–2)
+The SvelteKit frontend is deferred to Phase 10, after the full collector + backend stack is verified end-to-end.
 
-**Goal:** A running asyncio loop that reads config, connects to the backend, and emits a heartbeat metric.
+---
 
-**Files to create in order:**
+### Phase 1 — Hub Skeleton + Collector Scaffold (Weeks 1–2)
 
-1. `collector/pyproject.toml` — project metadata, ruff config, mypy config, pylint config
-2. `collector/requirements.txt` — pinned deps (see §4.1)
-3. `collector/requirements-dev.txt` — dev-only: pyinstaller, pytest, mypy, ruff, pylint
-4. `collector/config.py` — `CollectorSettings` pydantic model (see §5.1 for pattern)
-5. `collector/pki/enroll.py` — HTTP POST to `/pki/enroll`; write `collector.key` and `collector.crt`
-6. `collector/transport/mtls.py` — load cert/key from PKI dir; return `grpc.ssl_channel_credentials()`
-7. `collector/transport/otlp.py` — OTLP/gRPC exporter wrapping `opentelemetry-exporter-otlp-proto-grpc`
-8. `collector/transport/retry.py` — exponential backoff queue; lmdb buffer on failure
-9. `collector/health/score.py` — `CollectorStats` model + `collector_health_score()` function
-10. `collector/scheduler.py` — `CheckTask` dataclass + `run_scheduler()` using `asyncio.TaskGroup` (see §5.8)
-11. `collector/__main__.py` — wire everything together; emit `collector_heartbeat_total` on each cycle
+**Goal:** Hub is running locally (ingest + VictoriaMetrics + PostgreSQL). Collector can connect, enroll its certificate, and emit a heartbeat metric that lands in VictoriaMetrics. Both sides are useless without the other — build them together.
 
-**Test:** `docker compose -f deploy/collector/docker-compose.yml up` on a test node should show the collector connecting to a stub backend and emitting a heartbeat metric.
+#### Hub (backend) files to create first:
 
-### Phase 2 — Core Network Probes (Week 3–4)
+1. `deploy/hub/docker-compose.dev.yml` — dev-only compose: ingest + VictoriaMetrics + PostgreSQL + stub PKI endpoint; no resource limits, no Nginx TLS yet
+2. `deploy/hub/postgres/init.sql` — schema bootstrap (collectors table, sites table, events table — see `ARCHITECTURE-V2.md`)
+3. `deploy/hub/.env.example` — documented env vars with dummy values
 
-**Goal:** Feature parity with v1 collector.
+#### Collector files to create next (in order):
 
-**Files to create in order:**
+4. `collector/pyproject.toml` — project metadata, ruff config, mypy config, pylint config
+5. `collector/requirements.txt` — pinned deps (see §4.1)
+6. `collector/requirements-dev.txt` — dev-only: pyinstaller, pytest, mypy, ruff, pylint
+7. `collector/config.py` — `CollectorSettings` pydantic model (see §5.1 for pattern)
+8. `collector/pki/enroll.py` — HTTP POST to `/pki/enroll`; write `collector.key` and `collector.crt`
+9. `collector/transport/mtls.py` — load cert/key from PKI dir; return `grpc.ssl_channel_credentials()`
+10. `collector/transport/otlp.py` — OTLP/gRPC exporter wrapping `opentelemetry-exporter-otlp-proto-grpc`
+11. `collector/transport/retry.py` — exponential backoff queue; lmdb buffer on failure
+12. `collector/health/score.py` — `CollectorStats` model + `collector_health_score()` function
+13. `collector/scheduler.py` — `CheckTask` dataclass + `run_scheduler()` using `asyncio.TaskGroup` (see §5.8)
+14. `collector/__main__.py` — wire everything together; emit `collector_heartbeat_total` on each cycle
+
+**Integration test:** `docker compose -f deploy/hub/docker-compose.dev.yml up` then `docker compose -f deploy/collector/docker-compose.yml up` on the same dev machine. Verify `collector_heartbeat_total` appears in VictoriaMetrics at `http://localhost:8428/vmui`. **Do not proceed to Phase 2 until this passes.**
+
+---
+
+### Phase 2 — Core Network Probes + Ingest Validation (Weeks 3–4)
+
+**Goal:** Feature parity with v1 collector for network probes. Backend ingest must accept and store all emitted metrics — verify each new metric in VictoriaMetrics before moving on.
+
+#### Collector files to create (in order):
 
 1. `collector/checks/__init__.py` — `BaseCheck` abstract class (see §5.2)
 2. `collector/checks/net_icmp.py` — raw ICMP echo, `CAP_NET_RAW`
@@ -204,73 +218,161 @@ Follow this order strictly. Each phase produces a testable unit before the next 
 5. `collector/checks/net_dns.py` — dnspython A/AAAA/CNAME resolve probe
 6. `collector/checks/net_latency.py` — wraps net_icmp; computes RTT histogram + jitter
 
-**Test:** `pytest collector/tests/checks/` — each check has a unit test with a mock target.
+#### Backend validation required after each check:
 
-### Phase 3 — OS Health (Week 5)
+After implementing each check, confirm the metric appears in VictoriaMetrics with correct labels (`collector_id`, `site_id`). If a metric is missing, debug the ingest pipeline before adding the next check.
 
-**Goal:** Host metrics (CPU, memory, disk, network interfaces, systemd unit state).
+**Integration test:** `pytest collector/tests/checks/` green + all 6 metrics visible in VictoriaMetrics with live data.
 
-**Files to create in order:**
+---
+
+### Phase 3 — OS Health + Hub PostgreSQL Write Path (Week 5)
+
+**Goal:** Host metrics flowing end-to-end — collector emits them, ingest writes them to both VictoriaMetrics (time series) and PostgreSQL (collector registry / last-seen table).
+
+#### Collector files to create:
 
 1. `collector/os_health/__init__.py`
 2. `collector/os_health/linux.py` — pure `/proc/` reads; zero external deps
 3. `collector/os_health/windows.py` — `psutil` + WMI; guarded behind `sys.platform == 'win32'`
 4. `collector/os_health/processes.py` — `systemctl show` (Linux) / `win32service` (Windows)
 
-**Test:** Run on a Pi; verify `host_cpu_usage_pct`, `host_mem_available_bytes`, `host_disk_free_bytes` appear in VictoriaMetrics.
+#### Backend work required in parallel:
 
-### Phase 4 — Offline Store + Retry Buffer (Week 6)
+- Ingest must write `host_cpu_usage_pct`, `host_mem_available_bytes`, `host_disk_free_bytes` to VictoriaMetrics.
+- Ingest must upsert the collector's `last_seen` timestamp in the `collectors` PostgreSQL table on every heartbeat.
 
-**Goal:** 24h of metric buffering when the backend is unreachable.
+**Integration test:** Run on a Pi. Verify all three host metrics appear in VictoriaMetrics **and** `SELECT * FROM collectors` in PostgreSQL shows the node's `last_seen` updating.
 
-**Files to create in order:**
+---
+
+### Phase 4 — Offline Store + Retry Buffer + Hub Reconnect Handling (Week 6)
+
+**Goal:** 24h of metric buffering when the backend is unreachable. Hub ingest must handle replay batches without duplicates.
+
+#### Collector files to create:
 
 1. `collector/store/__init__.py`
 2. `collector/store/hot.py` — lmdb ring buffer; last 30 min; LRU eviction by timestamp
 3. `collector/store/cold.py` — sqlite3; WAL mode; `PRAGMA journal_mode=WAL`; historical trend
 4. Update `collector/transport/retry.py` — write to `hot.py` on send failure; replay on reconnect
 
-**Test:** Disconnect the backend; generate metrics; reconnect; verify all buffered metrics appear in VictoriaMetrics.
+#### Backend work required in parallel:
 
-### Phase 5 — PKI Auto-Renew + Health Score (Week 7)
+- Ingest must deduplicate replayed OTLP batches by timestamp + collector_id (idempotent write to VictoriaMetrics is fine; PostgreSQL upsert on primary key).
+- Ingest must respond `200 OK` to a replayed batch it has already seen (not `409 Conflict`) so the collector does not retry indefinitely.
 
-**Files to create in order:**
+**Integration test:** Stop the hub; generate 10 min of metrics on the collector; restart the hub; verify all buffered metrics appear in VictoriaMetrics with no duplicates. Check PostgreSQL `last_seen` catches up correctly.
+
+---
+
+### Phase 5 — PKI Auto-Renew + Hub PKI Endpoint + Health Score (Week 7)
+
+**Goal:** Collector certificates renew automatically. Hub PKI endpoint signs renewal CSRs. Health score metric flows end-to-end.
+
+#### Collector files:
 
 1. `collector/pki/renew.py` — check `collector_cert_days_left`; POST `/pki/renew` when < 14 days
-2. Update `collector/health/score.py` — incorporate cert expiry penalty
+2. Update `collector/health/score.py` — incorporate cert expiry penalty into `collector_health_score`
 
-### Phase 6 — Wi-Fi Check (Week 8)
+#### Backend work required in parallel:
 
-**Files to create in order:**
+- Hub PKI service must implement `POST /pki/renew` — validate the existing cert, sign the new CSR, return the new cert.
+- Ingest must accept metrics signed with the newly issued cert without requiring a collector restart.
+
+**Integration test:** Set cert expiry to 10 days in test env. Verify collector auto-renews, new cert is used for subsequent OTLP sends, and `collector_cert_days_left` gauge in VictoriaMetrics resets to ~365.
+
+---
+
+### Phase 6 — Wi-Fi Check + Hub Wi-Fi Metrics (Week 8)
+
+**Goal:** Wi-Fi metrics flowing end-to-end on Wi-Fi nodes.
+
+#### Collector files:
 
 1. `collector/checks/net_wifi_linux.py` — `iw dev {iface} link` + `iw dev {iface} scan`
 2. `collector/checks/net_wifi_windows.py` — `netsh wlan show interfaces`
 
+#### Backend work required in parallel:
+
+- Ingest must accept and forward `wifi_rssi_dbm`, `wifi_link_speed_mbps`, `wifi_ap_changes_total`, `wifi_scan_aps_visible` to VictoriaMetrics.
+- Hub API must expose a `/api/v1/nodes/{collector_id}/wifi` endpoint returning current Wi-Fi state (for the future frontend).
+
 **Deployment note:** Wi-Fi nodes require `docker-compose.wifi.yml`. See `IaC-DEPLOYMENT-STRATEGY.md §5.4` for the complete configuration including `NET_ADMIN`, `WIFI_INTERFACE`, and the inventory `wifi_iface` field.
 
-### Phase 7 — Advanced Network Checks (Weeks 9–12)
+**Integration test:** On a Wi-Fi Pi, verify `wifi_rssi_dbm` appears in VictoriaMetrics with `bssid` and `ssid` labels. Verify `/api/v1/nodes/{id}/wifi` returns current RSSI.
 
-Implement in this order (each is independent after Phase 2):
+---
 
-1. `collector/checks/net_mtr.py` — TTL-exceeded tracing (Week 9)
-2. `collector/checks/net_snmp.py` — pysnmp async GET/WALK (Week 10)
-3. `collector/checks/net_arp_watch.py` — `/proc/net/arp` change detection (Week 10)
-4. `collector/checks/net_modbus.py` — pymodbus TCP passive (Week 11)
-5. `collector/checks/net_bcast.py` — scapy AsyncSniffer broadcast/multicast (Week 12)
-6. `collector/checks/net_wireguard.py` — `wg show` + parse (Week 12)
+### Phase 7 — Advanced Network Checks + Hub API Endpoints (Weeks 9–12)
 
-### Phase 8 — eBPF Flow Tracking (Weeks 13–14)
+**Goal:** Full advanced probe suite. For each check added, the hub API must expose the corresponding read endpoint so the frontend has something to query.
+
+Implement collector checks and their corresponding hub API endpoints together, in this order:
+
+| Week | Collector check | Hub API endpoint to add alongside |
+|---|---|---|
+| 9 | `net_mtr.py` — TTL-exceeded tracing | `GET /api/v1/nodes/{id}/mtr` |
+| 10 | `net_snmp.py` — pysnmp async GET/WALK | `GET /api/v1/nodes/{id}/snmp` |
+| 10 | `net_arp_watch.py` — `/proc/net/arp` change detection | `GET /api/v1/nodes/{id}/arp-changes` |
+| 11 | `net_modbus.py` — pymodbus TCP passive | `GET /api/v1/nodes/{id}/modbus` |
+| 12 | `net_bcast.py` — scapy AsyncSniffer broadcast/multicast | `GET /api/v1/nodes/{id}/broadcast-talkers` |
+| 12 | `net_wireguard.py` — `wg show` + parse | `GET /api/v1/nodes/{id}/wireguard` |
+
+**Integration test per check:** Metric visible in VictoriaMetrics **and** corresponding API endpoint returns non-empty JSON before moving to the next check.
+
+---
+
+### Phase 8 — eBPF Flow Tracking + Hub Flow Analysis (Weeks 13–14)
+
+#### Collector files:
 
 1. `collector/checks/ebpf/programs/flow_track.c` — BPF C program
 2. `collector/checks/ebpf/flow_tracker.py` — bcc Python bindings; `BPF_AVAILABLE` import guard
 
+#### Backend work required in parallel:
+
+- Analyse service must ingest `ebpf_flow_bytes_total` and feed it to the ADWIN anomaly detector (see `ARCHITECTURE-V2-EXTENDED.md §5`).
+- Hub API must expose `GET /api/v1/nodes/{id}/flows` with top-N flow aggregation by byte count.
+
 **Note:** `bcc` is NOT installed via pip. It is installed on the host via `apt install python3-bpfcc`. The import guard handles absence gracefully — the collector continues without eBPF if bcc is unavailable.
 
-### Phase 9 — PyInstaller Build + Docker Image (Week 14)
+**Integration test:** On a node with bcc installed, verify `ebpf_flow_bytes_total` appears in VictoriaMetrics with `src_ip`, `dst_ip`, `proto`, `port` labels, and `/api/v1/nodes/{id}/flows` returns the top-N aggregation.
+
+---
+
+### Phase 9 — PyInstaller Build + Docker Images + Full Stack CI (Week 14)
+
+**Goal:** Both collector and hub images build and pass integration tests in CI.
+
+#### Collector files:
 
 1. `collector/Dockerfile` — multi-stage; installs `iw`, `iproute2`, `iputils-ping`; see §5.5
 2. Update `collector/pyproject.toml` with PyInstaller build spec
-3. Verify `build-images.yml` workflow builds and pushes to GHCR
+
+#### Backend / CI work in parallel:
+
+- Verify `build-images.yml` workflow builds **both** collector and hub images and pushes to GHCR.
+- Add a `integration-test.yml` workflow that spins up `docker-compose.dev.yml` (hub) + collector, runs a 2-minute smoke test, and asserts `collector_heartbeat_total > 0` in VictoriaMetrics.
+
+**Integration test:** Full CI green on a PR that touches both `collector/**` and `deploy/hub/**`.
+
+---
+
+### Phase 10 — SvelteKit Frontend (Weeks 15–16)
+
+**Goal:** A minimal but functional read-only dashboard over the hub API. Build this only after Phase 9 is complete and the full stack is verified end-to-end.
+
+The frontend is served as a static SvelteKit bundle by Nginx (see `IaC-DEPLOYMENT-STRATEGY.md §4`). It queries the hub API over HTTPS — it has no direct access to VictoriaMetrics or PostgreSQL.
+
+**Minimum viable pages:**
+
+1. `/` — Fleet overview: table of all collectors, last-seen, health score, site
+2. `/nodes/{id}` — Node detail: current check results, Wi-Fi state, OS health gauges
+3. `/nodes/{id}/flows` — eBPF top-N flow table (if collector supports eBPF)
+4. `/alerts` — Active anomaly alerts from the analyse service
+
+**Integration test:** Static bundle served by Nginx (`deploy/hub/nginx/nginx.conf`). All four pages load without errors. API calls use the correct JWT auth headers (RBAC — see `ARCHITECTURE-V2-EXTENDED.md §10.4`).
 
 ---
 
@@ -884,158 +986,4 @@ pylint collector tests  → run from collector/ directory
 These are hard limits from `COLLECTOR-V2-REFACTOR.md §2.2`. Every implementation decision must respect them.
 
 | NFR | Limit | Impact on implementation |
-|---|---|---|
-| Memory footprint | ≤ 80 MB RSS on Raspberry Pi 3B | No in-memory caching of raw packet data. Scapy top-talker window = 30s max. lmdb buffer size capped at 200 MB. |
-| CPU usage | ≤ 5% average on Pi 3B | All checks must be async. No blocking I/O. eBPF is kernel-side (no CPU cost in Python). scapy sniffer uses kernel BPF filter to drop non-matching packets before Python sees them. |
-| Binary size | ≤ 25 MB PyInstaller bundle | Do not add heavy dependencies (NumPy, pandas) to the collector. ML is hub-side only. |
-| Check cycle | ≤ 30s wall-clock for full scan level 2 | All checks run concurrently via asyncio.TaskGroup. No sequential scan loop. |
-| Local buffer | ≤ 200 MB lmdb | Implement LRU eviction in `store/hot.py` when the 200 MB limit is approached. |
-| Zero external runtime deps | PyInstaller bundle must be self-contained | All dependencies in `requirements.txt` must be pip-installable and PyInstaller-bundlable. Exception: `bcc` (apt only). |
-
----
-
-## 9. Capability Reference — What Each Linux Capability Enables
-
-| Capability | Granted by | Used for | What fails without it |
-|---|---|---|---|
-| `NET_RAW` | base compose | Raw ICMP sockets (`net_icmp.py`, `net_mtr.py`); AF_PACKET (`net_bcast.py` via scapy) | ICMP probe returns `Operation not permitted` |
-| `NET_ADMIN` | wifi compose override only | `iw dev scan` nl80211; `iw station dump`; monitor mode setup | `iw scan` returns `Operation not permitted` |
-| `BPF` | base compose | Loading eBPF programs via `bcc` (`flow_tracker.py`) | `BPF()` constructor fails with `EPERM` |
-| `PERFMON` | base compose | eBPF perf event maps for flow byte counts | eBPF program attaches but perf map read fails |
-| `SYS_PTRACE` | base compose | `/proc/<pid>/` reads for process metrics | `open("/proc/1234/status")` returns `EPERM` |
-
-**Rule for adding new capabilities:** Open a PR with an explanation of exactly which syscall/operation requires the capability, which check module uses it, and why it cannot be achieved another way. Do not add capabilities speculatively.
-
----
-
-## 10. Common Mistakes and How to Avoid Them
-
-| Mistake | Why it is wrong | What to do instead |
-|---|---|---|
-| Using `time.sleep()` in a check | Blocks the asyncio event loop; all other checks freeze for that duration | `await asyncio.sleep(n)` |
-| Raising exceptions from `run()` | The scheduler calls `run()` without try/except; one bad check crashes the scheduler task | Catch all exceptions in `run()`, return `CheckResult(ok=False, error=...)` |
-| Using `asyncio.gather()` or bare `create_task()` in the scheduler | Exceptions are silently swallowed unless you inspect each return value manually | Use `asyncio.TaskGroup` (§5.8) — unhandled exceptions surface immediately as ExceptionGroup |
-| Accessing `os.environ` directly | Bypasses pydantic validation and default handling; breaks test mocking | Always use `CollectorSettings` |
-| Adding `NET_ADMIN` to `docker-compose.yml` (base) | All wired-only nodes get unnecessary kernel privilege | Add only to `docker-compose.wifi.yml` |
-| Installing `bcc` via pip in `requirements.txt` | `bcc` is kernel-version-matched; pip installs a generic wheel that may not match the running kernel's headers | Install via `apt install python3-bpfcc` on the node; use import guard in code |
-| Using `subprocess.run()` or `subprocess.Popen()` | Blocks the event loop | `await asyncio.create_subprocess_exec()` |
-| Hardcoding `wlan0` in `net_wifi_linux.py` | Interface name varies per node | Read from `config.wifi.interface` |
-| NumPy/pandas import in the collector | Adds 30–60 MB to the PyInstaller bundle; pushes memory over 80 MB on Pi 3B | ML is hub-side only. Collector does arithmetic in stdlib or simple list operations. |
-| Committing `.env` with real credentials | Exposes secrets in Git history | `.env` is in `.gitignore`. Only `.env.example` (with dummy values) is committed. |
-| Deleting or stubbing out a failing test | Hides real bugs; CI green does not mean working | Fix the code or fix the test to match corrected behaviour |
-| Using `git ls-files '*.py'` in pylint from a subdirectory | `git ls-files` returns repo-root-relative paths; running from a subdirectory makes them unresolvable | Run `pylint collector tests` directly from the package directory |
-
----
-
-## 11. Quick Reference — Metrics Emitted
-
-Full metric list is in `COLLECTOR-V2-REFACTOR.md §10`. This is the subset most likely to be asked about during implementation:
-
-```
-# Wi-Fi (net_wifi_linux.py)
-wifi_rssi_dbm{collector_id, site_id, interface, bssid, ssid}   gauge
-wifi_link_speed_mbps{collector_id, site_id, interface}         gauge
-wifi_channel{collector_id, site_id, interface, bssid}          gauge
-wifi_ap_changes_total{collector_id, site_id, interface}        counter
-wifi_scan_aps_visible{collector_id, site_id, interface}        gauge
-
-# eBPF (flow_tracker.py)
-ebpf_flow_bytes_total{collector_id, site_id, src_ip, dst_ip, proto, port}  counter
-
-# Self-monitoring
-collector_heartbeat_total{collector_id, site_id}               counter
-collector_cert_days_left{collector_id, site_id}                gauge
-collector_health_score{collector_id, site_id}                  gauge — 0.0 to 1.0
-```
-
----
-
-## 12. Cross-Reference Index
-
-| Topic | Primary doc | Section |
-|---|---|---|
-| Wi-Fi Docker Compose (NET_ADMIN, docker-compose.wifi.yml) | `IaC-DEPLOYMENT-STRATEGY.md` | §5.4 |
-| Wi-Fi check implementation (iw commands) | `COLLECTOR-V2-REFACTOR.md` | §6.2 (C4 notes) |
-| Full collector config schema | `COLLECTOR-V2-REFACTOR.md` | §9 |
-| Full metrics list | `COLLECTOR-V2-REFACTOR.md` | §10 |
-| PyInstaller build + ARM64 cross-compile | `COLLECTOR-V2-REFACTOR.md` | §11 |
-| CI pipeline (pytest + mypy + ruff + pylint) | `COLLECTOR-V2-REFACTOR.md` | §12 |
-| Phased implementation plan with weeks | `COLLECTOR-V2-REFACTOR.md` | §13 |
-| Hub Docker Compose (full hub stack) | `IaC-DEPLOYMENT-STRATEGY.md` | §4 |
-| Collector bootstrap script | `IaC-DEPLOYMENT-STRATEGY.md` | §5.1 |
-| GitHub Actions workflows | `IaC-DEPLOYMENT-STRATEGY.md` | §6 |
-| Hub secrets (file-based, never env vars) | `IaC-DEPLOYMENT-STRATEGY.md` | §8 |
-| Fleet health monitoring + vmalert rules | `COLLECTOR-FLEET-MONITORING.md` | All |
-| Multi-site federation architecture | `ARCHITECTURE-V2-EXTENDED.md` | §2 |
-| Federated ML (FedAvg, cold-start) | `ARCHITECTURE-V2-EXTENDED.md` | §5 |
-| OT-specific alerting rules (IEC 62443) | `ARCHITECTURE-V2-EXTENDED.md` | §7.3 |
-| RBAC roles (viewer/operator/analyst) | `ARCHITECTURE-V2-EXTENDED.md` | §10.4 |
-| bcc not in requirements.txt (why) | `COLLECTOR-V2-REFACTOR.md` | §8 |
-| Linux capabilities table | This document | §9 |
-| NFR limits (memory, CPU, binary size) | This document | §8 |
-| asyncio.TaskGroup scheduler pattern | This document | §5.8 |
-| asyncio optimization (blocking detection, watchdog, uvloop, semaphore, timeouts, thread pool) | `docs/guides/ASYNCIO-OPTIMIZATION.md` | All |
-
----
-
-## 13. CI & Dependabot Configuration (Current State)
-
-> **Keep this section up to date whenever a workflow or dependabot config is changed.**
-
-### 13.1 Active Workflows
-
-| File | Triggers | What it runs | Must pass? |
-|---|---|---|---|
-| `collector.yml` | push/PR on `collector/**` | `ruff check .` → `mypy .` → `pytest -q` | Yes — blocks merge |
-| `pylint.yml` | push/PR on `collector/**` | `pylint collector tests` (from `collector/` dir) | Yes — blocks merge |
-| `codeql.yml` | push/PR on `main`, weekly Sunday | CodeQL Python + Actions scan | No — `continue-on-error: true` (GHAS not enabled) |
-| `dependabot-auto-merge.yml` | PR by `dependabot[bot]` | Auto-merge patch/minor; label major with `major-update` + `needs-review` | N/A |
-
-### 13.2 Pylint Configuration
-
-Pylint is configured in `collector/pyproject.toml` under `[tool.pylint.*]`. Key decisions:
-
-| Setting | Value | Reason |
-|---|---|---|
-| `max-line-length` | 100 | Matches ruff `line-length` |
-| `max-args` | 8 | Checks may need up to 8 constructor args |
-| `missing-*-docstring` | disabled | Enforced gradually as the codebase matures |
-| `too-few-public-methods` | disabled | Pydantic models / dataclasses always trigger this |
-| `import-error` | disabled | Optional runtime deps (bcc, scapy) are guarded by try/except; pylint can't resolve them |
-| `fixme` | disabled | TODO/FIXME comments are intentional during active development |
-
-**Workflow fix note:** The original `pylint.yml` used `pylint $(git ls-files '*.py')` from
-`working-directory: collector`. Because `git ls-files` returns repo-root-relative paths, running
-it from a subdirectory caused `FileNotFoundError` for every file outside `collector/`. Fixed to
-`pylint collector tests` which resolves correctly relative to the working directory.
-
-### 13.3 Dependabot Config (`.github/dependabot.yml`)
-
-Two ecosystems are monitored:
-
-| Ecosystem | Directory | Schedule | Groups | Major bumps |
-|---|---|---|---|---|
-| `pip` | `/collector` | Weekly Monday 06:00 CET | `pip-patch-minor`, `pip-security` | Ignored — left for manual review |
-| `github-actions` | `/` | Weekly Monday 06:00 CET | `actions-all`, `actions-security` | Allowed (v3→v4→v5 is routine) |
-
-**Removed entries (stale, directories don't exist on main):**
-- `gomod /collector` — no Go code in collector; Go is hub-side only
-- `pip /monitor`, `pip /dashboard`, `pip /tests` — v1 stack frozen on `release/v1.0`
-
-### 13.4 Dependency Pinning Rules
-
-- All runtime deps in `collector/requirements.txt` are **exact pins** (`==`). No ranges.
-- All dev deps in `collector/requirements-dev.txt` are **exact pins** (`==`).
-- `pylint` is in `requirements-dev.txt` so both `collector.yml` and `pylint.yml` share one cached install.
-- When bumping `pytest` to a new major version, check `pytest-asyncio` compatibility first.
-  - `pytest-asyncio < 1.3.0` has a hard `pytest<9` upper bound.
-  - `pytest 9.x` requires `pytest-asyncio >= 1.3.0`.
-- OTLP stack must be bumped together: `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-grpc`, `grpcio`, `grpcio-status` must all be compatible (verify with `pip check` after any bump).
-
-### 13.5 Known Compatibility Constraints
-
-| Constraint | Detail |
-|---|---|
-| `opentelemetry-sdk==1.25.0` + `grpcio-status==1.64.1` | **UNSATISFIABLE** — proto<5 vs proto>=5.26.1 conflict. Use `opentelemetry-sdk==1.44.0` + `grpcio==1.83.0`. |
-| `pytest-asyncio < 1.3.0` | Hard `pytest<9` upper bound. For pytest 9.x, pin `pytest-asyncio>=1.3.0`. |
-| `bcc` | NOT in `requirements.txt`. Install via `apt install python3-bpfcc`. Kernel-version-matched. |
+|---
