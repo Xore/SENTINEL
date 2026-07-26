@@ -3,9 +3,9 @@
 Captured 2026-07-24 from a live Auvik Network Management trial
 (`xore.eu2.my.auvik.com`, site "Xore Headquarters") plus Auvik's public
 documentation. This is a **reference of what Auvik does**, used to shape our own
-probe's network-map and monitoring roadmap (see
+collector's network-map and monitoring roadmap (see
 [07-network-map-and-monitoring-roadmap.md](07-network-map-and-monitoring-roadmap.md)).
-It is descriptive, not a spec to copy 1:1 — our probe stays passive-first,
+It is descriptive, not a spec to copy 1:1 — our collector stays passive-first,
 read-only and safety-gated (see [01-design-and-safety.md](01-design-and-safety.md)).
 
 ## The product in one line
@@ -88,22 +88,24 @@ firewall (red circle, flame/shield icon)
 A combination of **SNMP, CDP, LLDP, FDP, ARP tables, MAC forwarding tables, VLAN
 data, and routing tables**, plus CLI `show` commands.
 
-## What maps cleanly onto our probe
+## What maps onto our v2 collector
 
-We already collect most of the raw signals Auvik uses — the gap is **assembly +
-device classification + a good renderer**, not new data collection:
+The v2 collector already produces or will produce most of the raw signals Auvik
+uses. The gap is **assembly + device classification + a hub-side renderer**,
+not new data collection:
 
-| Auvik input | Our existing source |
+| Auvik input | v2 collector source |
 |---|---|
-| LLDP/CDP neighbours | `lldpd` + `/api/lldp`, `history.get_lldp_state()` |
-| Routing tables / hops | traceroute → `/api/monitor/topology`, `/api/monitor/routes` |
-| ARP / discovered hosts | nmap/ARP discovery → `/api/hosts`, `history.get_hosts()` |
-| Wi-Fi APs | AP monitor → `/api/wifi/ap-monitor` |
-| Interfaces / IPs / speeds | `/api/status` interfaces |
-| Services per host | services catalog + scans |
-| SNMP identity | `/api/snmp` |
-| Per-device status (up/down/loss) | outage monitor `ping_samples` |
-| Collector/node model | our multi-collector plan (task #36) mirrors Auvik collectors |
+| SNMP identity / interface table | `checks/net_snmp.py` — `snmp_sysuptime_seconds`, `snmp_if_oper_status{ifindex}` |
+| ARP / discovered hosts | `checks/net_arp_watch.py` — `arp_table_size`, `arp_new_entry_total` |
+| Wi-Fi APs / RSSI | `checks/net_wifi_linux.py` — `wifi_rssi_dbm`, `wifi_ap_changes_total` |
+| Per-device reachability (up/down/loss) | `checks/net_icmp.py` — `icmp_rtt_ms`, `icmp_loss_pct` |
+| Routing hops / path quality | `checks/net_mtr.py` — `mtr_hop_rtt_ms{hop,hop_ip}`, `mtr_hop_loss_pct` |
+| TCP service reachability | `checks/net_tcp.py` — `tcp_connect_ms`, `tcp_connect_ok` |
+| HTTP service health | `checks/net_http.py` — `http_response_ms`, `http_status_code` |
+| Top broadcast/multicast talkers | `checks/net_bcast.py` (Phase C11) — `bcast_top_talker_pkts_total` |
+| Host CPU/mem/disk | `os_health/linux.py` — `host_cpu_usage_pct`, `host_mem_available_bytes` |
+| Collector node model | `collector_id` + `site_id` labels on all metrics; hub enrolment API |
 
-Deliberately **out of scope for us**: credential sweeps, WMI/vendor-API logins,
+Deliberately **out of scope**: credential sweeps, WMI/vendor-API logins,
 config push, agentized command-runner on endpoints, automatic subnet expansion.
