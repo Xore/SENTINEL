@@ -1,62 +1,196 @@
-# Operations runbook
+# Operations runbook — v2 Collector
 
-## Start of session
+Day-to-day tasks for running the v2 collector in production.
 
-1. Confirm authorization/change window and probe clock.
-2. Confirm management and capture cables by MAC/interface name.
-3. Run `sudo ./scripts/probe-health.sh <capture-interface>`.
-4. Start the bounded PCAPNG capture and any selected services (`ntopng`, Zeek, optional Suricata).
-5. Validate current hosts/flows in ntopng and protocol traffic using the supplied TShark report or Wireshark filters.
-6. Record packet-drop counters and disk free space.
+---
 
-## Passive network-health review
-
-- Capture loss: NIC drops, kernel capture drops, SPAN oversubscription
-- Availability: repeated SYNs without replies, resets, connection-state changes
-- Name/addressing: DNS failures, duplicate or unexpected DHCP behavior, new MAC/IP mappings
-- Timing: NTP participants, clock inconsistencies, latency trends where timestamps allow
-- Capacity: top talkers, sudden traffic-volume changes, broadcast/multicast growth
-- Security: Suricata alerts, Zeek notices/weird events, new services/software, TLS/certificate anomalies
-- OT: new engineering-to-controller pairs, S7 upload/download/programming activity, OPC UA security policies and unexpected browsing/write patterns, cross-zone traffic
-
-Baseline normal behavior for at least one representative production cycle. Alerts without a site-specific asset inventory and baseline will be noisy.
-
-## Approved reachability check
-
-Create the local target list and review it with the asset owner:
+## Service management
 
 ```bash
-cp config/targets.example.csv config/targets.csv
-sudo ./scripts/ot-reachability.sh config/targets.csv
+# Status
+systemctl status analyselaptop-collector
+
+# Live logs (structured JSON)
+journalctl -u analyselaptop-collector -f
+
+# Restart (e.g. after config change)
+systemctl restart analyselaptop-collector
+
+# Reload config without restart (SIGHUP hot-reload)
+systemctl kill -s HUP analyselaptop-collector
+
+# Stop / disable
+systemctl stop analyselaptop-collector
+systemctl disable analyselaptop-collector
 ```
 
-The script performs one low-timeout TCP connection per listed target and does not identify versions, authenticate, browse nodes, read PLC state, or write anything. Interpret `open` as TCP listener reachable—not as application healthy.
+---
 
-## Check scheduling and OT gentleness
+## Config changes
 
-The outage monitor paces its active service/port checks through a guarded
-scheduler (`monitor/scheduler.py`), not a fixed sweep. Each check runs on a
-jittered interval, backs off geometrically while it keeps failing (up to a
-ceiling) and recovers to the base cadence on the next success, and is never
-re-run sooner than a cooldown floor. Checks are split into two queues with
-independent pacing and concurrency: **IT** (brisk) and **OT** (deliberately
-low-rate, low-concurrency). A check lands in the OT queue when it carries an
-explicit `queue: ot`, or when its group/name looks operational-technology
-(`plc`, `profinet`, `s7`, `opcua`, `modbus`, `scada`, `hmi`, ...) — so PLC and
-OPC UA endpoints are probed gently by default.
+1. Edit `/etc/analyselaptop/collector.yaml`.
+2. Validate the YAML is syntactically correct:
+   ```bash
+   python3 -c "import yaml; yaml.safe_load(open('/etc/analyselaptop/collector.yaml'))"
+   ```
+3. Hot-reload (preferred — no downtime):
+   ```bash
+   systemctl kill -s HUP analyselaptop-collector
+   ```
+4. If the change affects the transport or PKI config, a full restart is safer:
+   ```bash
+   systemctl restart analyselaptop-collector
+   ```
 
-## Broadcast-storm assessment
+---
 
-Use the passive PCAP summary first. It reports total frame rate, broadcast/multicast rates, top Ethernet sources, and common discovery/control protocols. There is no universal storm threshold: compare against link capacity, switch telemetry, the site's baseline, and endpoint sensitivity. See [`../theory/ot/segment-health-arp-dhcp-theory.md`](../theory/ot/segment-health-arp-dhcp-theory.md) for the full academic detection model.
+## PKI certificate management
 
-## Incident handling
+The collector auto-renews its mTLS certificate when fewer than 14 days remain.
+To check the current cert expiry:
 
-Preserve relevant PCAP and exported events, record UTC time and filters, hash exported files (`sha256sum`), and work on copies. Do not retaliate or reconfigure production from the sensor. Escalate through the site's incident and safety process.
+```bash
+openssl x509 -in /var/lib/analyselaptop/pki/collector.crt -noout -enddate
+```
 
-## Maintenance
+To force a manual re-enrolment (e.g. after a hub PKI rotation):
 
-- Daily/session: disk, drops, service health, clock, current alerts
-- Weekly: review new assets/services and false positives
-- Monthly: OS and probe/application updates in a change window; test restore and certificate expiry
-- Quarterly: validate SPAN scope, access list, retention, alert routing, and incident drill
-- Before upgrades: read release notes, back up configuration, export critical data, and record current image digests
+```bash
+systemctl stop analyselaptop-collector
+rm /var/lib/analyselaptop/pki/collector.{key,crt}
+./analyselaptop-collector enroll \
+  --hub https://<hub-ip>:4317 \
+  --enroll-token <new-token>
+systemctl start analyselaptop-collector
+```
+
+---
+
+## Binary updates
+
+```bash
+# Download new binary
+curl -L -o /tmp/analyselaptop-collector-new \
+  https://github.com/Xore/analyseLaptop/releases/latest/download/analyselaptop-collector-linux-amd64
+chmod +x /tmp/analyselaptop-collector-new
+
+# Verify it starts cleanly
+/tmp/analyselaptop-collector-new --version
+
+# Swap binary and restart
+systemctl stop analyselaptop-collector
+cp /tmp/analyselaptop-collector-new /usr/local/bin/analyselaptop-collector
+# Re-grant capabilities after binary swap
+sudo setcap cap_net_raw+ep /usr/local/bin/analyselaptop-collector
+systemctl start analyselaptop-collector
+systemctl status analyselaptop-collector
+```
+
+> **Note:** `setcap` must be re-run after every binary swap because the capability
+> is stored on the inode, not in the config.
+
+---
+
+## Checking collector health
+
+### From the hub API
+
+```bash
+# List all registered collectors and their health scores
+curl -s http://<hub-ip>:8080/api/collectors | jq '.[]'
+
+# Check a specific collector
+curl -s http://<hub-ip>:8080/api/collectors | \
+  jq '.[] | select(.id=="pi-bedroom")'
+```
+
+### From the collector node itself
+
+```bash
+# Recent log lines (look for ERROR or WARNING level)
+journalctl -u analyselaptop-collector --since "1 hour ago" | grep -E 'ERROR|WARNING'
+
+# Local store disk usage
+du -sh /var/lib/analyselaptop/data/
+
+# Cert expiry
+openssl x509 -in /var/lib/analyselaptop/pki/collector.crt -noout -enddate
+```
+
+### Key log fields to watch
+
+| Field | Value to investigate |
+|---|---|
+| `level` | `error` or `warning` |
+| `event` | `cycle_overrun` — check cycle took longer than `scan_level_max` allows |
+| `event` | `backend_unreachable` — collector buffering locally; check hub and network |
+| `event` | `cert_expiry_soon` — auto-renew triggered; watch for `cert_renewed` |
+| `event` | `ebpf_unavailable` — `bcc` import failed; eBPF checks skipped |
+| `event` | `cap_net_raw_missing` — ICMP/MTR/bcast checks skipped; re-grant `setcap` |
+
+---
+
+## Local buffer management
+
+The collector stores up to 24 h of metrics locally when the hub is unreachable
+(`lmdb` hot buffer + `sqlite3` cold store in `data_dir`).
+
+```bash
+# Check hot buffer size (lmdb)
+du -sh /var/lib/analyselaptop/data/hot.lmdb/
+
+# Check cold store size (sqlite3)
+du -sh /var/lib/analyselaptop/data/cold.db
+
+# If the hub has been unreachable for >24 h, the oldest samples are discarded.
+# No manual action needed — the ring buffer self-manages.
+```
+
+If disk space is critically low:
+```bash
+systemctl stop analyselaptop-collector
+rm -rf /var/lib/analyselaptop/data/hot.lmdb
+rm -f /var/lib/analyselaptop/data/cold.db
+systemctl start analyselaptop-collector
+# Note: all buffered history is lost; hub will see a gap
+```
+
+---
+
+## Adding or removing check targets
+
+1. Edit `collector.yaml` — add/remove entries under the relevant check section
+   (e.g. `mtr.targets`, `snmp.targets`, `tcp.targets`).
+2. Hot-reload: `systemctl kill -s HUP analyselaptop-collector`.
+3. Verify the new target appears in hub metrics within one cycle (~30 s).
+
+---
+
+## Disabling a check type temporarily
+
+```yaml
+# In collector.yaml — disable bcast/mcast capture
+bcast_mcast:
+  enabled: false
+
+# Disable eBPF flow tracking
+ebpf:
+  enabled: false
+```
+
+Hot-reload after any change: `systemctl kill -s HUP analyselaptop-collector`.
+
+---
+
+## Routine maintenance checklist
+
+| Frequency | Task |
+|---|---|
+| Daily | Check `collector_health_score` on hub — should be >0.8 |
+| Daily | Check `collector_cert_days_left` — alert if <14 |
+| Weekly | Review `ERROR`/`WARNING` log lines |
+| Weekly | Check local buffer disk usage |
+| Monthly | Verify binary version matches latest release |
+| Monthly | Review `collector.yaml` — remove stale targets, confirm scan levels |
+| On binary update | Re-run `setcap` after binary swap |
+| On PKI rotation | Force re-enrolment as above |
