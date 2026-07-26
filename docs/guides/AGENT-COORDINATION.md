@@ -26,16 +26,52 @@ Allowed statuses:
 
 Rules:
 
-1. Read the whole ledger before touching code.
-2. Claim exact files or narrow directories before editing.
-3. Never edit a file currently claimed by the other agent.
-4. Add architectural questions to the Questions section; do not make silent,
+1. Start every session with `git status`, `git fetch origin`, and a comparison of
+   local `HEAD` to `origin/main`.
+2. If the working tree is clean, run `git pull --ff-only origin main` before
+   reading this ledger. If it is not clean, do not pull over local work: finish
+   and push the owned change, or record/report the overlap.
+3. Read the whole ledger from the newly pulled commit before touching code.
+4. Claim exact files or narrow directories before editing.
+5. A claim is not active until the ledger change is committed and pushed to
+   `origin/main`. Re-read the pushed file from `origin/main` to confirm it.
+6. Never edit a file currently claimed by the other agent.
+7. Add architectural questions to the Questions section; do not make silent,
    system-wide decisions.
-5. Sonnet 5 moves completed work to `REVIEW`. Only Codex moves it to `DONE`.
-6. A dependent item cannot start until its prerequisite is `DONE`.
-7. Record test commands and actual outcomes, not “tests should pass.”
-8. Use UTC timestamps in ISO 8601 form.
-9. Preserve unrelated user changes and report dirty-worktree overlap.
+8. Sonnet 5 moves completed work to `REVIEW`. Only Codex moves it to `DONE`.
+9. A dependent item cannot start until its prerequisite is `DONE`.
+10. Record test commands and actual outcomes, not “tests should pass.”
+11. Use UTC timestamps in ISO 8601 form.
+12. Preserve unrelated user changes and report dirty-worktree overlap.
+13. Every information exchange is a Git transaction. Claims, questions,
+    decisions, handoffs, review results, and status changes must each be committed
+    and pushed promptly; do not leave coordination state only in a local tree.
+14. Before acting on information from the other agent, fetch/pull, read the
+    committed ledger entry, and inspect the referenced commit/diff.
+15. After pushing, run `git fetch origin` and verify local `HEAD` equals
+    `origin/main`. If a push is rejected, pull with `--ff-only` when possible,
+    resolve only owned-file conflicts, re-read the ledger, then retry.
+
+### Required synchronization sequence
+
+Use this sequence for a clean working tree:
+
+```bash
+git fetch origin
+git pull --ff-only origin main
+# read this ledger and the referenced commits
+# update claim/question/handoff/status
+git add <only-owned-files>
+git commit -m "<scoped message>"
+git push origin main
+git fetch origin
+git rev-parse HEAD
+git rev-parse origin/main
+git show origin/main:docs/guides/AGENT-COORDINATION.md
+```
+
+The two revisions must match. The final `git show` is the required read-back of
+the shared information as stored on the remote branch.
 
 ---
 
@@ -43,7 +79,7 @@ Rules:
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| C0-01 | 0 | Repository audit and requirements traceability matrix | CODEX | READY | None | `docs/architecture/`, traceability document |
+| C0-01 | 0 | Repository audit and requirements traceability matrix | CODEX | IN_PROGRESS | None | `docs/architecture/`, traceability document |
 | C0-02 | 0 | ADRs and canonical cross-service contracts | CODEX | READY | C0-01 | `docs/architecture/decisions/`, contract specs |
 | S0-01 | 0 | Run current collector quality suite and report implementation inventory | SONNET5 | READY | None | No source edits; append results here |
 | S1-01 | 1 | Collector heartbeat vertical slice | SONNET5 | BLOCKED | C0-02 | To be assigned after contracts |
@@ -61,7 +97,7 @@ claims may remain with status `RELEASED`.
 
 | Timestamp (UTC) | Agent | Work ID | Files/directories | Claim status |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| 2026-07-26T09:11:04Z | CODEX | C0-01 | `docs/architecture/REQUIREMENTS-TRACEABILITY.md`, `docs/guides/AGENT-COORDINATION.md` | ACTIVE |
 
 ---
 
@@ -108,8 +144,11 @@ Use this template:
 > `docs/guides/SONNET-5-IMPLEMENTATION-GUIDE.md` and
 > `docs/guides/AGENT-COORDINATION.md` completely. Your first assignment is
 > `S0-01`: inspect the repository and run the current collector quality suite.
-> Do not edit source files. Add a file claim indicating “no source edits,” set
-> `S0-01` to `IN_PROGRESS`, then append a handoff with the exact inventory and
-> command results. Set `S0-01` to `REVIEW` when finished. Do not start `S1-01`;
-> Codex owns the architecture/contracts prerequisite and will assign its file
-> scope after review.
+> Start by fetching and fast-forward pulling `origin/main`. Do not edit source
+> files. Add a file claim indicating “no source edits,” set `S0-01` to
+> `IN_PROGRESS`, commit and push that claim, then fetch and read the ledger back
+> from `origin/main` before running the audit. Append a handoff with the exact
+> inventory and command results, set `S0-01` to `REVIEW`, commit and push the
+> handoff, and verify `HEAD == origin/main`. Do not start `S1-01`; Codex owns the
+> architecture/contracts prerequisite and will assign its file scope after
+> reviewing the pushed handoff.

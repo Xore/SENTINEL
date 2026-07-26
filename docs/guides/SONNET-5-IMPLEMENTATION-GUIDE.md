@@ -91,20 +91,24 @@ Use this loop for every phase.
 
 ### 3.1 Before coding
 
-1. Read `docs/guides/AGENT-COORDINATION.md` completely.
-2. Do not start work marked `OWNER: CODEX`, `STATUS: BLOCKED`, or `STATUS: REVIEW`.
-3. Inspect `git status`, repository files, tests, workflows, and current dependency pins.
-4. Read the full source sections referenced by the phase.
-5. Write a short phase plan listing:
+1. Fetch `origin` and fast-forward pull `main` if the working tree is clean.
+2. Read `docs/guides/AGENT-COORDINATION.md` from the updated commit completely.
+3. Do not start work marked `OWNER: CODEX`, `STATUS: BLOCKED`, or `STATUS: REVIEW`.
+4. Inspect `git status`, repository files, tests, workflows, and current dependency pins.
+5. Read the full source sections referenced by the phase.
+6. Write a short phase plan listing:
    - files to create or change;
    - data contracts;
    - migrations;
    - security and OT-safety implications;
    - unit, integration, failure-path, and resource tests;
    - exact exit command(s).
-6. Search for an existing implementation before creating a new module.
-7. Confirm that every intended file is inside Sonnet's assigned write scope in the coordination ledger.
-8. Update stale documentation only when the actual decision has changed.
+7. Search for an existing implementation before creating a new module.
+8. Confirm that every intended file is inside Sonnet's assigned write scope in the coordination ledger.
+9. Commit and push the claim, then fetch and read the ledger back from
+   `origin/main`. Do not edit implementation files until the pushed claim is
+   visible remotely.
+10. Update stale documentation only when the actual decision has changed.
 
 ### 3.2 While coding
 
@@ -141,6 +145,10 @@ At the start and end of every work session, Sonnet 5 must update
    commit SHA if a commit was created;
 5. set the item to `REVIEW`, never directly to `DONE`;
 6. wait for Codex phase-gate review before beginning a dependent phase.
+7. commit and push each claim, question, handoff, and status transition;
+8. after every push, fetch and verify `HEAD` equals `origin/main`;
+9. read the committed ledger back from `origin/main`;
+10. pull again before reviewing or acting on a message from Codex.
 
 The coordination file is a control plane, not a chat transcript. Keep entries
 short, factual, timestamped in UTC, and append-only except for status fields.
