@@ -77,12 +77,11 @@ jobs:
             "${RUNNER_TEMP}/sentinel-dev-ca.crt"
 
       - name: Enroll collector and assert stored heartbeat
-        working-directory: collector
         shell: bash
         env:
           SSL_CERT_FILE: ${{ runner.temp }}/sentinel-dev-ca.crt
           BACKEND__PKI_DIR: ${{ runner.temp }}/dev-node-1-pki
-          PYTHONPATH: ${{ github.workspace }}/collector
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           set -euo pipefail
           collector_log="${RUNNER_TEMP}/collector.log"
