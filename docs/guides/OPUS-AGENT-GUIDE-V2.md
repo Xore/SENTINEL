@@ -974,6 +974,7 @@ collector_health_score{collector_id, site_id}                  gauge — 0.0 to 
 | Linux capabilities table | This document | §9 |
 | NFR limits (memory, CPU, binary size) | This document | §8 |
 | asyncio.TaskGroup scheduler pattern | This document | §5.8 |
+| asyncio optimization (blocking detection, watchdog, uvloop, semaphore, timeouts, thread pool) | `docs/guides/ASYNCIO-OPTIMIZATION.md` | All |
 
 ---
 
