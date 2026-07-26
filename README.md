@@ -4,10 +4,6 @@
 > **This branch (`main`) is the v2 greenfield rewrite — a distributed, multi-site
 > IT/OT network-monitoring platform.** It is under active development and is not
 > yet operational end-to-end.
->
-> **v1 — the single-host Python/Flask probe — is frozen and fully working** on the
-> [`release/v1.0`](https://github.com/Xore/analyseLaptop/tree/release/v1.0) branch
-> and the `v1.0` tag. If you want to *run* SENTINEL today, use v1.
 
 ---
 
