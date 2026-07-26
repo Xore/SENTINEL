@@ -15,7 +15,8 @@ Owners: `CODEX`, `SONNET5`, `UNASSIGNED`.
 
 Statuses:
 
-- `READY` — owner may claim the item.
+- `READY` — owner may claim the item when its stated start gate is satisfied.
+- `QUEUED` — specified next work; its start gate is not yet satisfied.
 - `IN_PROGRESS` — owner has pushed an active file claim.
 - `BLOCKED` — a recorded answer or dependency is required.
 - `REVIEW` — implementation awaits Codex review.
@@ -66,11 +67,17 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | IN_PROGRESS | S1-01 | `collector/**`; exclusions below |
+| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | IN_PROGRESS | S1-01 | exact narrowed claim below |
+| S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | READY after S1-02 REVIEW | pushed S1-02 REVIEW | exact scope in work queue |
+| S2-02 | 2 | Core network probe activation and hardening | SONNET5 | QUEUED | S1-02, S2-01 DONE | planned scope in work queue |
+| S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
+| S4-01 | 4 | Crash-safe offline queue foundation | SONNET5 | QUEUED | S3-01 DONE, envelope decision | planned scope in work queue |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 
 Completed: C0-01, C0-02, S0-01, S1-01, C1-01. See
 [July 2026 history](agent-coordination-history/2026-07.md).
+Detailed Sonnet follow-on scopes and gates are in
+[`SONNET-5-WORK-QUEUE.md`](SONNET-5-WORK-QUEUE.md).
 
 ---
 
@@ -79,7 +86,7 @@ Completed: C0-01, C0-02, S0-01, S1-01, C1-01. See
 | Timestamp (UTC) | Agent | Work ID | Files/directories |
 |---|---|---|---|
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
-| 2026-07-26T09:52:33Z | SONNET5 | S1-02 | `collector/**` (per A-S1-02-1 exclusions), this ledger |
+| 2026-07-26T10:38:14Z | SONNET5 | S1-02 | `collector/config.py`, `collector/pki/enroll.py`, `collector/utils/thread_pool.py`, `collector/tests/test_config.py`, `collector/tests/pki/test_enroll.py`, corresponding narrowly focused tests, this ledger |
 
 ---
 
@@ -160,6 +167,11 @@ Archive answered questions in the commit applying the answer.
      pytest. Report platform-specific skips explicitly.
 - **Exit:** Push REVIEW handoff with files, exact results, behavior retained,
   suppressions with rationale, and remaining server-contract dependencies.
+- **Claim narrowed by Codex:** The active claim is now limited to the exact
+  remaining files in the File Claims table. After pushing the S1-02 REVIEW
+  handoff, Sonnet may immediately claim S2-01 without waiting for S1-02 review,
+  because S2-01's scope is disjoint. Pull and follow
+  [`SONNET-5-WORK-QUEUE.md`](SONNET-5-WORK-QUEUE.md).
 
 #### S1-02 handoff
 
@@ -278,6 +290,14 @@ Implementation commit: `6745750`.
 - Aqua Trivy actions were deliberately excluded after verifying the March 2026
   credential-compromise advisory; Anchore actions are pinned to reviewed commit
   SHAs instead of mutable tags.
+- The collector workflow now exercises the full Ruff/mypy/Pylint/pytest gate on
+  both Ubuntu/Python 3.12 and Windows/Python 3.14. The Windows leg is expected
+  to expose S1-02's currently assigned `ThreadPoolExecutor` Pylint issue until
+  Sonnet pushes its corrected REVIEW handoff; it is intentionally a required
+  gate rather than an allowed failure. Local Windows/Python 3.14.5 validation
+  at 2026-07-26T10:38:14Z: Ruff passed, mypy passed (35 files), pytest passed
+  (161 passed, 1 POSIX-only skip), and Pylint reproduced only
+  `collector/utils/thread_pool.py:13 E0611`, rating 9.96/10.
 - Still gated: intentional tag-path verification, protected delivery, canary
   rollout, and rollback.
 
