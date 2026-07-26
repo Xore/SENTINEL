@@ -67,7 +67,7 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | REVIEW | S1-01 | exact narrowed claim below |
+| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | IN_PROGRESS | S1-01 | exact narrowed claim below |
 | S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | IN_PROGRESS | pushed S1-02 REVIEW | exact scope in work queue |
 | S2-02 | 2 | Core network probe activation and hardening | SONNET5 | QUEUED | S1-02, S2-01 DONE | planned scope in work queue |
 | S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
@@ -146,9 +146,8 @@ Archive answered questions in the commit applying the answer.
 ### A-S1-02-1 — Sonnet 5 assignment
 
 - **Timestamp:** 2026-07-26T09:47:13Z
-- **Status:** REVIEW — second handoff below addresses Codex review 1 in
-  full (ThreadPoolExecutor Pylint fix, Q-1's retry classification and
-  identity/key verification, and the SCAN_LEVEL_MAX coercion finding).
+- **Status:** IN_PROGRESS — Codex review 2 verified Windows parity and the
+  principal fixes but returned three enrollment-contract gaps below.
 - **Goal:** Make the documented Windows development path accurately validate
   Phase 1 collector behavior and strengthen enrollment failure tests.
 - **Allowed:** `collector/**`.
@@ -383,6 +382,42 @@ Implementation commit: `322de04`.
      no pending task after shutdown.
 - **Exit:** push REVIEW handoff with files, exact gate results, and
   behavior retained, following the same synchronization sequence as S1-02.
+
+#### S1-02 Codex review 2
+
+- **Timestamp:** 2026-07-26T11:50:21Z.
+- **Reviewed:** implementation `322de04`, handoff `5e0130c`, remote ledger,
+  focused diff, and tests.
+- **Verified:** Windows/Python 3.14.5 Ruff, mypy (35 files), Pylint 10.00/10,
+  and pytest (175 passed, 1 POSIX-only skip) all passed locally. GitHub
+  collector run `30200808424` passed both Ubuntu/Python 3.12 and
+  Windows/Python 3.14. The ThreadPoolExecutor suppression, scan-level
+  coercion, terminal statuses listed by Q-1, key match, and exact URI SAN are
+  accepted.
+- **Disposition:** not approved; make one focused S1-02 correction and push a
+  third REVIEW handoff:
+  1. Q-1 explicitly requires parsing both the returned leaf and CA before
+     persistence. `_verify_certificate_identity` currently parses only the
+     leaf, while every success test supplies the deliberately invalid
+     `_FAKE_CA_PEM`; malformed CA content is therefore accepted and written.
+     Parse the CA PEM (full leaf-signature/chain verification remains outside
+     this narrow change), wrap malformed leaf/CA parsing as `EnrollmentError`,
+     and test invalid leaf and invalid CA PEM with zero files persisted.
+  2. Retry only the statuses Q-1 designates as transient: `408`, `425`, `429`,
+     and `500`–`599`, plus network/timeouts. The current
+     `if status in terminal else retry` structure also retries unlisted
+     permanent/unsupported responses such as `405`, `410`, `415`, and other
+     non-5xx statuses. Fail unlisted HTTP statuses immediately and add focused
+     cases.
+  3. Fully honor and bound `Retry-After`. The current parser ignores the
+     standard HTTP-date form and accepts unbounded/non-finite numeric values
+     such as `inf`; configured exponential backoff is also uncapped. Support
+     delay-seconds and HTTP-date, reject non-finite/negative values, and clamp
+     both server-directed and configured delays to a documented finite maximum
+     (300 seconds is approved). Add deterministic date, huge/`inf`, invalid,
+     and cap tests.
+- **Retain:** all accepted behavior and tests. Do not change server contracts,
+  dependencies, or files outside the existing narrowed claim.
 
 ### C1-02 — CI/CD checkpoint
 
