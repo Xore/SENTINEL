@@ -25,6 +25,11 @@ class TestDefaults:
         assert settings.ebpf.enabled is True
         assert settings.backend.enroll_url.startswith("https://")
         assert settings.backend.bootstrap_token is None
+        assert settings.icmp.targets == []
+        assert settings.icmp.timeout_s == 2.0
+        assert settings.tcp.targets == []
+        assert settings.http.verify_tls is True
+        assert settings.dns.record_types == ["A"]
 
     def test_missing_required_collector_id_raises_configerror(self):
         with pytest.raises(ConfigError) as exc:
@@ -38,6 +43,19 @@ class TestDefaults:
     def test_field_bounds_enforced(self):
         with pytest.raises(ConfigError):
             load_settings(collector_id="c", mtr={"max_hops": 999})
+
+    def test_icmp_targets_accepted(self):
+        s = load_settings(collector_id="c", icmp={"targets": ["10.0.0.1", "1.1.1.1"]})
+        assert s.icmp.targets == ["10.0.0.1", "1.1.1.1"]
+
+    def test_tcp_target_requires_host_and_port(self):
+        s = load_settings(collector_id="c", tcp={"targets": [{"host": "10.0.0.1", "port": 443}]})
+        assert s.tcp.targets[0].host == "10.0.0.1"
+        assert s.tcp.targets[0].port == 443
+
+    def test_tcp_target_port_out_of_range_rejected(self):
+        with pytest.raises(ConfigError):
+            load_settings(collector_id="c", tcp={"targets": [{"host": "h", "port": 70000}]})
 
 
 class TestEnvLayer:
@@ -55,6 +73,14 @@ class TestEnvLayer:
         s = load_settings()
         assert s.wifi.enabled is False
         assert s.backend.url == "https://other:4317"
+
+    def test_check_config_env_override(self, monkeypatch):
+        monkeypatch.setenv("COLLECTOR_ID", "c")
+        monkeypatch.setenv("ICMP__TIMEOUT_S", "5.0")
+        monkeypatch.setenv("HTTP__VERIFY_TLS", "false")
+        s = load_settings()
+        assert s.icmp.timeout_s == 5.0
+        assert s.http.verify_tls is False
 
     def test_bootstrap_token_env_override(self, monkeypatch):
         monkeypatch.setenv("COLLECTOR_ID", "c")

@@ -1,0 +1,85 @@
+"""Tests for collector.checks.net_tcp — TCP connect probe."""
+from __future__ import annotations
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from collector.checks.net_tcp import TcpCheck, tcp_connect
+from collector.config import TcpTarget, load_settings
+
+
+def _fake_open_connection(reader=None, writer=None):
+    async def _open(host, port):
+        return reader or MagicMock(), writer or MagicMock(wait_closed=AsyncMock())
+
+    return _open
+
+
+class TestTcpConnect:
+    async def test_returns_connect_time_on_success(self):
+        writer = MagicMock()
+        writer.wait_closed = AsyncMock()
+        with patch(
+            "collector.checks.net_tcp.asyncio.open_connection",
+            _fake_open_connection(writer=writer),
+        ):
+            connect_ms = await tcp_connect("10.0.0.1", 443, timeout_s=1.0)
+        assert connect_ms >= 0
+        writer.close.assert_called_once()
+        writer.wait_closed.assert_awaited_once()
+
+    async def test_raises_on_connection_refused(self):
+        async def _refused(host, port):
+            raise ConnectionRefusedError("refused")
+
+        with (
+            patch("collector.checks.net_tcp.asyncio.open_connection", _refused),
+            pytest.raises(ConnectionRefusedError),
+        ):
+            await tcp_connect("10.0.0.1", 443, timeout_s=1.0)
+
+    async def test_raises_timeout_error_when_slower_than_timeout(self):
+        async def _slow(host, port):
+            await asyncio.sleep(10)
+            return MagicMock(), MagicMock()
+
+        with (
+            patch("collector.checks.net_tcp.asyncio.open_connection", _slow),
+            pytest.raises(TimeoutError),
+        ):
+            await tcp_connect("10.0.0.1", 443, timeout_s=0.01)
+
+
+class TestTcpCheck:
+    async def test_run_ok_result(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        target = TcpTarget(host="10.0.0.1", port=443)
+        check = TcpCheck(settings, meter=None, target=target)
+
+        async def fake_connect(host, port, timeout_s):
+            return 3.4
+
+        monkeypatch.setattr("collector.checks.net_tcp.tcp_connect", fake_connect)
+        result = await check.run()
+
+        assert result.ok is True
+        assert result.metrics == {"tcp_connect_ms": 3.4}
+        assert result.labels == {"target": "10.0.0.1", "port": "443"}
+        assert result.error is None
+
+    async def test_run_never_raises_on_failure(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        target = TcpTarget(host="10.0.0.1", port=443)
+        check = TcpCheck(settings, meter=None, target=target)
+
+        async def failing_connect(host, port, timeout_s):
+            raise ConnectionRefusedError("refused")
+
+        monkeypatch.setattr("collector.checks.net_tcp.tcp_connect", failing_connect)
+        result = await check.run()
+
+        assert result.ok is False
+        assert result.metrics == {}
+        assert result.labels == {"target": "10.0.0.1", "port": "443"}
+        assert "refused" in result.error

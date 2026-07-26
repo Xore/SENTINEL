@@ -21,7 +21,8 @@ from collector.pki.enroll import CA_FILENAME, CERT_FILENAME, KEY_FILENAME
 # Env prefixes that CollectorSettings reads. Any of these present in the real
 # environment would perturb config tests, so they are cleared per-test.
 _MANAGED_PREFIXES = ("COLLECTOR_", "SITE_", "SCAN_LEVEL_", "BACKEND__", "WIFI__",
-                     "MTR__", "BCAST_MCAST__", "EBPF__", "LOG_LEVEL", "DATA_DIR")
+                     "MTR__", "BCAST_MCAST__", "EBPF__", "ICMP__", "TCP__", "HTTP__",
+                     "DNS__", "LOG_LEVEL", "DATA_DIR")
 
 
 @pytest.fixture(autouse=True)

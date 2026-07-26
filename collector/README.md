@@ -6,7 +6,8 @@ frozen v1 Go collector lives on the `release/v1.0` branch and the `v1.0` tag.
 
 ## Status
 
-Phase 1 (project scaffold) in progress. See the phased plan in
+Phase 1 (project scaffold) complete. Phase 2 (core network probes) complete.
+See the phased plan in
 [`../docs/guides/OPUS-AGENT-GUIDE-V2.md`](../docs/guides/OPUS-AGENT-GUIDE-V2.md)
 §4 and the primary design spec
 [`../docs/collector/COLLECTOR-V2-REFACTOR.md`](../docs/collector/COLLECTOR-V2-REFACTOR.md).
@@ -14,11 +15,20 @@ Phase 1 (project scaffold) in progress. See the phased plan in
 | Piece | Module | Done |
 |---|---|---|
 | Config (pydantic + YAML + SIGHUP) | `config.py` | ✅ |
-| PKI enroll/renew | `pki/` | ☐ |
-| Transport (mTLS, OTLP, retry buffer) | `transport/` | ☐ |
-| Scheduler (asyncio priority loop) | `scheduler.py` | ☐ |
+| PKI enroll | `pki/enroll.py` | ✅ |
+| PKI renew | `pki/renew.py` | ☐ |
+| Transport (mTLS, OTLP) | `transport/mtls.py`, `transport/otlp.py` | ✅ |
+| Transport retry buffer | `transport/retry.py` | ☐ |
+| Scheduler (asyncio priority loop) | `scheduler.py` | ✅ |
 | Health score | `health/score.py` | ☐ |
-| Entry point (heartbeat) | `__main__.py` | ☐ |
+| Entry point (heartbeat) | `__main__.py` | ✅ |
+| Check base class | `checks/__init__.py` | ✅ |
+| ICMP echo probe | `checks/net_icmp.py` | ✅ |
+| TCP connect probe | `checks/net_tcp.py` | ✅ |
+| HTTP/HTTPS probe | `checks/net_http.py` | ✅ |
+| DNS resolution probe | `checks/net_dns.py` | ✅ |
+| RTT jitter probe | `checks/net_latency.py` | ✅ |
+| OS health (CPU/mem/disk/net) | `os_health/` | ☐ |
 
 ## Development
 

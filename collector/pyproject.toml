@@ -57,6 +57,11 @@ disable = [
     # observed case, a file against itself), rather than flagging real
     # copy-pasted logic worth extracting.
     "duplicate-code",
+    # broad-exception-caught: BaseCheck.run() must never raise (the guide's
+    # own rule — collector/checks/__init__.py) so every check's run() method
+    # deliberately catches Exception broadly and returns
+    # CheckResult(ok=False, error=...) instead of propagating.
+    "broad-exception-caught",
 ]
 
 [tool.pylint.format]

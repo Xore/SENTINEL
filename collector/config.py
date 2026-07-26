@@ -74,6 +74,42 @@ class EbpfConfig(BaseModel):
     flow_track: bool = True
 
 
+class IcmpConfig(BaseModel):
+    enabled: bool = True
+    targets: list[str] = Field(default_factory=list)
+    interval_s: int = Field(default=10, gt=0)
+    timeout_s: float = Field(default=2.0, gt=0)
+
+
+class TcpTarget(BaseModel):
+    host: str
+    port: int = Field(ge=1, le=65535)
+
+
+class TcpConfig(BaseModel):
+    enabled: bool = True
+    targets: list[TcpTarget] = Field(default_factory=list)
+    interval_s: int = Field(default=30, gt=0)
+    timeout_s: float = Field(default=5.0, gt=0)
+
+
+class HttpConfig(BaseModel):
+    enabled: bool = True
+    targets: list[str] = Field(default_factory=list)  # full URLs
+    interval_s: int = Field(default=30, gt=0)
+    timeout_s: float = Field(default=10.0, gt=0)
+    verify_tls: bool = True
+
+
+class DnsConfig(BaseModel):
+    enabled: bool = True
+    targets: list[str] = Field(default_factory=list)  # hostnames to resolve
+    record_types: list[str] = Field(default_factory=lambda: ["A"])
+    resolvers: list[str] = Field(default_factory=list)  # empty = system default
+    interval_s: int = Field(default=30, gt=0)
+    timeout_s: float = Field(default=5.0, gt=0)
+
+
 # --------------------------------------------------------------------------- #
 # YAML settings source
 # --------------------------------------------------------------------------- #
@@ -116,6 +152,10 @@ class CollectorSettings(BaseSettings):
     mtr: MtrConfig = MtrConfig()
     bcast_mcast: BcastMcastConfig = BcastMcastConfig()
     ebpf: EbpfConfig = EbpfConfig()
+    icmp: IcmpConfig = IcmpConfig()
+    tcp: TcpConfig = TcpConfig()
+    http: HttpConfig = HttpConfig()
+    dns: DnsConfig = DnsConfig()
     log_level: str = "INFO"
     data_dir: str = "/var/lib/analyselaptop/data"
 
