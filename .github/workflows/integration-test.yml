@@ -35,6 +35,7 @@ jobs:
       BACKEND__URL: https://localhost:4317
       BACKEND__ENROLL_URL: https://localhost:8443/api/pki/enroll
       BACKEND__BOOTSTRAP_TOKEN: dev-only-bootstrap-token
+      SENTINEL_DEV_API_JWT_SECRET: dev-only-api-jwt-secret-0123456789
     steps:
       - uses: actions/checkout@v6
 
@@ -60,7 +61,9 @@ jobs:
             if curl --fail --silent --show-error --insecure \
                 https://localhost:8443/readyz >/dev/null \
               && curl --fail --silent --show-error \
-                http://localhost:8428/-/healthy >/dev/null; then
+                http://localhost:8428/-/healthy >/dev/null \
+              && curl --fail --silent --show-error \
+                http://localhost:8080/readyz >/dev/null; then
               exit 0
             fi
             sleep 2
@@ -137,6 +140,82 @@ jobs:
           cat "${collector_log}"
           test ! -f "${query_result}" || cat "${query_result}"
           exit 1
+
+      - name: Assert authenticated site-scoped last_seen API
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mint_token() {
+            local site_id="$1"
+            python - "${site_id}" <<'PY'
+          import base64
+          import hashlib
+          import hmac
+          import json
+          import os
+          import sys
+          import time
+
+          def encode(value):
+              raw = json.dumps(value, separators=(",", ":")).encode()
+              return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+          now = int(time.time())
+          header = encode({"alg": "HS256", "typ": "JWT"})
+          payload = encode({
+              "sub": "dev-viewer",
+              "iss": "sentinel-site",
+              "aud": ["sentinel-site-api"],
+              "iat": now,
+              "nbf": now - 5,
+              "exp": now + 300,
+              "role": "viewer",
+              "site_ids": [sys.argv[1]],
+          })
+          message = f"{header}.{payload}".encode()
+          signature = hmac.new(
+              os.environ["SENTINEL_DEV_API_JWT_SECRET"].encode(),
+              message,
+              hashlib.sha256,
+          ).digest()
+          print(f"{header}.{payload}." + base64.urlsafe_b64encode(signature).rstrip(b"=").decode())
+          PY
+          }
+
+          authorized_token="$(mint_token site-a)"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${authorized_token}" \
+            -o "${RUNNER_TEMP}/api-collectors.json" \
+            http://localhost:8080/api/v1/collectors
+          python - "${RUNNER_TEMP}/api-collectors.json" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          matches = [
+              row for row in payload.get("data", [])
+              if row.get("site_id") == "site-a"
+              and row.get("collector_id") == "dev-node-1"
+              and row.get("last_seen")
+          ]
+          if len(matches) != 1:
+              raise SystemExit(f"expected one collector with last_seen, got: {payload}")
+          PY
+
+          unauthorized_token="$(mint_token site-b)"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${unauthorized_token}" \
+            -o "${RUNNER_TEMP}/api-unauthorized-site.json" \
+            http://localhost:8080/api/v1/collectors
+          python - "${RUNNER_TEMP}/api-unauthorized-site.json" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          if payload.get("data") != []:
+              raise SystemExit(f"unauthorized site rows leaked: {payload}")
+          PY
 
       - name: Diagnostics and cleanup
         if: always()

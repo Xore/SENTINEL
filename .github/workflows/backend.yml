@@ -24,6 +24,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  api:
+    name: Site API build, vet, and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/api
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/api/go.mod
+          cache: false
+
+      - name: Verify formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          test -z "$unformatted" || {
+            echo "The following Go files require gofmt:"
+            echo "$unformatted"
+            exit 1
+          }
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Build API container
+        run: docker build .
+
   go:
     name: Go build, vet, and test
     runs-on: ubuntu-latest
@@ -141,6 +179,8 @@ jobs:
           SELECT to_regclass('public.enrollment_tokens') IS NOT NULL AS enrollment_tokens_exists \gset
           SELECT to_regclass('public.durable_events') IS NOT NULL AS durable_events_exists \gset
           SELECT to_regclass('public.federation_outbox') IS NOT NULL AS federation_outbox_exists \gset
+          SELECT to_regclass('public.users') IS NOT NULL AS users_exists \gset
+          SELECT to_regclass('public.user_site_access') IS NOT NULL AS user_site_access_exists \gset
           \if :sites_exists
           \else
             \quit 1
@@ -161,6 +201,14 @@ jobs:
           \else
             \quit 1
           \endif
+          \if :users_exists
+          \else
+            \quit 1
+          \endif
+          \if :user_site_access_exists
+          \else
+            \quit 1
+          \endif
           SQL
 
       - name: Test migration invariants
@@ -174,3 +222,7 @@ jobs:
       - name: Test one-time-token enrollment and certificate identity
         working-directory: backend/ingest
         run: go test -tags=integration -count=1 ./internal/enrollment
+
+      - name: Test site API authorization and collector projection
+        working-directory: backend/api
+        run: go test -race -tags=integration -count=1 ./internal/registry

@@ -21,3 +21,14 @@ VALUES (
     now() + interval '24 hours'
 )
 ON CONFLICT (token_sha256) DO NOTHING;
+
+INSERT INTO users (user_id, role)
+VALUES ('dev-viewer', 'viewer')
+ON CONFLICT (user_id) DO UPDATE
+SET role = EXCLUDED.role,
+    token_not_before = '-infinity',
+    disabled_at = NULL;
+
+INSERT INTO user_site_access (user_id, site_id)
+VALUES ('dev-viewer', 'site-a')
+ON CONFLICT (user_id, site_id) DO NOTHING;
