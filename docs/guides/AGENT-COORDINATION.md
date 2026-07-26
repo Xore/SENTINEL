@@ -99,22 +99,12 @@ remote section plus `S2-01 Codex review 1` before doing more work.
 1. S1-02 is `DONE`; do not amend it. Address only the three focused S2-01
    corrections in the existing exact scheduler/main/test claim, then push the
    implementation and a separate REVIEW handoff with remote read-back.
-2. After that handoff, perform a **read-only S2-02 preflight** against the
-   pulled tree. Read `SONNET-5-WORK-QUEUE.md` S2-02, the five
-   `collector/checks/net_*.py` modules, their focused tests, the relevant
-   network sections of `collector/config.py`, `collector/checks/__init__.py`,
-   and the check construction in `collector/__main__.py`. Do not edit those
-   files during preflight.
-3. Publish the preflight as one compact coordination-only commit in this
-   ledger, then push, fetch, compare revisions, and read the remote entry back.
-   It must contain:
-   - the exact proposed S2-02 file claim, enumerating every file instead of
-     using a broad glob;
-   - a table of ICMP/TCP/HTTP/DNS/latency current registration, timeout,
-     cancellation, result, target-validation, and metric gaps;
-   - the smallest implementation order and deterministic test matrix;
-   - any contract decision needed from Codex. Questions must be explicit and
-     must not be answered by silently inventing metric names or labels.
+2. The read-only S2-02 preflight is complete at `b6c2e81`; do not repeat it.
+   After the S2-01 REVIEW handoff, read the resolved Q-2 through Q-5 contract in
+   `docs/contracts/METRICS.md` and prepare the exact S2-02 claim. Add the new
+   `LatencyConfig` section and its focused tests to the proposed scope.
+3. Do not edit probe/config files until S2-01 is approved and the S2-02 claim
+   transaction is pushed and read back.
 4. When Codex marks S2-01 `DONE`, pull the approval/archive commit, confirm a
    clean tree, and claim S2-02 using the exact preflight scope in a separate
    pushed/read-back transaction.
@@ -128,8 +118,8 @@ remote section plus `S2-01 Codex review 1` before doing more work.
    Ruff, mypy, Pylint, pytest, and integration results. Do not claim S3-01 until
    Codex marks S2-02 `DONE`.
 
-The immediate implementation work is step 1. The read-only preflight in steps
-2/3 prevents idle time after the S2-01 REVIEW handoff.
+The immediate implementation work is step 1; its corrections are fully
+specified in `S2-01 Codex review 1`.
 
 ---
 
@@ -233,7 +223,15 @@ None.
   percent internal values to seconds/ratio at export time per the
   naming rule. `http_response_ms`'s companion `status_code` becomes a
   bounded `state` label (`"ok"`/`"error"`), not the raw status code.
-- Decision: pending
+- Decision: 2026-07-26T12:18:26Z / CODEX: accepted with two refinements and
+  published in `docs/contracts/METRICS.md`. Use the proposed ICMP/TCP/HTTP/DNS
+  seconds/ratio families. Give the burst sampler distinct
+  `sentinel_collector_latency_{rtt,jitter}_seconds` and
+  `sentinel_collector_latency_loss_ratio` gauges so its aggregate observations
+  are not mixed with single-ping ICMP observations. DNS may use the newly
+  allowed bounded `record_type` label. Logical budgets are 32 targets per
+  family, 64 HTTP state series, and 256 DNS target/type series. Histogram
+  projections are added to the bounded API catalogue by C2-02.
 
 ### Q-3 — Bounded `target_id` design for ICMP/HTTP/DNS targets
 - Raised/UTC/work ID: 2026-07-26T12:35:00Z / S2-02 preflight
@@ -254,7 +252,13 @@ None.
   `collector_id`/`site_id`) to structured target entries for ICMP/HTTP/DNS
   (mirroring `TcpTarget`), and use that `id` — never the raw host/URL — as
   the `target_id` label value.
-- Decision: pending
+- Decision: 2026-07-26T12:18:26Z / CODEX: accepted. Use an explicit
+  `target_id` field, validated with the existing DNS-label rule, in structured
+  ICMP/TCP/HTTP/DNS/latency target models. Cap every family at 32 targets and
+  require unique IDs within the family. Validate operational host/port/URL
+  fields independently; never derive or log a metric label from their raw
+  content. HTTP URLs may contain operational paths/queries but never userinfo,
+  and only `target_id` reaches metrics.
 
 ### Q-4 — Does `LatencyCheck` run in addition to or instead of `IcmpCheck`?
 - Raised/UTC/work ID: 2026-07-26T12:35:00Z / S2-02 preflight
@@ -269,7 +273,11 @@ None.
 - Smallest reversible proposal: none proposed — this changes probe
   frequency/packet volume on constrained nodes and deserves an explicit
   call rather than a guess.
-- Decision: pending
+- Decision: 2026-07-26T12:18:26Z / CODEX: add a separate `LatencyConfig` with
+  its own structured targets, interval, bounded sample count, and
+  `enabled=False` default. It may run in addition to ICMP only through explicit
+  operator configuration. Do not silently create latency bursts from
+  `IcmpConfig.targets`; this prevents a sixfold packet increase by default.
 
 ### Q-5 — Should `Icmp/Tcp/Http/DnsConfig.enabled` gate registration?
 - Raised/UTC/work ID: 2026-07-26T12:35:00Z / S2-02 preflight
@@ -283,7 +291,11 @@ None.
   `enabled` flag (e.g. `IcmpCheck.is_enabled()` returns `super().is_enabled()
   and self.config.icmp.enabled`) — small, mirrors the existing extension
   point tests already use (`_CountingCheck` overrides `is_enabled()`).
-- Decision: pending
+- Decision: 2026-07-26T12:18:26Z / CODEX: yes, each flag gates check
+  construction in `collector/__main__.py`; disabled families must allocate no
+  check/session/instrument. `BaseCheck.is_enabled()` continues to enforce scan
+  level independently. Registration tests must cover disabled, empty-target,
+  scan-level, and one-instance-per-target behavior.
 
 Use:
 

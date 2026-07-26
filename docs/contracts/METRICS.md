@@ -29,7 +29,8 @@ Ingest rejects missing or identity-conflicting attributes.
 
 Allowed common labels are enumerated values or controlled identifiers:
 `target_id`, `interface`, `check`, `metric_group`, `state`, `protocol`,
-`site_id`, and `collector_id`.
+`record_type`, `site_id`, and `collector_id`. `record_type` is restricted to
+the configured DNS allow-list; it is never arbitrary response data.
 
 Forbidden labels include:
 
@@ -56,13 +57,51 @@ than creating more labels.
 | `sentinel_collector_cycle_duration_seconds` | histogram | seconds | none | 1/collector |
 | `sentinel_collector_event_loop_lag_seconds` | gauge | seconds | none | 1/collector |
 
+## Phase 2 core network families
+
+All target-bearing families use the operator-assigned `target_id`; raw hosts,
+IP addresses, ports, URLs, paths, queries, and credentials are forbidden as
+metric attributes. Cardinality below is expressed as logical instrument series
+before any backend histogram projection.
+
+| Metric | Type | Unit | Extra labels | Cardinality |
+|---|---|---|---|---:|
+| `sentinel_collector_icmp_rtt_seconds` | histogram | seconds | `target_id` | <= 32/collector |
+| `sentinel_collector_icmp_loss_ratio` | gauge | `1` | `target_id` | <= 32/collector |
+| `sentinel_collector_tcp_connect_seconds` | histogram | seconds | `target_id` | <= 32/collector |
+| `sentinel_collector_http_response_seconds` | histogram | seconds | `target_id`, `state` (`ok`/`error`) | <= 64/collector |
+| `sentinel_collector_dns_resolve_seconds` | histogram | seconds | `target_id`, `record_type` | <= 256/collector |
+| `sentinel_collector_latency_rtt_seconds` | gauge | seconds | `target_id` | <= 32/collector |
+| `sentinel_collector_latency_jitter_seconds` | gauge | seconds | `target_id` | <= 32/collector |
+| `sentinel_collector_latency_loss_ratio` | gauge | `1` | `target_id` | <= 32/collector |
+
+The target configuration contract is:
+
+- at most 32 targets per check family and unique `target_id` values within that
+  family;
+- `target_id` is an explicit DNS-label-style identifier and is never derived
+  from target content;
+- ICMP, TCP, HTTP, DNS, and latency use structured targets containing
+  `target_id` plus the operational host/port/URL fields;
+- DNS `record_type` is one of `A`, `AAAA`, `CNAME`, `MX`, `NS`, `PTR`, `SRV`,
+  or `TXT`;
+- HTTP `state` is exactly `ok` or `error`; status codes remain in structured
+  logs/results, not metric labels;
+- millisecond and percentage probe results are converted to seconds and ratios
+  before recording.
+
+Latency probing has a separate configuration section, is disabled by default,
+and runs in addition to the lightweight ICMP check only when explicitly
+enabled with its own targets. This avoids multiplying packet volume silently.
+Each per-type `enabled` flag gates construction in the collector entry point;
+scan level remains the independent scheduler eligibility gate.
+
 ## Site API query catalogue
 
-The bounded range-query API accepts the exact canonical names above. For the
-two histogram families it additionally accepts the Prometheus projections
-ending in `_bucket`, `_count`, and `_sum`. Arbitrary MetricsQL expressions,
-compatibility aliases, and metrics outside this catalogue are not accepted by
-the Phase 2 API slice.
+The bounded range-query API accepts the exact canonical names above. For every
+histogram family it additionally accepts the Prometheus projections ending in
+`_bucket`, `_count`, and `_sum`. Arbitrary MetricsQL expressions, compatibility
+aliases, and metrics outside this catalogue are not accepted.
 
 ## Contract enforcement
 

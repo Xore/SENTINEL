@@ -29,6 +29,34 @@ func TestParseAcceptsBoundedCatalogQuery(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsCanonicalProbeMetricsAndHistogramProjections(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	metrics := []string{
+		"sentinel_collector_icmp_rtt_seconds",
+		"sentinel_collector_icmp_rtt_seconds_bucket",
+		"sentinel_collector_icmp_loss_ratio",
+		"sentinel_collector_tcp_connect_seconds_sum",
+		"sentinel_collector_http_response_seconds_count",
+		"sentinel_collector_dns_resolve_seconds_bucket",
+		"sentinel_collector_latency_rtt_seconds",
+		"sentinel_collector_latency_jitter_seconds",
+		"sentinel_collector_latency_loss_ratio",
+	}
+	for _, metric := range metrics {
+		t.Run(metric, func(t *testing.T) {
+			values := validValues(now)
+			values.Set("metric", metric)
+			query, err := Parse(values, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if query.Metric != metric {
+				t.Fatalf("metric = %q, want %q", query.Metric, metric)
+			}
+		})
+	}
+}
+
 func TestParseRejectsUnsafeInputs(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	tests := map[string]func(url.Values){
