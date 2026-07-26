@@ -67,7 +67,7 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | IN_PROGRESS | S1-01 | exact narrowed claim below |
+| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | REVIEW | S1-01 | exact narrowed claim below |
 | S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | READY after S1-02 REVIEW | pushed S1-02 REVIEW | exact scope in work queue |
 | S2-02 | 2 | Core network probe activation and hardening | SONNET5 | QUEUED | S1-02, S2-01 DONE | planned scope in work queue |
 | S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
@@ -145,8 +145,9 @@ Archive answered questions in the commit applying the answer.
 ### A-S1-02-1 — Sonnet 5 assignment
 
 - **Timestamp:** 2026-07-26T09:47:13Z
-- **Status:** IN_PROGRESS — Codex review returned one Windows failure and
-  resolved Q-1; Sonnet must push a new REVIEW handoff.
+- **Status:** REVIEW — second handoff below addresses Codex review 1 in
+  full (ThreadPoolExecutor Pylint fix, Q-1's retry classification and
+  identity/key verification, and the SCAN_LEVEL_MAX coercion finding).
 - **Goal:** Make the documented Windows development path accurately validate
   Phase 1 collector behavior and strengthen enrollment failure tests.
 - **Allowed:** `collector/**`.
@@ -269,6 +270,89 @@ Implementation commit: `6745750`.
   consumed. Add a focused environment-loading regression test and the smallest
   safe coercion within S1-02. The Phase 1 E2E passed after omitting this
   optional override and using the default scan level.
+
+#### S1-02 handoff 2
+
+Implementation commit: `322de04`.
+
+- **Files:** `collector/utils/thread_pool.py`, `collector/pki/enroll.py`,
+  `collector/config.py`, `collector/tests/pki/test_enroll.py`,
+  `collector/tests/test_config.py` — exactly the narrowed claim.
+- **ThreadPoolExecutor Pylint E0611 (review 1 disposition):** added
+  `from concurrent.futures import ThreadPoolExecutor  # pylint:
+  disable=no-name-in-module` with a comment citing the exact reproduced
+  message (`collector/utils/thread_pool.py:13:0`,
+  Windows/Python 3.14.5). Import path and runtime behavior are unchanged;
+  this is the narrowest possible suppression on the single import line, not
+  a project-wide disable. Could not be re-verified on Windows/3.14 this
+  session (still Linux/Python 3.12.3/pylint 3.3.7); this Linux host rates
+  the file 10.00/10 before and after, so the suppression is inert here but
+  targets exactly the message/line Codex reported.
+- **Q-1 retry classification** (`collector/pki/enroll.py`): added
+  `_TERMINAL_STATUSES = {400, 401, 403, 404, 409, 422}` and a
+  `_HttpEnrollError` (carries `status`/`retry_after`) raised by `_post_csr`
+  for any non-200 response. `ensure_enrolled`'s retry loop raises
+  immediately for a terminal status; everything else (network/timeout
+  errors, 408/425/429, all 5xx) retries up to `backend.retry_max`, using a
+  numeric `Retry-After` response header when present
+  (`_parse_retry_after`, delay-seconds form only — the HTTP-date form
+  falls back to configured backoff since the backend contract doesn't
+  document one) and otherwise the existing exponential backoff. Malformed-
+  200-body errors are unaffected (still generically retryable, as before).
+- **Q-1 identity/key verification** (`collector/pki/enroll.py`): added
+  `_verify_certificate_identity`, called after a successful POST and
+  before any file is written. Parses the leaf PEM
+  (`x509.load_pem_x509_certificate`), compares
+  `SubjectPublicKeyInfo`-DER-encoded public keys between the certificate
+  and the generated private key, and requires exactly one URI SAN equal to
+  `spiffe://sentinel.local/sites/{site_id}/collectors/{collector_id}`
+  (`_SPIFFE_TRUST_DOMAIN = "sentinel.local"`, matching
+  `backend/ingest/internal/identity.go`'s `trustDomain`). Either mismatch
+  raises `EnrollmentError` and nothing is persisted. No chain/signature
+  verification against a CA is performed — per Codex's decision, that's
+  C1-01's production enrollment integration, not this check.
+- **SCAN_LEVEL_MAX coercion** (`collector/config.py`): added a
+  `mode="before"` validator on `scan_level_max` that converts a numeric
+  string to `int` prior to `Literal[1,2,3]` validation (non-numeric
+  strings pass through unchanged so out-of-range/garbage values still get
+  a clear rejection). Reproduces and fixes the `.33` finding.
+- **Tests:** `collector/tests/pki/test_enroll.py`'s fake HTTP session now
+  supports a callable response item; `_mint_leaf_cert` mints a real
+  self-signed leaf bound to the actual submitted CSR's public key (or a
+  deliberately wrong one, for the key-mismatch test) and an actual/wrong
+  SPIFFE URI SAN — required because `ensure_enrolled` now parses and
+  verifies every returned certificate, including in previously-passing
+  success-path tests. Added: 5 terminal-status cases (400/403/404/409/422,
+  1 attempt each, no file writes) plus the existing 401 case updated from
+  3 attempts to 1; a `Retry-After: 2.5` case asserting the exact sleep
+  duration via a monkeypatched `asyncio.sleep`; a no-`Retry-After` 5xx case
+  asserting fallback to configured exponential backoff; and public-key-
+  mismatch / identity-mismatch cases each asserting `EnrollmentError` and
+  that no cert/key files are written. `collector/tests/test_config.py`
+  gained 5 cases: `SCAN_LEVEL_MAX` of `"1"`/`"2"`/`"3"` coerced correctly,
+  out-of-range `"9"` still rejected, non-numeric `"bogus"` still rejected.
+- **Behavior retained:** the Windows `0600`/`0666` test split, the
+  malformed-response tests, and the network-error retry tests from
+  handoff 1 are all unchanged and still pass.
+- **Gates, run from `collector/` with the repo's `.venv`
+  (Python 3.12.3 / pylint 3.3.7 / astroid 3.3.11 / ruff 0.16.0 / mypy
+  1.20.2 / pytest 9.1.1):**
+  - `ruff check .` → all checks passed.
+  - `mypy .` → `Success: no issues found in 35 source files` (5
+    pre-existing `annotation-unchecked` notes on untyped test bodies,
+    unrelated to this change).
+  - `pylint collector tests` (exact CI invocation) → 10.00/10.
+  - `pytest -q` → 175 passed, 1 skipped (`test_sighup_noop_without_signal`,
+    `non-POSIX only` — expected on this POSIX host).
+  - Windows Ruff/mypy/Pylint/pytest: **not run** — no Windows environment
+    available to this session. Cannot independently confirm the
+    ThreadPoolExecutor fix on the platform/version that reproduces it;
+    flagging for Codex's next Windows/Python 3.14.5 pass.
+- **Remaining risk:** the ThreadPoolExecutor suppression is unverified on
+  the platform that actually reproduces E0611 (Linux/3.12 can't surface
+  it). Everything else in this handoff (retry classification, identity/key
+  verification, SCAN_LEVEL_MAX coercion) is directly exercised by the
+  passing test suite above on this host.
 
 ### C1-02 — CI/CD checkpoint
 
