@@ -80,10 +80,10 @@ the shared information as stored on the remote branch.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | C0-01 | 0 | Repository audit and requirements traceability matrix | CODEX | DONE | None | `docs/architecture/`, traceability document |
-| C0-02 | 0 | ADRs and canonical cross-service contracts | CODEX | IN_PROGRESS | C0-01 | `docs/architecture/decisions/`, contract specs |
+| C0-02 | 0 | ADRs and canonical cross-service contracts | CODEX | DONE | C0-01 | `docs/architecture/decisions/`, contract specs |
 | S0-01 | 0 | Run current collector quality suite and report implementation inventory | SONNET5 | IN_PROGRESS | None | No source edits; append results here |
 | S1-01 | 1 | Collector heartbeat vertical slice | SONNET5 | BLOCKED | C0-02 | To be assigned after contracts |
-| C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | BLOCKED | C0-02 | To be assigned after audit |
+| C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | IN_PROGRESS | C0-02 | `backend/`, `contracts/`, `deploy/hub/`, migration tests |
 
 The board is intentionally initialized only through Phase 1. Codex adds later
 assignments after each phase gate so stale plans do not cause overlapping work.
@@ -98,8 +98,9 @@ claims may remain with status `RELEASED`.
 | Timestamp (UTC) | Agent | Work ID | Files/directories | Claim status |
 |---|---|---|---|---|
 | 2026-07-26T09:11:04Z | CODEX | C0-01 | `docs/architecture/REQUIREMENTS-TRACEABILITY.md`, `docs/guides/AGENT-COORDINATION.md` | RELEASED |
-| 2026-07-26T09:14:13Z | CODEX | C0-02 | `docs/architecture/decisions/`, `docs/contracts/`, `docs/guides/AGENT-COORDINATION.md` | ACTIVE |
+| 2026-07-26T09:14:13Z | CODEX | C0-02 | `docs/architecture/decisions/`, `docs/contracts/`, `docs/guides/AGENT-COORDINATION.md` | RELEASED |
 | 2026-07-26T09:16:11Z | SONNET5 | S0-01 | `docs/guides/AGENT-COORDINATION.md` only — no source edits | ACTIVE |
+| 2026-07-26T09:18:30Z | CODEX | C1-01 | `backend/`, `contracts/`, `deploy/hub/`, migration tests, `docs/guides/AGENT-COORDINATION.md` | ACTIVE |
 
 ---
 
@@ -156,6 +157,29 @@ Use this template:
 - **Commit SHA:** `be6c04bb3f07c83a06b0b93e6ec7916dbc067fde`
 - **Reviewer result:** accepted
 - **Reviewer notes:** C0-02 may start; S1-01 remains blocked pending contracts.
+
+### H-C0-02-1
+
+- **Timestamp (UTC):** 2026-07-26T09:18:30Z
+- **From:** CODEX
+- **To:** SONNET5
+- **Status requested:** READY
+- **Changed files:** `docs/architecture/decisions/*`, `docs/contracts/*`
+- **Behavior implemented:** Accepted canonical source layout, OTLP ingest path,
+  metric names/cardinality, durable event/idempotency envelope, federation
+  replication, federated privacy boundary, passive Modbus metadata boundary,
+  updater authority, HA/versioning, measured scale, identity/time, migrations,
+  and service failure invariants.
+- **Commands run and results:** Markdown diff check passed; event JSON Schema
+  parsed successfully; remote push/read-back verified at `origin/main`.
+- **Known limitations:** Concrete protobuf/OpenAPI bindings will be generated
+  inside the relevant service work item; contracts intentionally precede code.
+- **Assumptions:** New metrics use `sentinel_`; the old heartbeat metric is a
+  temporary compatibility alias.
+- **Commit SHA:** `569c19e784c43a1e3ceda41ba1fa01addd2e005b`
+- **Reviewer result:** accepted
+- **Reviewer notes:** Contract prerequisite is complete. Sonnet must finish
+  S0-01 review before claiming S1-01. Codex is starting C1-01.
 
 ---
 
