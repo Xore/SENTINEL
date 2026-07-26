@@ -192,6 +192,25 @@ class CollectorSettings(BaseSettings):
     def _validate_identity_fields(cls, value: str, info: ValidationInfo) -> str:
         return _validate_dns_label(value, info.field_name or "identity")
 
+    @field_validator("scan_level_max", mode="before")
+    @classmethod
+    def _coerce_scan_level_max(cls, value: Any) -> Any:
+        # Env vars are always strings, and pydantic-settings' env source
+        # doesn't coerce them for Literal[int, ...] fields the way it does
+        # for plain int fields — Literal validation is an exact-match check,
+        # not a coercive type, so e.g. SCAN_LEVEL_MAX=1 arrives as the
+        # string "1" and fails Literal[1, 2, 3] outright. Found live on lab
+        # host .33 (see docs/guides/AGENT-COORDINATION.md, S1-02 Codex
+        # review 1). Only numeric strings are converted; anything else
+        # passes through so the Literal check still rejects it with a
+        # clear error.
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                return value
+        return value
+
     # Signature is fixed by pydantic-settings' BaseSettings override contract;
     # it cannot be reduced without breaking the hook.
     @classmethod

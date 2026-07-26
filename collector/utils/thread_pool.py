@@ -10,7 +10,15 @@ from __future__ import annotations
 import asyncio
 import functools
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+
+# On Windows/Python 3.14.5, pylint's bundled typeshed stub for this version
+# fails to resolve ThreadPoolExecutor as exported from the concurrent.futures
+# package `__init__.pyi` (E0611 no-name-in-module) even though it is the
+# stdlib's own documented public import path and imports fine at runtime on
+# every platform — a stub/astroid resolution gap, not a real absence.
+# Confirmed via Codex's Windows/Python 3.14.5 pylint run (see
+# docs/guides/AGENT-COORDINATION.md, S1-02 Codex review 1).
+from concurrent.futures import ThreadPoolExecutor  # pylint: disable=no-name-in-module
 
 # Hard-capped at 2 workers — the Raspberry Pi 3B 5% CPU NFR
 # (docs/guides/OPUS-AGENT-GUIDE-V2.md §8) leaves no headroom for more.

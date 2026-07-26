@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 import structlog
@@ -30,7 +31,43 @@ CA_FILENAME = "ca.crt"
 
 
 class EnrollmentError(Exception):
-    """Raised when PKI enrollment fails after exhausting retries."""
+    """Raised when PKI enrollment fails after exhausting retries, or
+    immediately for a terminal rejection or an identity/key mismatch."""
+
+
+# Statuses where retrying the exact same CSR cannot succeed — the request
+# itself was rejected (bad/expired/reused token, unknown collector,
+# validation failure) rather than a transient condition. Everything else
+# (408, 425, 429, 5xx, network/timeout errors) is retried. Per Q-1's
+# decision in docs/guides/AGENT-COORDINATION.md.
+_TERMINAL_STATUSES = frozenset({400, 401, 403, 404, 409, 422})
+
+# Must match backend/ingest/internal/identity.go's trustDomain — the
+# server is the source of truth for this value.
+_SPIFFE_TRUST_DOMAIN = "sentinel.local"
+
+
+class _HttpEnrollError(EnrollmentError):
+    """A non-200 enroll response. Carries `status`/`retry_after` so the
+    retry loop can classify it without re-parsing the message text."""
+
+    def __init__(self, message: str, *, status: int, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Only the delay-seconds form of Retry-After is honored; the HTTP-date
+    form falls back to configured backoff (undocumented by the current
+    backend and not worth a full HTTP-date parser for this)."""
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None
 
 
 def is_enrolled(pki_dir: str | os.PathLike[str]) -> bool:
@@ -78,12 +115,55 @@ async def _post_csr(
     async with session.post(settings.backend.enroll_url, json=payload, headers=headers) as resp:
         if resp.status != 200:
             body = await resp.text()
-            raise EnrollmentError(f"enroll endpoint returned {resp.status}: {body[:500]}")
+            raise _HttpEnrollError(
+                f"enroll endpoint returned {resp.status}: {body[:500]}",
+                status=resp.status,
+                retry_after=_parse_retry_after(resp.headers.get("Retry-After")),
+            )
         data = await resp.json()
     try:
         return data["certificate_pem"], data["ca_certificate_pem"]
     except (KeyError, TypeError) as exc:
         raise EnrollmentError(f"malformed enroll response: {data!r}") from exc
+
+
+def _public_key_der(public_key: Any) -> bytes:
+    return public_key.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+
+def _verify_certificate_identity(
+    cert_pem: str,
+    private_key: ec.EllipticCurvePrivateKey,
+    site_id: str,
+    collector_id: str,
+) -> None:
+    """Confirm the enrolled certificate is bound to *our* key and identity
+    before it's trusted enough to persist to disk. The certificate — not an
+    unauthenticated response field — is the identity authority (Q-1);
+    mirrors the server-side check in
+    backend/ingest/internal/identity.{FromCertificate,SPIFFEURI}. Full
+    chain/signature verification against the CA is C1-01's production
+    enrollment integration, not this check.
+    """
+    cert = x509.load_pem_x509_certificate(cert_pem.encode("ascii"))
+
+    if _public_key_der(cert.public_key()) != _public_key_der(private_key.public_key()):
+        raise EnrollmentError("enrolled certificate's public key does not match our private key")
+
+    try:
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        uris = san.value.get_values_for_type(x509.UniformResourceIdentifier)
+    except x509.ExtensionNotFound:
+        uris = []
+
+    expected = f"spiffe://{_SPIFFE_TRUST_DOMAIN}/sites/{site_id}/collectors/{collector_id}"
+    if uris != [expected]:
+        raise EnrollmentError(
+            f"enrolled certificate URI SAN {uris!r} does not match expected identity {expected!r}"
+        )
 
 
 async def ensure_enrolled(
@@ -92,9 +172,14 @@ async def ensure_enrolled(
     """Enroll this collector's PKI identity if it hasn't been already.
 
     Idempotent: a no-op if ``collector.key``/``collector.crt``/``ca.crt``
-    already exist under ``backend.pki_dir``. Retries the HTTP POST up to
-    ``backend.retry_max`` times with exponential backoff from
-    ``backend.retry_backoff_s``.
+    already exist under ``backend.pki_dir``. Terminal rejections
+    (``_TERMINAL_STATUSES``) fail immediately; everything else (network
+    errors, timeouts, 408/425/429/5xx) retries up to ``backend.retry_max``
+    times, honoring a numeric ``Retry-After`` response header when present
+    and otherwise backing off exponentially from
+    ``backend.retry_backoff_s``. The returned certificate's public key and
+    identity URI SAN are verified against ours before anything is written
+    to disk.
     """
     pki_dir = Path(settings.backend.pki_dir)
     bound_log = log.bind(collector_id=settings.collector_id, site_id=settings.site_id)
@@ -107,6 +192,24 @@ async def ensure_enrolled(
     private_key = _generate_private_key()
     csr_pem = _build_csr_pem(private_key, settings.collector_id, settings.site_id)
 
+    async def _retry_or_raise(
+        exc: Exception, attempt: int, *, retry_after: float | None = None
+    ) -> None:
+        if attempt > settings.backend.retry_max:
+            bound_log.error("pki.enroll.failed", error=str(exc), attempts=attempt)
+            raise EnrollmentError(
+                f"PKI enrollment failed after {attempt} attempts: {exc}"
+            ) from exc
+        backoff = (
+            retry_after
+            if retry_after is not None
+            else settings.backend.retry_backoff_s * (2 ** (attempt - 1))
+        )
+        bound_log.warning(
+            "pki.enroll.retry", error=str(exc), attempt=attempt, retry_in_s=backoff
+        )
+        await asyncio.sleep(backoff)
+
     owns_session = session is None
     active_session = session if session is not None else aiohttp.ClientSession()
     try:
@@ -115,21 +218,20 @@ async def ensure_enrolled(
             try:
                 cert_pem, ca_pem = await _post_csr(active_session, settings, csr_pem)
                 break
+            except _HttpEnrollError as exc:
+                if exc.status in _TERMINAL_STATUSES:
+                    bound_log.error("pki.enroll.rejected", status=exc.status, error=str(exc))
+                    raise EnrollmentError(str(exc)) from exc
+                attempt += 1
+                await _retry_or_raise(exc, attempt, retry_after=exc.retry_after)
             except (aiohttp.ClientError, EnrollmentError) as exc:
                 attempt += 1
-                if attempt > settings.backend.retry_max:
-                    bound_log.error("pki.enroll.failed", error=str(exc), attempts=attempt)
-                    raise EnrollmentError(
-                        f"PKI enrollment failed after {attempt} attempts: {exc}"
-                    ) from exc
-                backoff = settings.backend.retry_backoff_s * (2 ** (attempt - 1))
-                bound_log.warning(
-                    "pki.enroll.retry", error=str(exc), attempt=attempt, retry_in_s=backoff
-                )
-                await asyncio.sleep(backoff)
+                await _retry_or_raise(exc, attempt)
     finally:
         if owns_session:
             await active_session.close()
+
+    _verify_certificate_identity(cert_pem, private_key, settings.site_id, settings.collector_id)
 
     key_pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,

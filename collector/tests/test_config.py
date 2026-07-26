@@ -38,6 +38,30 @@ class TestDefaults:
         s = load_settings()
         assert s.max_concurrent_probes == 5
 
+    @pytest.mark.parametrize("scan_level_max", ["1", "2", "3"])
+    def test_scan_level_max_env_var_string_is_coerced(self, monkeypatch, scan_level_max):
+        # Found live on lab host .33: env vars are always strings, and
+        # pydantic-settings' env source doesn't coerce them for
+        # Literal[int, ...] fields — SCAN_LEVEL_MAX=1 arrived as "1" and
+        # failed Literal[1, 2, 3] validation outright instead of being
+        # treated as int 1.
+        monkeypatch.setenv("COLLECTOR_ID", "c")
+        monkeypatch.setenv("SCAN_LEVEL_MAX", scan_level_max)
+        s = load_settings()
+        assert s.scan_level_max == int(scan_level_max)
+
+    def test_scan_level_max_env_var_out_of_range_still_rejected(self, monkeypatch):
+        monkeypatch.setenv("COLLECTOR_ID", "c")
+        monkeypatch.setenv("SCAN_LEVEL_MAX", "9")
+        with pytest.raises(ConfigError):
+            load_settings()
+
+    def test_scan_level_max_env_var_non_numeric_still_rejected(self, monkeypatch):
+        monkeypatch.setenv("COLLECTOR_ID", "c")
+        monkeypatch.setenv("SCAN_LEVEL_MAX", "bogus")
+        with pytest.raises(ConfigError):
+            load_settings()
+
     def test_max_concurrent_probes_must_be_positive(self):
         with pytest.raises(ConfigError):
             load_settings(collector_id="c", max_concurrent_probes=0)

@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import stat
 import sys
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import aiohttp
+import collector.pki.enroll as enroll_module
 import pytest
 from collector.config import load_settings
 from collector.pki.enroll import (
@@ -16,13 +20,25 @@ from collector.pki.enroll import (
     ensure_enrolled,
     is_enrolled,
 )
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+
+_FAKE_CA_PEM = "-----BEGIN CERTIFICATE-----\nfakeca\n-----END CERTIFICATE-----\n"
 
 
 class _FakeResponse:
-    def __init__(self, status: int, json_body: object = None, text_body: str = ""):
+    def __init__(
+        self,
+        status: int,
+        json_body: object = None,
+        text_body: str = "",
+        headers: dict[str, str] | None = None,
+    ):
         self.status = status
         self._json = json_body
         self._text = text_body
+        self.headers = headers or {}
 
     async def __aenter__(self) -> _FakeResponse:
         return self
@@ -38,9 +54,17 @@ class _FakeResponse:
 
 
 class _FakeSession:
-    """Queues canned responses; raises if called more times than queued."""
+    """Queues canned responses; raises if called more times than queued.
 
-    def __init__(self, responses: list[_FakeResponse]):
+    A queued item may be a `_FakeResponse` (returned as-is), a
+    `BaseException` instance (raised, simulating a network/timeout error),
+    or a callable taking the request's JSON payload and returning a
+    `_FakeResponse` — used to mint a leaf certificate bound to the actual
+    CSR's public key, since `ensure_enrolled` now parses and verifies the
+    returned certificate before writing it to disk.
+    """
+
+    def __init__(self, responses: list[Any]):
         self._responses = list(responses)
         self.calls: list[dict] = []
 
@@ -49,19 +73,55 @@ class _FakeSession:
         item = self._responses.pop(0)
         if isinstance(item, BaseException):
             raise item
+        if callable(item):
+            return item(json)
         return item
 
 
-def _ok_response() -> _FakeResponse:
-    return _FakeResponse(
-        200,
-        json_body={
-            "certificate_pem": "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n",
-            "ca_certificate_pem": (
-                "-----BEGIN CERTIFICATE-----\nfakeca\n-----END CERTIFICATE-----\n"
-            ),
-        },
+def _mint_leaf_cert(
+    csr_pem: str, *, site_id: str, collector_id: str, public_key: Any = None
+) -> str:
+    """Stand in for the backend's CA signing step: binds a certificate to
+    the CSR's own public key (unless `public_key` overrides it, to
+    simulate a key-mismatch response) and a SPIFFE URI SAN for
+    site_id/collector_id (which may deliberately not match the real
+    request, to simulate an identity-mismatch response). Signature/chain
+    validity against a CA isn't checked by the collector yet — that's
+    C1-01's production enrollment integration — so a throwaway self-signed
+    key is enough; only the public key and URI SAN matter here (see
+    `_verify_certificate_identity` in collector/pki/enroll.py).
+    """
+    csr = x509.load_pem_x509_csr(csr_pem.encode("ascii"))
+    bound_key = public_key if public_key is not None else csr.public_key()
+    signing_key = ec.generate_private_key(ec.SECP256R1())
+    uri = f"spiffe://sentinel.local/sites/{site_id}/collectors/{collector_id}"
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(csr.subject)
+        .issuer_name(csr.subject)
+        .public_key(bound_key)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.UniformResourceIdentifier(uri)]), critical=False
+        )
+        .sign(signing_key, hashes.SHA256())
     )
+    return cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+
+
+def _ok_response(
+    site_id: str = "site-a", collector_id: str = "node-1"
+) -> Callable[[dict], _FakeResponse]:
+    def _factory(payload: dict) -> _FakeResponse:
+        cert_pem = _mint_leaf_cert(payload["csr_pem"], site_id=site_id, collector_id=collector_id)
+        return _FakeResponse(
+            200, json_body={"certificate_pem": cert_pem, "ca_certificate_pem": _FAKE_CA_PEM}
+        )
+
+    return _factory
 
 
 @pytest.fixture
@@ -141,7 +201,8 @@ class TestEnsureEnrolled:
             collector_id="node-1",
             backend={"pki_dir": str(tmp_path / "pki"), "bootstrap_token": "s3cr3t"},
         )
-        session = _FakeSession([_ok_response()])
+        # site_id defaults to "default" when not passed to load_settings.
+        session = _FakeSession([_ok_response(site_id="default")])
         await ensure_enrolled(settings, session=session)
 
         assert session.calls[0]["headers"]["Authorization"] == "Bearer s3cr3t"
@@ -178,24 +239,113 @@ class TestEnsureEnrolled:
 
 
 class TestEnsureEnrolledFailureModes:
-    """S1-02 requirement 3: reused/invalid token, malformed cert/CA data,
-    and timeout/network-error coverage. The enroll response contract (see
-    `_post_csr` in collector/pki/enroll.py) has no dedicated shape for an
-    invalid/reused bootstrap token or for identity confirmation — every
-    non-200 response is handled by the same generic branch, and the
-    response body never echoes back collector_id/site_id. These tests
-    exercise that existing generic contract rather than inventing a richer
-    one; see Q-1 in docs/guides/AGENT-COORDINATION.md for the retry-on-4xx
-    and identity-echo questions raised alongside this work.
+    """S1-02 requirement 3 + Q-1's resolution: reused/invalid token,
+    malformed cert/CA data, timeout/network-error, terminal-vs-retryable
+    status classification, Retry-After handling, and certificate
+    identity/key mismatch. Q-1 (docs/guides/AGENT-COORDINATION.md) settled
+    the two previously-open contract questions: terminal statuses fail
+    fast (no identity-echo field is added — the certificate itself is the
+    identity authority, verified client-side instead).
     """
 
-    async def test_invalid_or_reused_token_status_raises_after_retries(self, enroll_settings):
+    async def test_invalid_or_reused_token_status_fails_immediately(self, enroll_settings):
+        # 401 is a terminal status (Q-1): retrying an invalid/reused token
+        # against the same request can't succeed, so exactly one attempt is
+        # made — unlike the pre-Q-1 behavior, which retried it 3 times.
         session = _FakeSession([_FakeResponse(401, text_body="invalid or reused token")] * 3)
         with pytest.raises(EnrollmentError, match="401"):
             await ensure_enrolled(enroll_settings, session=session)
-        assert len(session.calls) == 3
+        assert len(session.calls) == 1
         pki_dir = Path(enroll_settings.backend.pki_dir)
         assert not (pki_dir / CERT_FILENAME).exists()
+
+    @pytest.mark.parametrize("status", [400, 403, 404, 409, 422])
+    async def test_terminal_status_fails_immediately_without_retry(self, enroll_settings, status):
+        # Mirrors enroll.py's _TERMINAL_STATUSES (Q-1's decision): these
+        # reject the request itself, not a transient condition, so exactly
+        # one attempt is made even though retry_max allows 3.
+        session = _FakeSession([_FakeResponse(status, text_body="rejected")] * 3)
+        with pytest.raises(EnrollmentError, match=str(status)):
+            await ensure_enrolled(enroll_settings, session=session)
+        assert len(session.calls) == 1
+        pki_dir = Path(enroll_settings.backend.pki_dir)
+        assert not (pki_dir / CERT_FILENAME).exists()
+
+    async def test_retryable_status_honors_retry_after_header(self, enroll_settings, monkeypatch):
+        sleeps: list[float] = []
+
+        async def _fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(enroll_module.asyncio, "sleep", _fake_sleep)
+
+        session = _FakeSession(
+            [
+                _FakeResponse(429, text_body="slow down", headers={"Retry-After": "2.5"}),
+                _ok_response(),
+            ]
+        )
+        await ensure_enrolled(enroll_settings, session=session)
+
+        assert sleeps == [2.5]
+        assert len(session.calls) == 2
+
+    async def test_retryable_status_without_retry_after_uses_configured_backoff(
+        self, enroll_settings, monkeypatch
+    ):
+        sleeps: list[float] = []
+
+        async def _fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(enroll_module.asyncio, "sleep", _fake_sleep)
+
+        # 503 has no Retry-After header, so it must fall back to the
+        # configured exponential backoff (retry_backoff_s=0.001 * 2**0),
+        # not silently skip the wait like a missing/None value might.
+        session = _FakeSession([_FakeResponse(503, text_body="unavailable"), _ok_response()])
+        await ensure_enrolled(enroll_settings, session=session)
+
+        assert sleeps == [pytest.approx(0.001)]
+
+    async def test_public_key_mismatch_raises_and_does_not_write_files(self, enroll_settings):
+        unrelated_key = ec.generate_private_key(ec.SECP256R1())
+
+        def _wrong_key_response(payload: dict) -> _FakeResponse:
+            cert_pem = _mint_leaf_cert(
+                payload["csr_pem"],
+                site_id="site-a",
+                collector_id="node-1",
+                public_key=unrelated_key.public_key(),
+            )
+            return _FakeResponse(
+                200, json_body={"certificate_pem": cert_pem, "ca_certificate_pem": _FAKE_CA_PEM}
+            )
+
+        session = _FakeSession([_wrong_key_response])
+        with pytest.raises(EnrollmentError, match="public key"):
+            await ensure_enrolled(enroll_settings, session=session)
+
+        pki_dir = Path(enroll_settings.backend.pki_dir)
+        assert not (pki_dir / CERT_FILENAME).exists()
+        assert not (pki_dir / KEY_FILENAME).exists()
+
+    async def test_identity_mismatch_raises_and_does_not_write_files(self, enroll_settings):
+        def _wrong_identity_response(payload: dict) -> _FakeResponse:
+            cert_pem = _mint_leaf_cert(
+                payload["csr_pem"], site_id="site-a", collector_id="some-other-node"
+            )
+            return _FakeResponse(
+                200, json_body={"certificate_pem": cert_pem, "ca_certificate_pem": _FAKE_CA_PEM}
+            )
+
+        session = _FakeSession([_wrong_identity_response])
+        with pytest.raises(EnrollmentError, match="URI SAN"):
+            await ensure_enrolled(enroll_settings, session=session)
+
+        pki_dir = Path(enroll_settings.backend.pki_dir)
+        assert not (pki_dir / CERT_FILENAME).exists()
+        assert not (pki_dir / KEY_FILENAME).exists()
 
     async def test_malformed_response_missing_certificate_pem(self, enroll_settings):
         session = _FakeSession([_FakeResponse(200, json_body={"ca_certificate_pem": "x"})] * 3)
