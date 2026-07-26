@@ -74,3 +74,32 @@ async def test_wires_up_and_emits_heartbeat(monkeypatch, enrolled_pki_dir, capsy
     assert "collector.shutdown" in out
     assert shutdown_calls == [fake_provider]
     assert fake_provider.meter.counters["collector_heartbeat_total"].value >= 1
+
+
+async def test_shutdown_still_runs_when_scheduler_raises(monkeypatch, enrolled_pki_dir, capsys):
+    """A check that bypasses BaseCheck's never-raise contract cancels the
+    TaskGroup (scheduler + watchdog) and re-raises as ExceptionGroup — the
+    provider must still be shut down via the surrounding try/finally.
+    """
+    monkeypatch.setenv("COLLECTOR_ID", "node-1")
+    monkeypatch.setenv("BACKEND__PKI_DIR", str(enrolled_pki_dir))
+    monkeypatch.setenv("BACKEND__URL", "https://localhost:4317")
+
+    fake_provider = _FakeMeterProvider()
+    shutdown_calls = []
+    monkeypatch.setattr(main_module, "build_meter_provider", lambda settings: fake_provider)
+    monkeypatch.setattr(main_module, "get_meter", lambda provider: provider.meter)
+    monkeypatch.setattr(main_module, "shutdown_meter_provider", shutdown_calls.append)
+
+    class _BrokenHeartbeat(main_module._HeartbeatCheck):  # pylint: disable=protected-access
+        async def run(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(main_module, "_HeartbeatCheck", _BrokenHeartbeat)
+
+    with pytest.raises(ExceptionGroup):
+        await main()
+
+    assert shutdown_calls == [fake_provider]
+    out = capsys.readouterr().out
+    assert "collector.shutdown" in out

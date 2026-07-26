@@ -52,6 +52,19 @@ class TestTcpConnect:
 
 
 class TestTcpCheck:
+    def test_interval_s_from_config(self):
+        settings = load_settings(collector_id="c", tcp={"interval_s": 15})
+        check = TcpCheck(settings, meter=None, target=TcpTarget(host="h", port=1))
+        assert check.interval_s == 15
+
+    def test_semaphore_stored(self):
+        settings = load_settings(collector_id="c")
+        sem = asyncio.Semaphore(3)
+        check = TcpCheck(
+            settings, meter=None, target=TcpTarget(host="h", port=1), semaphore=sem
+        )
+        assert check.semaphore is sem
+
     async def test_run_ok_result(self, monkeypatch):
         settings = load_settings(collector_id="c")
         target = TcpTarget(host="10.0.0.1", port=443)

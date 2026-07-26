@@ -4,7 +4,9 @@ for self-signed OT/internal endpoints).
 """
 from __future__ import annotations
 
+import asyncio
 import time
+from typing import ClassVar
 
 import aiohttp
 import structlog
@@ -43,19 +45,47 @@ async def http_probe(
 
 
 class HttpCheck(BaseCheck):
+    """HTTP/HTTPS probe.
+
+    All `HttpCheck` instances (across all targets) share one class-level
+    `aiohttp.ClientSession` — creating a fresh session per probe call
+    re-establishes the TCP connection pool and re-resolves DNS every time,
+    which is expensive at scheduler-cycle frequency (see
+    docs/guides/ASYNCIO-OPTIMIZATION.md §5).
+    """
+
     name = "net_http"
     scan_level = 1
 
-    def __init__(self, config: CollectorSettings, meter: Meter, target: str) -> None:
-        super().__init__(config, meter)
+    _session: ClassVar[aiohttp.ClientSession | None] = None
+
+    def __init__(
+        self,
+        config: CollectorSettings,
+        meter: Meter | None,
+        target: str,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> None:
+        super().__init__(config, meter, semaphore=semaphore)
         self.target = target
+        self.interval_s = config.http.interval_s
+
+    @classmethod
+    async def _get_session(cls) -> aiohttp.ClientSession:
+        if cls._session is None or cls._session.closed:
+            connector = aiohttp.TCPConnector(limit=10, ttl_dns_cache=300)
+            cls._session = aiohttp.ClientSession(connector=connector)
+        return cls._session
 
     async def run(self) -> CheckResult:
         try:
+            session = await self._get_session()
             response_ms, status = await http_probe(
                 self.target,
                 timeout_s=self.config.http.timeout_s,
                 verify_tls=self.config.http.verify_tls,
+                session=session,
             )
             labels = {"target": self.target, "status_code": str(status)}
             # Strict 2xx-only success, not "< 400" or "< 500" — the v1

@@ -7,6 +7,9 @@ frozen v1 Go collector lives on the `release/v1.0` branch and the `v1.0` tag.
 ## Status
 
 Phase 1 (project scaffold) complete. Phase 2 (core network probes) complete.
+Scheduler and check base class also incorporate the `asyncio.TaskGroup` /
+semaphore / shared-session patterns from
+[`../docs/guides/ASYNCIO-OPTIMIZATION.md`](../docs/guides/ASYNCIO-OPTIMIZATION.md).
 See the phased plan in
 [`../docs/guides/OPUS-AGENT-GUIDE-V2.md`](../docs/guides/OPUS-AGENT-GUIDE-V2.md)
 §4 and the primary design spec
@@ -19,13 +22,15 @@ See the phased plan in
 | PKI renew | `pki/renew.py` | ☐ |
 | Transport (mTLS, OTLP) | `transport/mtls.py`, `transport/otlp.py` | ✅ |
 | Transport retry buffer | `transport/retry.py` | ☐ |
-| Scheduler (asyncio priority loop) | `scheduler.py` | ✅ |
+| Scheduler (`asyncio.TaskGroup`, per-check interval) | `scheduler.py` | ✅ |
+| Event loop latency watchdog | `health/loop_watchdog.py` | ✅ |
 | Health score | `health/score.py` | ☐ |
-| Entry point (heartbeat) | `__main__.py` | ✅ |
-| Check base class | `checks/__init__.py` | ✅ |
+| Shared CPU-bound thread pool | `utils/thread_pool.py` | ✅ |
+| Entry point (heartbeat, uvloop, TaskGroup) | `__main__.py` | ✅ |
+| Check base class (semaphore-capped) | `checks/__init__.py` | ✅ |
 | ICMP echo probe | `checks/net_icmp.py` | ✅ |
 | TCP connect probe | `checks/net_tcp.py` | ✅ |
-| HTTP/HTTPS probe | `checks/net_http.py` | ✅ |
+| HTTP/HTTPS probe (shared session) | `checks/net_http.py` | ✅ |
 | DNS resolution probe | `checks/net_dns.py` | ✅ |
 | RTT jitter probe | `checks/net_latency.py` | ✅ |
 | OS health (CPU/mem/disk/net) | `os_health/` | ☐ |

@@ -1,5 +1,4 @@
-"""Tests for collector.scheduler — task ordering, interval accuracy, exception
-isolation, and stop_event-driven shutdown."""
+"""Tests for collector.scheduler — TaskGroup-based cycle scheduling."""
 from __future__ import annotations
 
 import asyncio
@@ -7,85 +6,96 @@ import time
 
 import pytest
 
-from collector.scheduler import CheckTask, run_scheduler
+from collector.checks import BaseCheck, CheckResult
+from collector.scheduler import run_scheduler
 
 
-async def test_empty_tasks_raises():
-    with pytest.raises(ValueError):
-        await run_scheduler([])
+class _CountingCheck(BaseCheck):
+    name = "counting"
+    scan_level = 1
+
+    def __init__(self, settings, *, interval_s: float = 0.02, enabled: bool = True):
+        super().__init__(settings, meter=None)
+        self.interval_s = interval_s
+        self.call_count = 0
+        self._enabled = enabled
+
+    def is_enabled(self) -> bool:
+        return self._enabled
+
+    async def run(self) -> CheckResult:
+        self.call_count += 1
+        return CheckResult(ok=True)
 
 
-async def test_runs_earliest_next_run_first():
-    calls: list[str] = []
-    now = time.monotonic()
+class _BrokenCheck(BaseCheck):
+    name = "broken"
+    scan_level = 1
+    interval_s = 1.0
 
-    async def fire(name: str) -> None:
-        calls.append(name)
+    def is_enabled(self) -> bool:
+        return True
 
-    tasks = [
-        CheckTask(next_run=now + 10, interval_s=10, coro_fn=lambda: fire("late"), name="late"),
-        CheckTask(next_run=now, interval_s=10, coro_fn=lambda: fire("early"), name="early"),
-    ]
+    async def run(self) -> CheckResult:
+        raise RuntimeError("unexpected")
+
+
+async def test_empty_checks_list_stops_on_event():
+    stop_event = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.03, stop_event.set)
+    start = time.monotonic()
+    await run_scheduler([], cycle_s=0.01, stop_event=stop_event)
+    assert time.monotonic() - start < 0.5
+
+
+async def test_disabled_check_never_runs(settings):
+    check = _CountingCheck(settings, enabled=False)
     stop_event = asyncio.Event()
     asyncio.get_running_loop().call_later(0.05, stop_event.set)
-    await run_scheduler(tasks, stop_event=stop_event)
+    await run_scheduler([check], cycle_s=0.01, stop_event=stop_event)
+    assert check.call_count == 0
 
-    assert calls == ["early"]
+
+async def test_multiple_due_checks_run_in_same_cycle(settings):
+    a = _CountingCheck(settings, interval_s=10.0)
+    b = _CountingCheck(settings, interval_s=10.0)
+    stop_event = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.03, stop_event.set)
+    await run_scheduler([a, b], cycle_s=0.01, stop_event=stop_event)
+    assert a.call_count == 1
+    assert b.call_count == 1
 
 
-async def test_interval_accuracy_fires_repeatedly():
-    calls: list[float] = []
-    now = time.monotonic()
-
-    async def tick() -> None:
-        calls.append(time.monotonic())
-
-    tasks = [CheckTask(next_run=now, interval_s=0.02, coro_fn=tick, name="tick")]
+async def test_interval_accuracy_fires_repeatedly(settings):
+    check = _CountingCheck(settings, interval_s=0.02)
     stop_event = asyncio.Event()
     asyncio.get_running_loop().call_later(0.13, stop_event.set)
-    await run_scheduler(tasks, stop_event=stop_event)
-    # give fire-and-forget tasks created just before stop a moment to land
-    await asyncio.sleep(0.01)
-
-    assert len(calls) >= 4
-    gaps = [b - a for a, b in zip(calls, calls[1:], strict=False)]
-    assert all(gap > 0.005 for gap in gaps)
+    await run_scheduler([check], cycle_s=0.01, stop_event=stop_event)
+    assert check.call_count >= 4
 
 
-async def test_exception_in_one_task_does_not_stop_others():
-    healthy_calls: list[int] = []
-    now = time.monotonic()
+async def test_exception_escaping_run_raises_exception_group(settings):
+    check = _BrokenCheck(settings, meter=None)
+    with pytest.raises(ExceptionGroup) as exc_info:
+        await run_scheduler([check], cycle_s=0.0)
+    assert isinstance(exc_info.value.exceptions[0], RuntimeError)
 
-    async def broken() -> None:
-        raise RuntimeError("boom")
 
-    async def healthy() -> None:
-        healthy_calls.append(1)
+async def test_broken_check_mixed_with_healthy_still_raises(settings):
+    """Documents TaskGroup's structured-concurrency behaviour: a check that
+    bypasses the BaseCheck never-raise contract cancels every check
+    scheduled in the same cycle, not just itself — this is intentional
+    (docs/guides/OPUS-AGENT-GUIDE-V2.md §5.8), not a bug to work around.
+    """
+    broken = _BrokenCheck(settings, meter=None)
+    healthy = _CountingCheck(settings, interval_s=10.0)
+    with pytest.raises(ExceptionGroup):
+        await run_scheduler([broken, healthy], cycle_s=0.0)
 
-    tasks = [
-        CheckTask(next_run=now, interval_s=0.02, coro_fn=broken, name="broken"),
-        CheckTask(next_run=now, interval_s=0.02, coro_fn=healthy, name="healthy"),
-    ]
+
+async def test_stop_event_already_set_runs_zero_cycles(settings):
+    check = _CountingCheck(settings)
     stop_event = asyncio.Event()
-    asyncio.get_running_loop().call_later(0.13, stop_event.set)
-    await run_scheduler(tasks, stop_event=stop_event)
-    await asyncio.sleep(0.01)
-
-    assert len(healthy_calls) >= 4
-
-
-async def test_stop_event_returns_promptly_when_nothing_due_soon():
-    now = time.monotonic()
-
-    async def never() -> None:
-        pass
-
-    tasks = [CheckTask(next_run=now + 3600, interval_s=3600, coro_fn=never, name="never")]
-    stop_event = asyncio.Event()
-    asyncio.get_running_loop().call_later(0.02, stop_event.set)
-
-    start = time.monotonic()
-    await run_scheduler(tasks, stop_event=stop_event)
-    elapsed = time.monotonic() - start
-
-    assert elapsed < 0.5
+    stop_event.set()
+    await run_scheduler([check], cycle_s=0.01, stop_event=stop_event)
+    assert check.call_count == 0

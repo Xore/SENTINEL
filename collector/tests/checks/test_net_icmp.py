@@ -1,6 +1,7 @@
 """Tests for collector.checks.net_icmp — packet framing and the ICMP check."""
 from __future__ import annotations
 
+import asyncio
 import struct
 from unittest.mock import MagicMock, patch
 
@@ -118,6 +119,17 @@ async def test_ping_delegates_to_blocking_helper_via_to_thread():
 
 
 class TestIcmpCheck:
+    def test_interval_s_from_config(self):
+        settings = load_settings(collector_id="c", icmp={"interval_s": 5})
+        check = IcmpCheck(settings, meter=None, target="10.0.0.1")
+        assert check.interval_s == 5
+
+    def test_semaphore_stored(self):
+        settings = load_settings(collector_id="c")
+        sem = asyncio.Semaphore(3)
+        check = IcmpCheck(settings, meter=None, target="10.0.0.1", semaphore=sem)
+        assert check.semaphore is sem
+
     async def test_run_ok_result(self, monkeypatch):
         settings = load_settings(collector_id="c", icmp={"targets": ["10.0.0.1"]})
         check = IcmpCheck(settings, meter=None, target="10.0.0.1")

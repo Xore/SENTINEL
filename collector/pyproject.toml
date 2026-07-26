@@ -70,3 +70,9 @@ max-line-length = 100
 [tool.pylint.design]
 # Collector checks may need more arguments than pylint's default of 5.
 max-args = 8
+
+[tool.pylint.basic]
+# PEP 695 generic type parameters (e.g. `def f[**P, R](...)`, Python 3.12+)
+# are conventionally single uppercase letters; pylint doesn't yet recognize
+# the new syntax and flags them as non-snake_case variable names.
+good-names = ["i", "j", "k", "ex", "Run", "_", "P", "R", "T", "K", "V"]

@@ -1,6 +1,7 @@
 """Tests for collector.checks.net_dns — DNS resolution probe."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
 
 import dns.resolver
@@ -54,6 +55,17 @@ class TestDnsResolve:
 
 
 class TestDnsCheck:
+    def test_interval_s_from_config(self):
+        settings = load_settings(collector_id="c", dns={"interval_s": 45})
+        check = DnsCheck(settings, meter=None, target="example.com")
+        assert check.interval_s == 45
+
+    def test_semaphore_stored(self):
+        settings = load_settings(collector_id="c")
+        sem = asyncio.Semaphore(3)
+        check = DnsCheck(settings, meter=None, target="example.com", semaphore=sem)
+        assert check.semaphore is sem
+
     async def test_run_ok_result(self, monkeypatch):
         settings = load_settings(collector_id="c")
         check = DnsCheck(settings, meter=None, target="example.com", record_type="A")

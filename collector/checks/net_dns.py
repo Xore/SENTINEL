@@ -3,6 +3,7 @@ resolution time per (hostname, record_type).
 """
 from __future__ import annotations
 
+import asyncio
 import time
 
 import dns.asyncresolver
@@ -46,13 +47,16 @@ class DnsCheck(BaseCheck):
     def __init__(
         self,
         config: CollectorSettings,
-        meter: Meter,
+        meter: Meter | None,
         target: str,
         record_type: str = "A",
+        *,
+        semaphore: asyncio.Semaphore | None = None,
     ) -> None:
-        super().__init__(config, meter)
+        super().__init__(config, meter, semaphore=semaphore)
         self.target = target
         self.record_type = record_type
+        self.interval_s = config.dns.interval_s
         self._resolver = dns.asyncresolver.Resolver()
         if config.dns.resolvers:
             self._resolver.nameservers = config.dns.resolvers

@@ -35,9 +35,17 @@ class TcpCheck(BaseCheck):
     name = "net_tcp"
     scan_level = 1
 
-    def __init__(self, config: CollectorSettings, meter: Meter, target: TcpTarget) -> None:
-        super().__init__(config, meter)
+    def __init__(
+        self,
+        config: CollectorSettings,
+        meter: Meter | None,
+        target: TcpTarget,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> None:
+        super().__init__(config, meter, semaphore=semaphore)
         self.target = target
+        self.interval_s = config.tcp.interval_s
 
     async def run(self) -> CheckResult:
         labels = {"target": self.target.host, "port": str(self.target.port)}

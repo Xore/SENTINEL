@@ -1,13 +1,15 @@
 """Base check interface — every probe module implements `BaseCheck`.
 
 `run()` must never raise: catch every exception internally and return
-`CheckResult(ok=False, error=str(exc))`. `collector.scheduler` tolerates a
-raising task via a done-callback so the scheduler itself survives, but a
-check that raises still loses its structured result (metrics/labels) for
-that cycle — checks own this contract too, not just the scheduler.
+`CheckResult(ok=False, error=str(exc))`. `collector.scheduler` runs checks
+inside an `asyncio.TaskGroup`, which cancels every sibling and re-raises as
+`ExceptionGroup` on an unhandled exception — that is a safety net for bugs
+that bypass this contract, not the primary error boundary. Checks own the
+contract too, not just the scheduler.
 """
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -27,10 +29,18 @@ class CheckResult:
 class BaseCheck(ABC):
     name: str
     scan_level: int
+    interval_s: float = 30.0
 
-    def __init__(self, config: CollectorSettings, meter: Meter) -> None:
+    def __init__(
+        self,
+        config: CollectorSettings,
+        meter: Meter | None,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> None:
         self.config = config
         self.meter = meter
+        self.semaphore = semaphore
 
     @abstractmethod
     async def run(self) -> CheckResult:
@@ -39,6 +49,22 @@ class BaseCheck(ABC):
         Must be non-blocking (async) and must never raise — catch every
         exception internally and return `CheckResult(ok=False, error=...)`.
         """
+
+    async def run_with_semaphore(self) -> CheckResult:
+        """What the scheduler calls instead of `run()` directly.
+
+        Bounds total concurrent network operations across every check via a
+        shared `asyncio.Semaphore` (sized from
+        `CollectorSettings.max_concurrent_probes`), so a burst of due checks
+        can't exhaust file descriptors on constrained nodes (e.g. a
+        Raspberry Pi 3B). A no-op passthrough if no semaphore was supplied —
+        constructing a check directly, as most unit tests do, doesn't need
+        one.
+        """
+        if self.semaphore is None:
+            return await self.run()
+        async with self.semaphore:
+            return await self.run()
 
     def is_enabled(self) -> bool:
         """False if this check should be skipped on this node."""

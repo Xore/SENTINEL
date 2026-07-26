@@ -7,16 +7,55 @@ import asyncio
 import logging
 import signal
 import sys
-import time
 
 import structlog
+from opentelemetry.metrics import Meter
 
-from collector.config import ConfigError, install_sighup_reload, load_settings
+from collector.checks import BaseCheck, CheckResult
+from collector.config import CollectorSettings, ConfigError, install_sighup_reload, load_settings
+from collector.health.loop_watchdog import loop_latency_watchdog
 from collector.pki.enroll import ensure_enrolled
-from collector.scheduler import CheckTask, run_scheduler
+from collector.scheduler import run_scheduler
 from collector.transport.otlp import build_meter_provider, get_meter, shutdown_meter_provider
 
 HEARTBEAT_INTERVAL_S = 30.0
+
+
+class _HeartbeatCheck(BaseCheck):
+    """Internal check emitting `collector_heartbeat_total` on its own cycle."""
+
+    name = "heartbeat"
+    scan_level = 1
+
+    def __init__(
+        self,
+        config: CollectorSettings,
+        meter: Meter | None,
+        log: structlog.BoundLogger,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> None:
+        super().__init__(config, meter, semaphore=semaphore)
+        # Read at construction time (not a class-body assignment) so tests
+        # can monkeypatch the module-level HEARTBEAT_INTERVAL_S before main()
+        # builds this check.
+        self.interval_s = HEARTBEAT_INTERVAL_S
+        self._log = log
+        self._counter = (
+            meter.create_counter(
+                "collector_heartbeat_total",
+                description="Collector scheduler heartbeat",
+                unit="1",
+            )
+            if meter is not None
+            else None
+        )
+
+    async def run(self) -> CheckResult:
+        if self._counter is not None:
+            self._counter.add(1)
+        self._log.info("collector.heartbeat")
+        return CheckResult(ok=True)
 
 
 def _log_level(name: str) -> int:
@@ -52,6 +91,24 @@ def _install_shutdown_signals(stop_event: asyncio.Event) -> None:
             return
 
 
+def _install_uvloop() -> None:
+    """Install uvloop as the default event loop policy on Linux, if
+    available. A soft dependency: the collector must run correctly without
+    it (Windows dev machines, environments where it isn't installed) — see
+    `docs/guides/ASYNCIO-OPTIMIZATION.md` §7.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        # Imported here, not at module scope, so the collector still starts
+        # on platforms/environments without uvloop installed.
+        import uvloop  # pylint: disable=import-outside-toplevel
+
+        uvloop.install()
+    except ImportError:
+        pass
+
+
 async def main(*, stop_event: asyncio.Event | None = None) -> None:
     try:
         settings = load_settings()
@@ -73,22 +130,9 @@ async def main(*, stop_event: asyncio.Event | None = None) -> None:
 
     provider = build_meter_provider(settings)
     meter = get_meter(provider)
-    heartbeat_counter = meter.create_counter(
-        "collector_heartbeat_total", description="Collector scheduler heartbeat", unit="1"
-    )
 
-    async def heartbeat() -> None:
-        heartbeat_counter.add(1)
-        log.info("collector.heartbeat")
-
-    tasks = [
-        CheckTask(
-            next_run=time.monotonic(),
-            interval_s=HEARTBEAT_INTERVAL_S,
-            coro_fn=heartbeat,
-            name="heartbeat",
-        )
-    ]
+    semaphore = asyncio.Semaphore(settings.max_concurrent_probes)
+    checks: list[BaseCheck] = [_HeartbeatCheck(settings, meter, log, semaphore=semaphore)]
 
     if stop_event is None:
         stop_event = asyncio.Event()
@@ -96,13 +140,16 @@ async def main(*, stop_event: asyncio.Event | None = None) -> None:
 
     log.info("collector.started", heartbeat_interval_s=HEARTBEAT_INTERVAL_S)
     try:
-        await run_scheduler(tasks, stop_event=stop_event)
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(run_scheduler(checks, stop_event=stop_event), name="scheduler")
+            tg.create_task(loop_latency_watchdog(stop_event=stop_event), name="loop_watchdog")
     finally:
         shutdown_meter_provider(provider)
         log.info("collector.shutdown")
 
 
 if __name__ == "__main__":
+    _install_uvloop()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

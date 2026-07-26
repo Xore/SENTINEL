@@ -1,6 +1,7 @@
 """Tests for collector.checks.net_http — HTTP/HTTPS probe."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
 
 import aiohttp
@@ -35,6 +36,21 @@ class _FakeSession:
 
     async def close(self) -> None:
         self.closed = True
+
+
+@pytest.fixture(autouse=True)
+async def _reset_http_check_session():
+    """HttpCheck's shared session is class-level and bound to whatever event
+    loop is running when it's created. pytest-asyncio gives each test
+    function its own loop, so a session created in one test cannot be reused
+    (or even safely closed) from another. Reset before every test, and close
+    within the *same* test's loop afterward if one was created.
+    """
+    HttpCheck._session = None
+    yield
+    if HttpCheck._session is not None and not HttpCheck._session.closed:
+        await HttpCheck._session.close()
+    HttpCheck._session = None
 
 
 class TestHttpProbe:
@@ -72,12 +88,46 @@ class TestHttpProbe:
             )
 
 
+class TestHttpCheckSharedSession:
+    async def test_get_session_creates_once(self):
+        settings = load_settings(collector_id="c")
+        check_a = HttpCheck(settings, meter=None, target="https://10.0.0.1/a")
+        check_b = HttpCheck(settings, meter=None, target="https://10.0.0.1/b")
+
+        session_a = await check_a._get_session()
+        session_b = await check_b._get_session()
+
+        assert session_a is session_b
+
+    async def test_get_session_recreates_after_close(self):
+        settings = load_settings(collector_id="c")
+        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+
+        first = await check._get_session()
+        await first.close()
+        second = await check._get_session()
+
+        assert second is not first
+        assert not second.closed
+
+
 class TestHttpCheck:
+    def test_interval_s_from_config(self):
+        settings = load_settings(collector_id="c", http={"interval_s": 20})
+        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+        assert check.interval_s == 20
+
+    def test_semaphore_stored(self):
+        settings = load_settings(collector_id="c")
+        sem = asyncio.Semaphore(3)
+        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/", semaphore=sem)
+        assert check.semaphore is sem
+
     async def test_run_ok_on_2xx(self, monkeypatch):
         settings = load_settings(collector_id="c")
         check = HttpCheck(settings, meter=None, target="https://10.0.0.1/health")
 
-        async def fake_probe(url, *, timeout_s, verify_tls):
+        async def fake_probe(url, *, timeout_s, verify_tls, session=None):
             return 8.0, 200
 
         monkeypatch.setattr("collector.checks.net_http.http_probe", fake_probe)
@@ -91,7 +141,7 @@ class TestHttpCheck:
         settings = load_settings(collector_id="c")
         check = HttpCheck(settings, meter=None, target="https://10.0.0.1/missing")
 
-        async def fake_probe(url, *, timeout_s, verify_tls):
+        async def fake_probe(url, *, timeout_s, verify_tls, session=None):
             return 5.0, 404
 
         monkeypatch.setattr("collector.checks.net_http.http_probe", fake_probe)
@@ -105,7 +155,7 @@ class TestHttpCheck:
         settings = load_settings(collector_id="c")
         check = HttpCheck(settings, meter=None, target="https://10.0.0.1/private")
 
-        async def fake_probe(url, *, timeout_s, verify_tls):
+        async def fake_probe(url, *, timeout_s, verify_tls, session=None):
             return 5.0, 401
 
         monkeypatch.setattr("collector.checks.net_http.http_probe", fake_probe)
@@ -117,7 +167,7 @@ class TestHttpCheck:
         settings = load_settings(collector_id="c")
         check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
 
-        async def failing_probe(url, *, timeout_s, verify_tls):
+        async def failing_probe(url, *, timeout_s, verify_tls, session=None):
             raise aiohttp.ClientConnectionError("refused")
 
         monkeypatch.setattr("collector.checks.net_http.http_probe", failing_probe)
@@ -125,3 +175,18 @@ class TestHttpCheck:
 
         assert result.ok is False
         assert "refused" in result.error
+
+    async def test_run_passes_shared_session_to_http_probe(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+        seen = {}
+
+        async def fake_probe(url, *, timeout_s, verify_tls, session=None):
+            seen["session"] = session
+            return 1.0, 200
+
+        monkeypatch.setattr("collector.checks.net_http.http_probe", fake_probe)
+        await check.run()
+
+        assert seen["session"] is HttpCheck._session
+        assert seen["session"] is not None

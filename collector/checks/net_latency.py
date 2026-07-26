@@ -4,6 +4,8 @@ single target in one measurement.
 """
 from __future__ import annotations
 
+import asyncio
+
 import structlog
 from opentelemetry.metrics import Meter
 
@@ -33,13 +35,16 @@ class LatencyCheck(BaseCheck):
     def __init__(
         self,
         config: CollectorSettings,
-        meter: Meter,
+        meter: Meter | None,
         target: str,
         sample_count: int = DEFAULT_SAMPLE_COUNT,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
     ) -> None:
-        super().__init__(config, meter)
+        super().__init__(config, meter, semaphore=semaphore)
         self.target = target
         self.sample_count = sample_count
+        self.interval_s = config.icmp.interval_s
         self._sequence = 0
         self._identifier = target_identifier(target)
 

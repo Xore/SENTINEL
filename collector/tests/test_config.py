@@ -30,6 +30,17 @@ class TestDefaults:
         assert settings.tcp.targets == []
         assert settings.http.verify_tls is True
         assert settings.dns.record_types == ["A"]
+        assert settings.max_concurrent_probes == 20
+
+    def test_max_concurrent_probes_env_override(self, monkeypatch):
+        monkeypatch.setenv("COLLECTOR_ID", "c")
+        monkeypatch.setenv("MAX_CONCURRENT_PROBES", "5")
+        s = load_settings()
+        assert s.max_concurrent_probes == 5
+
+    def test_max_concurrent_probes_must_be_positive(self):
+        with pytest.raises(ConfigError):
+            load_settings(collector_id="c", max_concurrent_probes=0)
 
     def test_missing_required_collector_id_raises_configerror(self):
         with pytest.raises(ConfigError) as exc:

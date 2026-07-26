@@ -1,6 +1,8 @@
 """Tests for collector.checks — BaseCheck ABC and CheckResult."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from collector.checks import BaseCheck, CheckResult
 from collector.config import load_settings
@@ -43,3 +45,48 @@ def test_check_result_defaults():
     assert result.metrics == {}
     assert result.labels == {}
     assert result.error is None
+
+
+def test_default_interval_s():
+    assert _DummyCheck.interval_s == 30.0
+
+
+async def test_run_with_semaphore_passes_through_when_none(settings):
+    check = _DummyCheck(settings, meter=None)
+    assert check.semaphore is None
+    result = await check.run_with_semaphore()
+    assert result.ok is True
+
+
+async def test_run_with_semaphore_acquires_and_releases(settings):
+    semaphore = asyncio.Semaphore(1)
+    check = _DummyCheck(settings, meter=None, semaphore=semaphore)
+
+    assert semaphore.locked() is False
+    result = await check.run_with_semaphore()
+    assert result.ok is True
+    assert semaphore.locked() is False  # released after run() completes
+
+
+async def test_run_with_semaphore_serializes_concurrent_calls():
+    settings = load_settings(collector_id="c")
+    semaphore = asyncio.Semaphore(1)
+    order: list[str] = []
+
+    class _SlowCheck(BaseCheck):
+        name = "slow"
+        scan_level = 1
+
+        async def run(self) -> CheckResult:
+            order.append("start")
+            await asyncio.sleep(0.01)
+            order.append("end")
+            return CheckResult(ok=True)
+
+    check_a = _SlowCheck(settings, meter=None, semaphore=semaphore)
+    check_b = _SlowCheck(settings, meter=None, semaphore=semaphore)
+
+    await asyncio.gather(check_a.run_with_semaphore(), check_b.run_with_semaphore())
+
+    # With a semaphore of 1, the second call cannot start until the first ends.
+    assert order == ["start", "end", "start", "end"]

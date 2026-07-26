@@ -158,6 +158,10 @@ class CollectorSettings(BaseSettings):
     dns: DnsConfig = DnsConfig()
     log_level: str = "INFO"
     data_dir: str = "/var/lib/analyselaptop/data"
+    # Shared semaphore size capping total concurrent check network operations
+    # (see docs/guides/ASYNCIO-OPTIMIZATION.md §4) — 20 is right for a
+    # Raspberry Pi 3B; raise on higher-spec nodes rather than hardcoding.
+    max_concurrent_probes: int = Field(default=20, ge=1)
 
     model_config = SettingsConfigDict(
         env_file=".env",

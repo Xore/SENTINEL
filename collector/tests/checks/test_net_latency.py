@@ -1,6 +1,8 @@
 """Tests for collector.checks.net_latency — RTT jitter probe."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from collector.checks.net_latency import LatencyCheck, compute_jitter_ms
 from collector.config import load_settings
@@ -22,6 +24,17 @@ class TestComputeJitterMs:
 
 
 class TestLatencyCheck:
+    def test_interval_s_from_icmp_config(self):
+        settings = load_settings(collector_id="c", icmp={"interval_s": 7})
+        check = LatencyCheck(settings, meter=None, target="10.0.0.1")
+        assert check.interval_s == 7
+
+    def test_semaphore_stored(self):
+        settings = load_settings(collector_id="c")
+        sem = asyncio.Semaphore(3)
+        check = LatencyCheck(settings, meter=None, target="10.0.0.1", semaphore=sem)
+        assert check.semaphore is sem
+
     async def test_all_samples_succeed(self, monkeypatch):
         settings = load_settings(collector_id="c")
         check = LatencyCheck(settings, meter=None, target="10.0.0.1", sample_count=3)

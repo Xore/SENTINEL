@@ -108,9 +108,17 @@ class IcmpCheck(BaseCheck):
     name = "net_icmp"
     scan_level = 1
 
-    def __init__(self, config: CollectorSettings, meter: Meter, target: str) -> None:
-        super().__init__(config, meter)
+    def __init__(
+        self,
+        config: CollectorSettings,
+        meter: Meter | None,
+        target: str,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> None:
+        super().__init__(config, meter, semaphore=semaphore)
         self.target = target
+        self.interval_s = config.icmp.interval_s
         self._sequence = 0
         self._identifier = target_identifier(target)
 
