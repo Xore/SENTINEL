@@ -249,5 +249,12 @@ def install_sighup_reload(on_reload: Callable[[CollectorSettings], None]) -> boo
     def _handler(_signum: int, _frame: Any) -> None:
         on_reload(load_settings())
 
+    # On a Windows pylint run, typeshed's signal.pyi omits SIGHUP entirely
+    # (it's declared under `if sys.platform != "win32"`), and astroid does
+    # not narrow that away based on the hasattr() guard above — so pylint
+    # reports a no-member false positive on a line that is unreachable on
+    # Windows at runtime. mypy's ignore (below) already covers the
+    # equivalent type-checker gap.
+    # pylint: disable-next=no-member
     signal.signal(signal.SIGHUP, _handler)  # type: ignore[attr-defined]
     return True
