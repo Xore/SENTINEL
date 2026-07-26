@@ -51,6 +51,12 @@ disable = [
     "import-error",
     # fixme: TODO/FIXME comments are intentional during active development.
     "fixme",
+    # duplicate-code: pytest fixtures/tests are inherently boilerplate-heavy
+    # (env setup, cert-writing loops, assert chains); the similarity checker
+    # false-positives here even across unrelated files (and, in at least one
+    # observed case, a file against itself), rather than flagging real
+    # copy-pasted logic worth extracting.
+    "duplicate-code",
 ]
 
 [tool.pylint.format]

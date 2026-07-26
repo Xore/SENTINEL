@@ -1,0 +1,76 @@
+"""Tests for collector.__main__ — config -> PKI check -> OTLP -> scheduler wiring."""
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+import collector.__main__ as main_module
+from collector.__main__ import main
+
+
+async def test_missing_collector_id_exits_with_code_1():
+    with pytest.raises(SystemExit) as exc_info:
+        await main()
+    assert exc_info.value.code == 1
+
+
+class _FakeCounter:
+    def __init__(self):
+        self.value = 0
+
+    # attributes is unused, but must stay in the signature to duck-type the
+    # real opentelemetry Counter.add(amount, attributes=...) call in __main__.py.
+    def add(self, amount, attributes=None):  # pylint: disable=unused-argument
+        self.value += amount
+
+
+class _FakeMeter:
+    def __init__(self):
+        self.counters: dict[str, _FakeCounter] = {}
+
+    # description/unit are unused for the same duck-typing reason as above.
+    def create_counter(self, name, description=None, unit=None):  # pylint: disable=unused-argument
+        counter = _FakeCounter()
+        self.counters[name] = counter
+        return counter
+
+
+class _FakeMeterProvider:
+    def __init__(self):
+        self.meter = _FakeMeter()
+
+
+async def test_wires_up_and_emits_heartbeat(monkeypatch, enrolled_pki_dir, capsys):
+    monkeypatch.setenv("COLLECTOR_ID", "node-1")
+    monkeypatch.setenv("SITE_ID", "site-a")
+    monkeypatch.setenv("BACKEND__PKI_DIR", str(enrolled_pki_dir))
+    monkeypatch.setenv("BACKEND__URL", "https://localhost:4317")
+    monkeypatch.setattr(main_module, "HEARTBEAT_INTERVAL_S", 0.01)
+
+    # build_meter_provider/shutdown_meter_provider belong to transport/otlp.py,
+    # which already has its own tests exercising the real OTLP SDK objects
+    # (construction, resource attributes, meter creation). Here they'd try a
+    # real gRPC export against a backend.url that isn't a real server, which
+    # is slow (retry/backoff) and leaves a background thread running past the
+    # test if not shut down correctly. This test's job is __main__'s
+    # orchestration — that it enrolls, builds a provider, creates a counter,
+    # runs the scheduler, and shuts down — not OTLP wire behaviour.
+    fake_provider = _FakeMeterProvider()
+    shutdown_calls = []
+    monkeypatch.setattr(main_module, "build_meter_provider", lambda settings: fake_provider)
+    monkeypatch.setattr(main_module, "get_meter", lambda provider: provider.meter)
+    monkeypatch.setattr(main_module, "shutdown_meter_provider", shutdown_calls.append)
+
+    stop_event = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.05, stop_event.set)
+
+    await main(stop_event=stop_event)
+    await asyncio.sleep(0.01)  # let the last fire-and-forget heartbeat land
+
+    out = capsys.readouterr().out
+    assert "collector.started" in out
+    assert "collector.heartbeat" in out
+    assert "collector.shutdown" in out
+    assert shutdown_calls == [fake_provider]
+    assert fake_provider.meter.counters["collector_heartbeat_total"].value >= 1

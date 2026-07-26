@@ -23,6 +23,8 @@ class TestDefaults:
         assert settings.wifi.interface == "wlan0"
         assert settings.mtr.max_hops == 30
         assert settings.ebpf.enabled is True
+        assert settings.backend.enroll_url.startswith("https://")
+        assert settings.backend.bootstrap_token is None
 
     def test_missing_required_collector_id_raises_configerror(self):
         with pytest.raises(ConfigError) as exc:
@@ -53,6 +55,12 @@ class TestEnvLayer:
         s = load_settings()
         assert s.wifi.enabled is False
         assert s.backend.url == "https://other:4317"
+
+    def test_bootstrap_token_env_override(self, monkeypatch):
+        monkeypatch.setenv("COLLECTOR_ID", "c")
+        monkeypatch.setenv("BACKEND__BOOTSTRAP_TOKEN", "s3cr3t")
+        s = load_settings()
+        assert s.backend.bootstrap_token == "s3cr3t"
 
 
 class TestYamlLayer:

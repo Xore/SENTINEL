@@ -42,6 +42,8 @@ class BackendConfig(BaseModel):
     pki_dir: str = "/var/lib/analyselaptop/pki"
     retry_max: int = Field(default=10, ge=0)
     retry_backoff_s: float = Field(default=2.0, gt=0)
+    enroll_url: str = "https://hub.internal:8443/api/pki/enroll"
+    bootstrap_token: str | None = None
 
 
 class WifiConfig(BaseModel):
@@ -123,7 +125,10 @@ class CollectorSettings(BaseSettings):
         extra="ignore",
     )
 
+    # Signature is fixed by pydantic-settings' BaseSettings override contract;
+    # it cannot be reduced without breaking the hook.
     @classmethod
+    # pylint: disable-next=too-many-positional-arguments
     def settings_customise_sources(
         cls,
         settings_cls: type[BaseSettings],
@@ -153,7 +158,7 @@ def load_settings(
     missing required field or a validation failure so the caller can exit
     cleanly instead of surfacing a raw pydantic traceback.
     """
-    global _yaml_path
+    global _yaml_path  # pylint: disable=global-statement
     path = config_file or os.environ.get(CONFIG_ENV_VAR)
     _yaml_path = Path(path) if path else None
     try:
