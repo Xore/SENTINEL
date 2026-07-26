@@ -73,6 +73,7 @@ The revisions must match; the final command is required remote read-back.
 | S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
 | S4-01 | 4 | Crash-safe offline queue foundation | SONNET5 | QUEUED | S3-01 DONE, envelope decision | planned scope in work queue |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
+| C2-01 | 2 | Authenticated bounded MetricsQL range-query slice | CODEX | IN_PROGRESS | C1-04 | exact backend/API/CI scope below |
 
 Completed: C0-01, C0-02, S0-01, S1-01, C1-01, C1-03, C1-04. See
 [July 2026 history](agent-coordination-history/2026-07.md).
@@ -88,6 +89,7 @@ Detailed Sonnet follow-on scopes and gates are in
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-26T10:38:14Z | SONNET5 | S1-02 | `collector/config.py`, `collector/pki/enroll.py`, `collector/utils/thread_pool.py`, `collector/tests/test_config.py`, `collector/tests/pki/test_enroll.py`, corresponding narrowly focused tests, this ledger |
 | 2026-07-26T11:32:00Z | SONNET5 | S2-01 | `collector/scheduler.py`, `collector/__main__.py`, `collector/tests/test_scheduler.py`, `collector/tests/test_main.py`, this ledger |
+| 2026-07-26T12:17:00Z | CODEX | C2-01 | `backend/api/**`, `docs/contracts/API.md`, `docs/contracts/METRICS.md`, `deploy/hub/docker-compose.dev.yml`, `.github/workflows/backend.yml`, `.github/workflows/integration-test.yml`, this ledger |
 
 ---
 
@@ -453,6 +455,29 @@ Implementation commit: `322de04`.
   VictoriaMetrics identity query, diagnostics, and volume cleanup.
 - Still gated: intentional tag-path verification, protected delivery, canary
   rollout, and rollback.
+
+---
+
+### C2-01 — Authenticated bounded MetricsQL range-query slice
+
+- **Claimed:** 2026-07-26T12:17:00Z by CODEX.
+- **Status:** IN_PROGRESS.
+- **Scope:** authenticated `GET /api/v1/metrics/range`, the API-side
+  VictoriaMetrics client and configuration, site-authorization storage query,
+  focused unit/integration tests, contract documentation, dev Compose wiring,
+  and the existing backend/integration workflows. No collector runtime,
+  enrollment, scheduler, migration, or Sonnet-owned file is in scope.
+- **Security boundary:** clients select one catalogued canonical metric and an
+  explicit authorized `site_id`; arbitrary MetricsQL is not accepted. The API
+  applies VictoriaMetrics `extra_label` site enforcement, checks every returned
+  series defensively, and optionally filters one validated `collector_id`.
+- **Resource bounds:** RFC 3339 range, at most 24 hours; step 10–3600 seconds;
+  at most 2,000 evaluation points; finite upstream timeout; at most 4 MiB,
+  500 series, and 50,000 samples returned. Partial upstream responses are
+  denied and upstream diagnostics are not exposed to callers.
+- **Exit:** unit/auth tests, Go formatting/static/race/build gates, dev Compose
+  validation, production-container query integration on disposable Ubuntu,
+  passing GitHub backend/integration runs, then a pushed REVIEW handoff.
 
 ---
 
