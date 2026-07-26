@@ -1,73 +1,155 @@
-# Wired and Wi-Fi capture
+# Wi-Fi health checks — v2 Collector
 
-## Wired capture acceptance
+The v2 collector monitors Wi-Fi link quality and AP state using the system’s `iw`
+tool (Linux) or `netsh` (Windows). No packet capture, no monitor mode, and no
+dedicated capture interface are required.
 
-Replace `CAPTURE_IFACE` with the dedicated interface:
+> **Check modules:** `checks/net_wifi_linux.py`, `checks/net_wifi_windows.py`
+> **Design reference:** [`docs/collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md) §6.2
 
-```bash
-ip -brief address show CAPTURE_IFACE
-sudo ethtool -k CAPTURE_IFACE
-sudo tcpdump -ni CAPTURE_IFACE -c 50
+---
+
+## What the Wi-Fi checks measure
+
+| Metric | Source | Notes |
+|---|---|---|
+| `wifi_rssi_dbm` | `iw dev <iface> link` | Signal strength in dBm; lower (more negative) = weaker |
+| `wifi_link_speed_mbps` | `iw dev <iface> link` | Negotiated link rate |
+| `wifi_ap_changes_total` | AP BSSID change detection | Roaming events; alert if unexpected AP appears |
+
+---
+
+## Configuration
+
+Enable and configure Wi-Fi checks in `collector.yaml`:
+
+```yaml
+wifi:
+  enabled: true
+  interface: wlan0          # the interface connected to the monitored SSID
+  scan_interval_s: 60       # how often to sample link stats
+  ap_change_alert: true     # alert when BSSID changes (roaming / rogue AP)
 ```
 
-The interface should be UP but have no IPv4/IPv6 address. The packet sample should show both directions and the expected VLANs/hosts. NIC offloads (GRO/LRO/TSO) can merge or reorder frames and distort capture; disable them on the capture NIC (`ethtool -K <iface> gro off lro off tso off gso off`) when doing timing-sensitive analysis. Compare switch SPAN counters, NIC counters, and application capture-drop metrics under peak load.
+To disable Wi-Fi checks entirely:
 
-## Wi-Fi limitations and workflow
-
-Wi-Fi requires a second adapter dedicated to monitor mode. Driver support, not the printed chipset brand, is decisive. Verify before buying/using it:
-
-```bash
-iw list | sed -n '/Supported interface modes:/,/Band/p'
+```yaml
+wifi:
+  enabled: false
 ```
 
-Look for `* monitor`. Stop any service managing **only that adapter**, set monitor mode using the driver/tool's documented process, lock it to one authorized channel, and capture to a rotating PCAP. Do not disconnect clients, transmit deauthentication frames, impersonate access points, or capture outside the authorized SSIDs/channels.
+---
 
-Example capture after a monitor interface already exists:
-
-```bash
-sudo dumpcap -i wlan0mon -b duration:300 -b files:24 -w /var/capture/wifi.pcapng
-```
-
-This example retains roughly two hours in 5-minute files. Size limits should also be used on busy channels. Open completed PCAP/PCAPNG files in Wireshark or another PCAP-compatible analyser. Channel hopping loses packets and makes timing analysis unreliable; use multiple radios for simultaneous channels.
-
-## Visibility test
-
-Generate no traffic from the capture NIC. Instead, use already authorized client activity and confirm that the capture sees:
-
-- Expected source/destination IP and MAC pairs
-- DNS/DHCP/NTP where present
-- VLAN identifiers where the TAP/SPAN preserves them
-- Known S7comm/PROFINET/OPC UA conversations in the ICS dashboards
-- Suricata events and Zeek connection logs
-
-If only broadcasts appear, the SPAN/TAP is probably misconfigured. If only one direction appears, fix the mirror source. If capture drops increase, reduce mirrored scope or use faster capture hardware.
-
-## Wireshark-compatible evidence capture
-
-Install Wireshark CLI tools and add the capture account to the distro's approved capture group/process:
+## Linux: verify `iw` is working
 
 ```bash
-sudo apt install tshark
-sudo mkdir -p /var/capture
-sudo ./scripts/capture-pcapng.sh enp0s20f0u1 /var/capture 300 24 2048
+# Show current link state
+iw dev wlan0 link
+
+# Expected output (when associated):
+# Connected to aa:bb:cc:dd:ee:ff (on wlan0)
+#   SSID: MyNetwork
+#   signal: -55 dBm
+#   rx bitrate: 144.4 MBit/s
 ```
 
-The capture script refuses an interface with an IP address, writes PCAPNG using `dumpcap`, rotates by time and size, limits the number of files, records capture metadata, and creates SHA-256 hashes after capture. Keep capture files encrypted and access-controlled: PCAP can contain credentials, proprietary process values, personal data, and files. ntopng and Zeek may observe the interface concurrently, but test packet loss under load; multiple capture consumers increase CPU work.
+If the output is `Not connected`, the interface is not associated —
+the collector will emit `wifi_rssi_dbm = NaN` and log a warning.
 
-Useful Wireshark display filters (these do not generate traffic):
+### AP scan (optional, requires `CAP_NET_ADMIN` or root)
 
-| Purpose | Display filter |
-|---|---|
-| Siemens S7 | `s7comm \|\| s7comm_plus` |
-| OPC UA | `opcua` |
-| PROFINET | `pn_dcp \|\| pn_io \|\| dcerpc` |
-| Ethernet broadcast | `eth.dst == ff:ff:ff:ff:ff:ff` |
-| IPv4 multicast | `ip.dst == 224.0.0.0/4` |
-| IPv6 multicast | `ipv6.dst == ff00::/8` |
-| ARP | `arp` |
-| Spanning Tree | `stp` |
-| Switch/AP advertisements | `lldp \|\| cdp` |
-| Wi-Fi beacons/probes | `wlan.fc.type == 0` |
-| TCP retransmission clues | `tcp.analysis.retransmission \|\| tcp.analysis.fast_retransmission` |
+The collector can run `iw dev wlan0 scan` to detect nearby APs and flag
+unexpected BSSIDs. This requires `CAP_NET_ADMIN`:
 
-Run `./scripts/pcap-summary.sh file.pcapng` for a reproducible text/CSV summary before opening Wireshark.
+```bash
+# Grant to binary
+sudo setcap cap_net_raw,cap_net_admin+ep ./analyselaptop-collector
+
+# Or in systemd unit:
+# AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+```
+
+If `CAP_NET_ADMIN` is not granted, the collector skips AP scanning and logs a
+structured warning — link stats (`wifi_rssi_dbm`, `wifi_link_speed_mbps`) are
+still collected via `iw dev link`.
+
+---
+
+## Windows: verify `netsh` is working
+
+```powershell
+# Show current Wi-Fi interface state
+netsh wlan show interfaces
+
+# Expected output:
+# Name                   : Wi-Fi
+# Description            : Intel(R) Wi-Fi 6 AX201
+# SSID                   : MyNetwork
+# Signal                 : 75%
+# Receive rate (Mbps)    : 144
+```
+
+The collector parses `Signal` as a percentage and converts to approximate dBm.
+No elevated privileges are required on Windows for `netsh wlan show interfaces`.
+
+---
+
+## Broadcast / multicast top-talker (Phase C11)
+
+The collector also captures broadcast and multicast frame rates on a wired or
+wireless interface using `scapy.AsyncSniffer`. This is a separate check from
+Wi-Fi link stats and is configured independently:
+
+```yaml
+bcast_mcast:
+  enabled: true
+  interface: eth0           # or wlan0 for wireless segment
+  window_s: 30              # capture window per sample
+  top_n: 10                 # top-N talkers to report
+  interval_s: 300           # how often to run a capture window
+```
+
+Requires `CAP_NET_RAW`. See
+[`docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md`](../tasks/RESEARCH-BCAST-MCAST-GOPACKET.md)
+for the research validation task before deploying on Raspberry Pi.
+
+---
+
+## MTR hop-tracing (Phase C6)
+
+The collector can trace the route to any configured target using raw ICMP
+TTL-exceeded probing — no external `mtr` binary is required.
+
+```yaml
+mtr:
+  enabled: true
+  targets:
+    - 8.8.8.8
+    - 192.168.50.1
+  max_hops: 30
+  probes_per_hop: 3
+  interval_s: 300
+```
+
+Requires `CAP_NET_RAW`. Metrics produced:
+
+```
+mtr_hop_rtt_ms{target, hop, hop_ip}
+mtr_hop_loss_pct{target, hop, hop_ip}
+```
+
+---
+
+## OT safety rules for active checks
+
+All Wi-Fi and network checks in the v2 collector are **read-only and passive**
+with respect to the monitored network:
+
+- `iw dev link` — reads local driver state, sends nothing to the network
+- `iw dev scan` — sends probe frames on the collector’s own interface only
+- `scapy.AsyncSniffer` — passive receive only, zero injected frames
+- MTR tracing — sends ICMP Echo to configured targets only; never to OT devices
+  unless explicitly listed in `mtr.targets`
+
+See [`01-design-and-safety.md`](01-design-and-safety.md) for the full OT rules
+of engagement.
