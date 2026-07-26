@@ -10,7 +10,10 @@ rationale. ``pki/renew.py`` (a later phase) reuses the same wire format.
 from __future__ import annotations
 
 import asyncio
+import email.utils
+import math
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,12 +38,20 @@ class EnrollmentError(Exception):
     immediately for a terminal rejection or an identity/key mismatch."""
 
 
-# Statuses where retrying the exact same CSR cannot succeed — the request
-# itself was rejected (bad/expired/reused token, unknown collector,
-# validation failure) rather than a transient condition. Everything else
-# (408, 425, 429, 5xx, network/timeout errors) is retried. Per Q-1's
-# decision in docs/guides/AGENT-COORDINATION.md.
-_TERMINAL_STATUSES = frozenset({400, 401, 403, 404, 409, 422})
+# Only these statuses (plus network errors/timeouts, handled separately) are
+# transient enough to retry — everything else, including any status not
+# explicitly listed here (e.g. 405, 410, 415), is treated as a terminal
+# rejection of the request itself and fails immediately. Per Q-1's decision
+# and Codex review 2 in docs/guides/AGENT-COORDINATION.md: an allowlist of
+# retryable statuses, not a denylist of terminal ones — an unlisted status
+# must fail fast, not silently retry.
+_RETRYABLE_STATUSES = frozenset({408, 425, 429}) | frozenset(range(500, 600))
+
+# Cap on both a server-directed (Retry-After) and a configured exponential
+# backoff delay — Codex-approved bound so a malicious/broken Retry-After
+# value or a large retry_backoff_s/retry_max combination can't stall
+# enrollment indefinitely.
+_MAX_BACKOFF_S = 300.0
 
 # Must match backend/ingest/internal/identity.go's trustDomain — the
 # server is the source of truth for this value.
@@ -57,17 +68,38 @@ class _HttpEnrollError(EnrollmentError):
         self.retry_after = retry_after
 
 
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 def _parse_retry_after(value: str | None) -> float | None:
-    """Only the delay-seconds form of Retry-After is honored; the HTTP-date
-    form falls back to configured backoff (undocumented by the current
-    backend and not worth a full HTTP-date parser for this)."""
+    """Parse a Retry-After header per RFC 9110 §10.2.3: either form.
+
+    - delay-seconds (e.g. ``"120"``)
+    - HTTP-date (e.g. ``"Tue, 29 Oct 2030 16:04:06 GMT"``)
+
+    Returns ``None`` (caller falls back to configured backoff) for a
+    missing/unparseable header or a non-finite/negative delay — a
+    non-finite value like ``"inf"`` or a date in the past must not be
+    honored as-is. Otherwise the result is clamped to ``_MAX_BACKOFF_S``.
+    """
     if value is None:
         return None
+
     try:
         seconds = float(value)
     except ValueError:
+        try:
+            target = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=UTC)
+        seconds = (target - _utcnow()).total_seconds()
+
+    if not math.isfinite(seconds) or seconds < 0:
         return None
-    return seconds if seconds >= 0 else None
+    return min(seconds, _MAX_BACKOFF_S)
 
 
 def is_enrolled(pki_dir: str | os.PathLike[str]) -> bool:
@@ -136,19 +168,29 @@ def _public_key_der(public_key: Any) -> bytes:
 
 def _verify_certificate_identity(
     cert_pem: str,
+    ca_pem: str,
     private_key: ec.EllipticCurvePrivateKey,
     site_id: str,
     collector_id: str,
 ) -> None:
-    """Confirm the enrolled certificate is bound to *our* key and identity
-    before it's trusted enough to persist to disk. The certificate — not an
+    """Confirm the enrolled leaf certificate is bound to *our* key and
+    identity before it's trusted enough to persist to disk, and that the
+    accompanying CA certificate is at least well-formed. The leaf — not an
     unauthenticated response field — is the identity authority (Q-1);
     mirrors the server-side check in
     backend/ingest/internal/identity.{FromCertificate,SPIFFEURI}. Full
-    chain/signature verification against the CA is C1-01's production
-    enrollment integration, not this check.
+    leaf-signature/chain verification against the CA is C1-01's production
+    enrollment integration, not this check — this only rejects a leaf or CA
+    that doesn't even parse as X.509.
     """
-    cert = x509.load_pem_x509_certificate(cert_pem.encode("ascii"))
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem.encode("ascii"))
+    except ValueError as exc:
+        raise EnrollmentError(f"malformed leaf certificate: {exc}") from exc
+    try:
+        x509.load_pem_x509_certificate(ca_pem.encode("ascii"))
+    except ValueError as exc:
+        raise EnrollmentError(f"malformed CA certificate: {exc}") from exc
 
     if _public_key_der(cert.public_key()) != _public_key_der(private_key.public_key()):
         raise EnrollmentError("enrolled certificate's public key does not match our private key")
@@ -172,14 +214,15 @@ async def ensure_enrolled(
     """Enroll this collector's PKI identity if it hasn't been already.
 
     Idempotent: a no-op if ``collector.key``/``collector.crt``/``ca.crt``
-    already exist under ``backend.pki_dir``. Terminal rejections
-    (``_TERMINAL_STATUSES``) fail immediately; everything else (network
-    errors, timeouts, 408/425/429/5xx) retries up to ``backend.retry_max``
-    times, honoring a numeric ``Retry-After`` response header when present
-    and otherwise backing off exponentially from
-    ``backend.retry_backoff_s``. The returned certificate's public key and
-    identity URI SAN are verified against ours before anything is written
-    to disk.
+    already exist under ``backend.pki_dir``. Only ``_RETRYABLE_STATUSES``
+    (408/425/429/5xx) plus network errors/timeouts retry, up to
+    ``backend.retry_max`` times; every other status — including one not
+    explicitly listed — fails immediately. A retry honors a Retry-After
+    response header (delay-seconds or HTTP-date) when present, otherwise
+    backs off exponentially from ``backend.retry_backoff_s``; either delay
+    is capped at ``_MAX_BACKOFF_S``. The returned certificate's public key
+    and identity URI SAN are verified against ours, and the CA PEM is
+    confirmed to at least parse, before anything is written to disk.
     """
     pki_dir = Path(settings.backend.pki_dir)
     bound_log = log.bind(collector_id=settings.collector_id, site_id=settings.site_id)
@@ -205,6 +248,7 @@ async def ensure_enrolled(
             if retry_after is not None
             else settings.backend.retry_backoff_s * (2 ** (attempt - 1))
         )
+        backoff = min(backoff, _MAX_BACKOFF_S)
         bound_log.warning(
             "pki.enroll.retry", error=str(exc), attempt=attempt, retry_in_s=backoff
         )
@@ -219,7 +263,7 @@ async def ensure_enrolled(
                 cert_pem, ca_pem = await _post_csr(active_session, settings, csr_pem)
                 break
             except _HttpEnrollError as exc:
-                if exc.status in _TERMINAL_STATUSES:
+                if exc.status not in _RETRYABLE_STATUSES:
                     bound_log.error("pki.enroll.rejected", status=exc.status, error=str(exc))
                     raise EnrollmentError(str(exc)) from exc
                 attempt += 1
@@ -231,7 +275,9 @@ async def ensure_enrolled(
         if owns_session:
             await active_session.close()
 
-    _verify_certificate_identity(cert_pem, private_key, settings.site_id, settings.collector_id)
+    _verify_certificate_identity(
+        cert_pem, ca_pem, private_key, settings.site_id, settings.collector_id
+    )
 
     key_pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,

@@ -1,6 +1,7 @@
 """Tests for collector.pki.enroll — CSR generation, HTTP enroll, file writes."""
 from __future__ import annotations
 
+import email.utils
 import stat
 import sys
 from collections.abc import Callable
@@ -23,8 +24,9 @@ from collector.pki.enroll import (
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
-_FAKE_CA_PEM = "-----BEGIN CERTIFICATE-----\nfakeca\n-----END CERTIFICATE-----\n"
+_MALFORMED_PEM = "-----BEGIN CERTIFICATE-----\nnotvalid\n-----END CERTIFICATE-----\n"
 
 
 class _FakeResponse:
@@ -110,6 +112,32 @@ def _mint_leaf_cert(
         .sign(signing_key, hashes.SHA256())
     )
     return cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+
+
+def _mint_ca_cert() -> str:
+    """A minimal self-signed certificate standing in for the backend's CA
+    cert in the enroll response. `ensure_enrolled` only parses (not
+    chain-verifies) the CA PEM (Codex review 2 — see
+    docs/guides/AGENT-COORDINATION.md), so a throwaway self-signed cert is
+    a well-formed enough stand-in.
+    """
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test-ca")])
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+
+
+_FAKE_CA_PEM = _mint_ca_cert()
 
 
 def _ok_response(
@@ -261,9 +289,22 @@ class TestEnsureEnrolledFailureModes:
 
     @pytest.mark.parametrize("status", [400, 403, 404, 409, 422])
     async def test_terminal_status_fails_immediately_without_retry(self, enroll_settings, status):
-        # Mirrors enroll.py's _TERMINAL_STATUSES (Q-1's decision): these
+        # Mirrors enroll.py's _RETRYABLE_STATUSES (Q-1's decision): these
         # reject the request itself, not a transient condition, so exactly
         # one attempt is made even though retry_max allows 3.
+        session = _FakeSession([_FakeResponse(status, text_body="rejected")] * 3)
+        with pytest.raises(EnrollmentError, match=str(status)):
+            await ensure_enrolled(enroll_settings, session=session)
+        assert len(session.calls) == 1
+        pki_dir = Path(enroll_settings.backend.pki_dir)
+        assert not (pki_dir / CERT_FILENAME).exists()
+
+    @pytest.mark.parametrize("status", [405, 410, 415])
+    async def test_unlisted_status_fails_immediately_without_retry(self, enroll_settings, status):
+        # Codex review 2: retry classification is an allowlist
+        # (_RETRYABLE_STATUSES = {408, 425, 429} | 5xx), not a denylist of
+        # terminal statuses — a status that isn't explicitly listed either
+        # way (405/410/415 here) must still fail fast, not silently retry.
         session = _FakeSession([_FakeResponse(status, text_body="rejected")] * 3)
         with pytest.raises(EnrollmentError, match=str(status)):
             await ensure_enrolled(enroll_settings, session=session)
@@ -308,6 +349,114 @@ class TestEnsureEnrolledFailureModes:
 
         assert sleeps == [pytest.approx(0.001)]
 
+    async def test_retry_after_http_date_form_is_honored(self, enroll_settings, monkeypatch):
+        # RFC 9110 §10.2.3's second Retry-After form: an HTTP-date rather
+        # than delay-seconds. _utcnow() is monkeypatched so "5 seconds from
+        # now" is deterministic instead of depending on real wall-clock
+        # timing between header construction and the parser's own call.
+        fixed_now = datetime(2030, 1, 1, tzinfo=UTC)
+        monkeypatch.setattr(enroll_module, "_utcnow", lambda: fixed_now)
+
+        sleeps: list[float] = []
+
+        async def _fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(enroll_module.asyncio, "sleep", _fake_sleep)
+
+        http_date = email.utils.format_datetime(fixed_now + timedelta(seconds=5), usegmt=True)
+        session = _FakeSession(
+            [
+                _FakeResponse(503, text_body="unavailable", headers={"Retry-After": http_date}),
+                _ok_response(),
+            ]
+        )
+        await ensure_enrolled(enroll_settings, session=session)
+
+        assert sleeps == [pytest.approx(5.0, abs=0.01)]
+
+    async def test_retry_after_non_finite_value_falls_back_to_configured_backoff(
+        self, enroll_settings, monkeypatch
+    ):
+        sleeps: list[float] = []
+
+        async def _fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(enroll_module.asyncio, "sleep", _fake_sleep)
+
+        # "inf" parses as a float but must be rejected, not honored as an
+        # unbounded wait — falls back to configured exponential backoff.
+        session = _FakeSession(
+            [_FakeResponse(503, text_body="x", headers={"Retry-After": "inf"}), _ok_response()]
+        )
+        await ensure_enrolled(enroll_settings, session=session)
+
+        assert sleeps == [pytest.approx(0.001)]
+
+    async def test_retry_after_invalid_value_falls_back_to_configured_backoff(
+        self, enroll_settings, monkeypatch
+    ):
+        sleeps: list[float] = []
+
+        async def _fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(enroll_module.asyncio, "sleep", _fake_sleep)
+
+        session = _FakeSession(
+            [
+                _FakeResponse(503, text_body="x", headers={"Retry-After": "not-a-real-value"}),
+                _ok_response(),
+            ]
+        )
+        await ensure_enrolled(enroll_settings, session=session)
+
+        assert sleeps == [pytest.approx(0.001)]
+
+    async def test_retry_after_huge_value_is_capped(self, enroll_settings, monkeypatch):
+        sleeps: list[float] = []
+
+        async def _fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(enroll_module.asyncio, "sleep", _fake_sleep)
+
+        session = _FakeSession(
+            [
+                _FakeResponse(503, text_body="x", headers={"Retry-After": "999999"}),
+                _ok_response(),
+            ]
+        )
+        await ensure_enrolled(enroll_settings, session=session)
+
+        # Codex-approved cap (enroll.py's _MAX_BACKOFF_S = 300.0).
+        assert sleeps == [300.0]
+
+    async def test_configured_backoff_is_capped(self, tmp_path, monkeypatch):
+        settings = load_settings(
+            collector_id="node-1",
+            site_id="site-a",
+            backend={
+                "pki_dir": str(tmp_path / "pki"),
+                "retry_max": 1,
+                "retry_backoff_s": 1000.0,
+            },
+        )
+        sleeps: list[float] = []
+
+        async def _fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(enroll_module.asyncio, "sleep", _fake_sleep)
+
+        session = _FakeSession([_FakeResponse(503, text_body="x"), _ok_response()])
+        await ensure_enrolled(settings, session=session)
+
+        # Without a Retry-After header, the configured exponential backoff
+        # (1000.0 * 2**0) must still be clamped to _MAX_BACKOFF_S.
+        assert sleeps == [300.0]
+
     async def test_public_key_mismatch_raises_and_does_not_write_files(self, enroll_settings):
         unrelated_key = ec.generate_private_key(ec.SECP256R1())
 
@@ -341,6 +490,42 @@ class TestEnsureEnrolledFailureModes:
 
         session = _FakeSession([_wrong_identity_response])
         with pytest.raises(EnrollmentError, match="URI SAN"):
+            await ensure_enrolled(enroll_settings, session=session)
+
+        pki_dir = Path(enroll_settings.backend.pki_dir)
+        assert not (pki_dir / CERT_FILENAME).exists()
+        assert not (pki_dir / KEY_FILENAME).exists()
+
+    async def test_malformed_leaf_certificate_raises_and_does_not_write_files(
+        self, enroll_settings
+    ):
+        # Codex review 2: the leaf must be parsed (not just trusted as an
+        # opaque string) before anything is persisted.
+        def _malformed_leaf_response(payload: dict) -> _FakeResponse:  # pylint: disable=unused-argument
+            return _FakeResponse(
+                200,
+                json_body={"certificate_pem": _MALFORMED_PEM, "ca_certificate_pem": _FAKE_CA_PEM},
+            )
+
+        session = _FakeSession([_malformed_leaf_response])
+        with pytest.raises(EnrollmentError, match="malformed leaf certificate"):
+            await ensure_enrolled(enroll_settings, session=session)
+
+        pki_dir = Path(enroll_settings.backend.pki_dir)
+        assert not (pki_dir / CERT_FILENAME).exists()
+        assert not (pki_dir / KEY_FILENAME).exists()
+
+    async def test_malformed_ca_certificate_raises_and_does_not_write_files(self, enroll_settings):
+        # Codex review 2: previously only the leaf was parsed, so a
+        # malformed CA PEM was silently accepted and written to disk.
+        def _malformed_ca_response(payload: dict) -> _FakeResponse:
+            cert_pem = _mint_leaf_cert(payload["csr_pem"], site_id="site-a", collector_id="node-1")
+            return _FakeResponse(
+                200, json_body={"certificate_pem": cert_pem, "ca_certificate_pem": _MALFORMED_PEM}
+            )
+
+        session = _FakeSession([_malformed_ca_response])
+        with pytest.raises(EnrollmentError, match="malformed CA certificate"):
             await ensure_enrolled(enroll_settings, session=session)
 
         pki_dir = Path(enroll_settings.backend.pki_dir)
