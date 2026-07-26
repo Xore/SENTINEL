@@ -17,6 +17,28 @@ next-task specifications out of the compact coordination ledger.
 5. Never broaden a write scope silently. Record and push a question when work
    needs a file outside the listed scope.
 
+## Low-Codex continuity window — through 2026-08-02
+
+Codex review capacity is limited until August 2. During this window, a pushed
+`REVIEW` handoff may unlock the next item only where this queue explicitly says
+so and the next scope is disjoint. The handed-off files become frozen: later
+items must not edit them until Codex reviews them. Only Codex may change an item
+to `DONE`.
+
+Continuity order:
+
+1. finish the focused S2-01 review corrections;
+2. after its corrected REVIEW handoff, claim and implement S2-02;
+3. after the S2-02 REVIEW handoff, claim S3-01A's new-file-only host-health
+   foundation;
+4. after S3-01A REVIEW, claim S4-01A's new-file-only SQLite queue foundation;
+5. publish S5-00's read-only signed-update preflight, then stop and wait for
+   Codex review.
+
+Every transition still requires a separate claim commit, push, fetch, revision
+comparison, and remote ledger read-back. A later task may not fix a frozen
+predecessor file; record a question instead.
+
 ## S2-01 — Scheduler containment and canonical run telemetry
 
 **Start gate:** S1-02 has a pushed `REVIEW` handoff. Codex approval of S1-02 is
@@ -58,7 +80,8 @@ commands and results in the pushed `REVIEW` handoff.
 
 ## S2-02 — Core network probe activation and contract hardening
 
-**Start gate:** S1-02 and S2-01 are `DONE`.
+**Start gate:** S1-02 is `DONE` and S2-01 has a pushed corrected `REVIEW`
+handoff addressing Codex review 1. S2-01 files become frozen at handoff.
 
 **Planned scope:** `collector/checks/net_*.py`,
 `collector/checks/__init__.py`, probe-focused tests, configuration fields and
@@ -75,29 +98,67 @@ unbounded IP/MAC values must not become metric labels.
 that canonical probe metrics reach the backend storage/query path without
 identity or cardinality violations.
 
-## S3-01 — Linux host-health probes
+## S3-01A — Linux host-health module foundation
 
-**Start gate:** S2-02 is `DONE`.
+**Start gate:** S2-02 has a pushed `REVIEW` handoff. All S2-02 files are frozen.
 
-**Planned scope:** new host-health check modules and tests plus the smallest
-registration/configuration changes; exact files must be claimed first.
+**Exact claim scope:** new files only:
+`collector/checks/host_cpu.py`, `collector/checks/host_memory.py`,
+`collector/checks/host_disk.py`, `collector/checks/host_load.py`,
+`collector/checks/host_network.py`, `collector/checks/host_process.py`,
+`collector/checks/host_service.py`, and seven matching explicitly enumerated
+test files under `collector/tests/checks/`, plus the active ledger. Do not edit
+config, entry-point, check registry, dependencies, contracts, workflows, or
+frozen S2 files.
 
-**Outcome:** bounded Linux CPU, memory, disk, load, network, process, and service
-health collection. Blocking OS calls must use the collector's bounded executor.
-Tests must use fakes and cover missing permissions/files, slow calls,
-cancellation, and unsupported platforms without depending on the developer
-host.
+**Outcome:** independently testable Linux CPU, memory, disk, load, network,
+process, and service check modules using stable typed results and bounded
+labels already allowed by `METRICS.md`. Blocking filesystem/process calls use
+the collector's bounded executor. Registration and OTel instruments are a later
+Codex-reviewed claim.
 
-## S4-01 — Crash-safe offline queue foundation
+**Required tests:** faked `/proc`/filesystem/subprocess inputs; success;
+malformed/missing files; permission denial; slow call; cancellation; bounded
+process/service allow-lists; unsupported Windows behavior; no developer-host
+dependency. Run and report all four collector gates.
 
-**Start gate:** S3-01 is `DONE` and Codex has published the storage-envelope
-decision required by Phase 4.
+## S4-01A — Crash-safe envelope and SQLite cold queue
 
-**Planned scope:** new `collector/store/**` modules and tests only for the first
-claim. Transport integration is a separate follow-up claim.
+**Start gate:** S3-01A has a pushed `REVIEW` handoff. Its files are frozen.
 
-**Outcome:** versioned envelope with event ID, timestamps, attempt count,
-expiry, and checksum; capped LMDB hot tier and SQLite WAL cold tier;
-deterministic ordering, eviction metrics, corruption quarantine, and
-schema-upgrade tests. Crash, full-disk, corrupt-record, duplicate, and 24-hour
-outage/reconnect cases are required before transport integration.
+**Exact claim scope:** new files only:
+`collector/store/__init__.py`, `collector/store/envelope.py`,
+`collector/store/sqlite_queue.py`, `collector/tests/store/__init__.py`,
+`collector/tests/store/test_envelope.py`,
+`collector/tests/store/test_sqlite_queue.py`, and the active ledger. No
+dependency, config, transport, scheduler, probe, or entry-point edits.
+
+**Published envelope decision:** immutable version `1`; `event_id`, `site_id`,
+`collector_id`, `observed_at`, `created_at`, `expires_at`, `attempt_count`,
+`content_type`, payload bytes, and SHA-256 checksum. IDs use existing bounded
+identity rules; timestamps are aware UTC; attempt count is non-negative;
+expiry follows observation/creation; checksum is verified before delivery.
+Serialization is deterministic and rejects unknown versions.
+
+**Outcome:** stdlib SQLite WAL cold queue with explicit transactions, busy
+timeout, deterministic `(created_at,event_id)` ordering, duplicate idempotency,
+attempt increment, acknowledge, expiry removal, byte/record caps, oldest-first
+eviction, and corruption quarantine. Constructor arguments provide all caps.
+LMDB hot tier, configuration, and transport integration are later claims.
+
+**Required tests:** round-trip/determinism, checksum corruption, unknown
+version, duplicate, crash/reopen durability, concurrent producer/consumer,
+busy/locked database, cap eviction, expiry, retry order, acknowledgement, and
+simulated 24-hour backlog drain. Run all four collector gates.
+
+## S5-00 — Signed-update read-only preflight
+
+**Start gate:** S4-01A has a pushed `REVIEW` handoff.
+
+**Write scope:** active coordination ledger only. Read ADR 0006, architecture,
+current packaging/release workflows, and collector startup/install paths.
+
+**Outcome:** publish an exact future file claim, trust-root/key-rotation model,
+manifest schema, rollback/anti-downgrade rules, atomic install/recovery flow,
+platform matrix, failure-injection tests, and open decisions. Do not implement
+or edit workflows. Push and read back the preflight, then stop for Codex.

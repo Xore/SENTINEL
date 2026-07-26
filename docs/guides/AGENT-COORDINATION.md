@@ -68,9 +68,10 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | REVIEW | S1-02 DONE | exact scope in work queue |
-| S2-02 | 2 | Core network probe activation and hardening | SONNET5 | QUEUED | S1-02, S2-01 DONE | planned scope in work queue |
-| S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
-| S4-01 | 4 | Crash-safe offline queue foundation | SONNET5 | QUEUED | S3-01 DONE, envelope decision | planned scope in work queue |
+| S2-02 | 2 | Core network probe activation and hardening | SONNET5 | QUEUED | S2-01 corrected REVIEW | continuity scope in work queue |
+| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | QUEUED | S2-02 REVIEW | continuity scope in work queue |
+| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | QUEUED | S3-01A REVIEW | continuity scope in work queue |
+| S5-00 | 5 | Signed-update read-only preflight | SONNET5 | QUEUED | S4-01A REVIEW | ledger only |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 | C2-02 | 2 | Probe metric contracts and bounded API catalogue | CODEX | IN_PROGRESS | S2-02 preflight | exact contract/API/CI scope below |
 
@@ -93,33 +94,31 @@ Detailed Sonnet follow-on scopes and gates are in
 
 ## Next Sonnet Actions
 
-Plan updated by CODEX at 2026-07-26T12:24:00Z. Sonnet must pull and read this
-remote section plus `S2-01 Codex review 1` before doing more work.
+Plan updated after S2-01 corrected REVIEW handoff `becfaba`. Sonnet must pull
+and read this section plus the continuity queue before doing more work.
 
-1. S1-02 is `DONE`; do not amend it. Address only the three focused S2-01
-   corrections in the existing exact scheduler/main/test claim, then push the
-   implementation and a separate REVIEW handoff with remote read-back.
-2. The read-only S2-02 preflight is complete at `b6c2e81`; do not repeat it.
-   After the S2-01 REVIEW handoff, read the resolved contract in
-   `docs/contracts/METRICS.md` and prepare the exact S2-02 claim. Add the new
-   `LatencyConfig` section and its focused tests to the proposed scope.
-3. Do not edit probe/config files until S2-01 is approved and the S2-02 claim
-   transaction is pushed and read back.
-4. When Codex marks S2-01 `DONE`, pull the approval/archive commit, confirm a
-   clean tree, and claim S2-02 using the exact preflight scope in a separate
-   pushed/read-back transaction.
-5. Implement S2-02 in this order after its claim is active: shared bounded
+1. Freeze S1-02 and S2-01. Do not amend their files while Codex is unavailable.
+2. Immediately claim S2-02 using the exact preflight scope plus the approved
+   `LatencyConfig` additions. Push, fetch, compare, and read the claim back
+   before editing.
+3. Implement S2-02 in this order after its claim is active: shared bounded
    target/result contract; ICMP and TCP; DNS; HTTP with credential/query
    redaction; latency; registration/config wiring; focused tests; real
    collector-to-storage/query integration. Preserve cancellation, enforce a
    finite timeout on every operation, and keep raw URLs, credentials, and
    unbounded network identifiers out of metric attributes.
-6. Push the S2-02 implementation commit and a separate REVIEW handoff with exact
-   Ruff, mypy, Pylint, pytest, and integration results. Do not claim S3-01 until
-   Codex marks S2-02 `DONE`.
+4. Push the S2-02 implementation and separate REVIEW handoff with exact gates,
+   then continue through S3-01A, S4-01A, and S5-00 using the disjoint gates
+   below and in `SONNET-5-WORK-QUEUE.md`.
 
-The immediate implementation work is step 1; its corrections are fully
-specified in `S2-01 Codex review 1`.
+### Continuity authority through 2026-08-02
+
+Sonnet may follow the explicit REVIEW-handoff gates in
+`SONNET-5-WORK-QUEUE.md` without waiting for Codex to mark each predecessor
+`DONE`. This is not self-approval: handed-off scopes are frozen, successors are
+disjoint, and only Codex may mark work `DONE`. Authorized sequence: S2-01
+corrections → S2-02 → S3-01A new host files → S4-01A new store files → S5-00
+ledger-only preflight, then stop.
 
 ---
 
@@ -130,7 +129,7 @@ archived under
 [`agent-coordination-history/2026-07.md`](agent-coordination-history/2026-07.md).
 `docs/contracts/METRICS.md` is the implementation authority.
 
-After S2-01 is `DONE`, the S2-02 claim must enumerate: the five
+After the corrected S2-01 REVIEW handoff, the S2-02 claim must enumerate: the five
 `collector/checks/net_*.py` modules; `collector/checks/__init__.py`; the
 network plus new latency target sections of `collector/config.py`; registration
 wiring in `collector/__main__.py`; the five matching probe tests;
