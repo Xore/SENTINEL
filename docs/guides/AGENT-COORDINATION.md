@@ -68,7 +68,7 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | REVIEW | S1-02 DONE | exact scope in work queue |
-| S2-02 | 2 | Core network probe activation and hardening | SONNET5 | QUEUED | S2-01 corrected REVIEW | continuity scope in work queue |
+| S2-02 | 2 | Core network probe activation and hardening | SONNET5 | IN_PROGRESS | S2-01 corrected REVIEW | exact scope below |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | QUEUED | S2-02 REVIEW | continuity scope in work queue |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | QUEUED | S3-01A REVIEW | continuity scope in work queue |
 | S5-00 | 5 | Signed-update read-only preflight | SONNET5 | QUEUED | S4-01A REVIEW | ledger only |
@@ -89,6 +89,7 @@ Detailed Sonnet follow-on scopes and gates are in
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-26T11:32:00Z | SONNET5 | S2-01 | `collector/scheduler.py`, `collector/__main__.py`, `collector/tests/test_scheduler.py`, `collector/tests/test_main.py`, this ledger |
 | 2026-07-26T12:18:26Z | CODEX | C2-02 | `docs/contracts/METRICS.md`, `backend/api/internal/metricquery/request.go`, `backend/api/internal/metricquery/request_test.go`, `.github/workflows/integration-test.yml`, this ledger |
+| 2026-07-26T13:00:00Z | SONNET5 | S2-02 | `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
 
 ---
 
@@ -351,6 +352,46 @@ Implementation commit: `c4df3e9`.
 - **Remaining risk:** none identified; all three corrections are pure
   Python control-flow/validation logic directly exercised by the passing
   suite above, not platform-conditional.
+
+### A-S2-02-1 — Sonnet 5 claim
+
+- **Timestamp:** 2026-07-26T13:00:00Z
+- **Status:** IN_PROGRESS — claimed under the continuity authority (through
+  2026-08-02) after S2-01's corrected REVIEW handoff `becfaba`. S2-01's
+  files (`collector/scheduler.py`, `collector/__main__.py`'s scheduler
+  wiring, `collector/tests/test_scheduler.py`,
+  `collector/tests/test_main.py`'s existing scheduler-focused tests) are
+  frozen; this claim only adds to `__main__.py`'s check-registration list
+  and `test_main.py`'s registration-focused tests, not the scheduler
+  plumbing itself.
+- **Scope:** exactly the File Claims row above, per the archived S2-02
+  preflight (`b6c2e81`) and Codex's contract decision
+  (`67f13e0`/`docs/contracts/METRICS.md`).
+- **Plan (mirrors `SONNET-5-WORK-QUEUE.md` + Next Sonnet Actions step 3):**
+  1. Shared bounded target/result contract: structured `target_id`-bearing
+     targets (capped at 32/family) for ICMP/HTTP/DNS, mirroring
+     `TcpTarget`; a new `LatencyConfig` (disabled by default, its own
+     target list, per Codex's decision — not derived from ICMP targets);
+     route `net_icmp.ping`'s blocking call through
+     `collector.utils.thread_pool.run_in_thread`.
+  2. ICMP and TCP canonical metrics (`sentinel_collector_icmp_rtt_seconds`,
+     `sentinel_collector_icmp_loss_ratio`, `sentinel_collector_tcp_connect_seconds`).
+  3. DNS canonical metrics (`sentinel_collector_dns_resolve_seconds`,
+     `target_id`+`record_type` labels).
+  4. HTTP canonical metrics (`sentinel_collector_http_response_seconds`,
+     `target_id`+`state` labels) with credential/query redaction — only
+     `target_id` identifies a target in a metric, never the raw URL.
+  5. Latency canonical metrics (`sentinel_collector_latency_rtt_seconds`,
+     `_jitter_seconds`, `_loss_ratio`).
+  6. Registration/config wiring in `__main__.py`: one instance per
+     configured target per enabled check type, respecting
+     `scan_level_max` and each family's `enabled` flag.
+  7. Focused tests per the required test matrix (name/unit/label,
+     target-ID isolation, success/failure/timeout, malformed target,
+     ICMP permission denial, cancellation/no leaks, registration).
+  8. Real collector-to-storage/query integration fixture.
+- **Exit:** push implementation + separate REVIEW handoff with exact
+  Ruff/mypy/Pylint/pytest and integration results, per the work queue.
 
 ### C2-02 — Probe metric contracts and bounded API catalogue
 
