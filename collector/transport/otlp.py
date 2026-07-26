@@ -28,8 +28,16 @@ def build_meter_provider(settings: CollectorSettings) -> MeterProvider:
     resource = Resource.create(
         {
             "service.name": "analyselaptop-collector",
-            "collector.id": settings.collector_id,
-            "site.id": settings.site_id,
+            # Underscored, not OTel's usual dotted resource-attribute style
+            # ("collector.id") — Prometheus/VictoriaMetrics label names can't
+            # contain dots, and every metric in this project's naming
+            # convention (COLLECTOR-V2-REFACTOR.md §10) uses
+            # {collector_id, site_id} as the label names. Confirmed via the
+            # Phase 1 hub integration test: dotted names were silently
+            # dropped by the remote-write exporter's resource-to-label
+            # conversion instead of being sanitized.
+            "collector_id": settings.collector_id,
+            "site_id": settings.site_id,
         }
     )
     return MeterProvider(metric_readers=[reader], resource=resource)

@@ -1,0 +1,61 @@
+# Dev-only hub skeleton for the Phase 1 integration test: "collector
+# connects, enrolls its certificate, and emits a heartbeat metric that lands
+# in VictoriaMetrics." NOT the production hub (docs/architecture/
+# IaC-DEPLOYMENT-STRATEGY.md §4) — no Nginx/TLS termination, no resource
+# limits, and stub-pki stands in for the real Go ingest service's PKI
+# enrollment endpoint. See deploy/hub/.env.example for required variables.
+
+services:
+  stub-pki:
+    build: ./stub-pki
+    volumes:
+      - pki_data:/pki
+    ports:
+      - "127.0.0.1:8443:8443"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://localhost:8443/healthz')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.157.0
+    volumes:
+      - pki_data:/pki:ro
+      - ./otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"
+    depends_on:
+      stub-pki:
+        condition: service_healthy
+      victoriametrics:
+        condition: service_started
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.148.0
+    volumes:
+      - vm_data:/victoria-metrics-data
+    ports:
+      - "127.0.0.1:8428:8428"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-analyselaptop}
+      POSTGRES_USER: ${POSTGRES_USER:-analyselaptop}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev-only-not-a-real-secret}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-analyselaptop}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  pki_data:
+  vm_data:
+  pg_data:

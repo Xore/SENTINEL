@@ -29,8 +29,8 @@ def test_resource_carries_collector_and_site_id(otlp_settings):
     provider = build_meter_provider(otlp_settings)
     try:
         attrs = provider._sdk_config.resource.attributes
-        assert attrs["collector.id"] == "node-1"
-        assert attrs["site.id"] == "site-a"
+        assert attrs["collector_id"] == "node-1"
+        assert attrs["site_id"] == "site-a"
         assert attrs["service.name"] == "analyselaptop-collector"
     finally:
         shutdown_meter_provider(provider)
