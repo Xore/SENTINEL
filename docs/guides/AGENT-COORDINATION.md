@@ -68,7 +68,7 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | SONNET5 | REVIEW | S2-01 DONE | exact scope below |
-| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | QUEUED | S2-02 REVIEW | continuity scope in work queue |
+| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | IN_PROGRESS | S2-02 REVIEW | exact new-file scope below |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | QUEUED | S3-01A REVIEW | continuity scope in work queue |
 | S5-00 | 5 | Signed-update read-only preflight | SONNET5 | QUEUED | S4-01A REVIEW | ledger only |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
@@ -87,6 +87,7 @@ Detailed Sonnet follow-on scopes and gates are in
 |---|---|---|---|
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-26T13:00:00Z | SONNET5 | S2-02 | `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
+| 2026-07-26T14:10:00Z | SONNET5 | S3-01A | new files only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
 
 
 ---
@@ -301,6 +302,31 @@ Implementation commit: `4ba26c2`.
   integration run used loopback/self-targets for safety and speed rather
   than external hosts, but exercises the identical export path C1-03's
   automated workflow already validates for the heartbeat metric.
+
+### A-S3-01A-1 — Sonnet 5 claim
+
+- **Timestamp:** 2026-07-26T14:10:00Z
+- **Status:** IN_PROGRESS — claimed under the continuity authority after
+  S2-02's pushed REVIEW handoff `e208ef3`. All S2-02 files (and S1-02/S2-01
+  before them) are frozen and untouched by this claim.
+- **Scope:** exactly the File Claims row above — seven new check modules
+  plus seven matching new test modules. No edits to `config.py`,
+  `__main__.py`, `checks/__init__.py`, dependencies, contracts, or
+  workflows, per the work queue.
+- **Plan:** independently testable `HostCpuCheck`/`HostMemoryCheck`/
+  `HostDiskCheck`/`HostLoadCheck`/`HostNetworkCheck`/`HostProcessCheck`/
+  `HostServiceCheck`, each a `BaseCheck` subclass following the existing
+  never-raise/`CheckResult` contract, reading real Linux system state
+  (`/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `shutil.disk_usage`,
+  `os.getloadavg`, bounded process/service allow-lists) with blocking
+  filesystem/subprocess calls routed through the bounded executor or true
+  async subprocess primitives. No registration in `__main__.py` and no
+  OTel instrument creation this claim — both are explicitly a later
+  Codex-reviewed claim per the work queue, so these checks compute
+  `CheckResult.metrics`/`.labels` only, the same shape `net_*.py` checks
+  had before S2-02 wired instruments.
+- **Exit:** push implementation + separate REVIEW handoff with exact
+  Ruff/mypy/Pylint/pytest results, per the work queue.
 
 ### C2-03 — Live probe metric workflow assertion
 
