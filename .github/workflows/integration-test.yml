@@ -205,6 +205,34 @@ jobs:
               raise SystemExit(f"expected one collector with last_seen, got: {payload}")
           PY
 
+          range_start="$(date -u -d '5 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')"
+          range_end="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          curl --fail --silent --show-error --get \
+            -H "Authorization: Bearer ${authorized_token}" \
+            --data-urlencode "metric=sentinel_collector_heartbeat_total" \
+            --data-urlencode "site_id=site-a" \
+            --data-urlencode "collector_id=dev-node-1" \
+            --data-urlencode "start=${range_start}" \
+            --data-urlencode "end=${range_end}" \
+            --data-urlencode "step=30" \
+            -o "${RUNNER_TEMP}/api-metrics-range.json" \
+            http://localhost:8080/api/v1/metrics/range
+          python - "${RUNNER_TEMP}/api-metrics-range.json" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          results = payload.get("data", {}).get("result", [])
+          matches = [
+              series for series in results
+              if series.get("metric", {}).get("site_id") == "site-a"
+              and series.get("metric", {}).get("collector_id") == "dev-node-1"
+              and series.get("values")
+          ]
+          if payload.get("data", {}).get("result_type") != "matrix" or len(matches) != 1:
+              raise SystemExit(f"expected one site-scoped matrix, got: {payload}")
+          PY
+
           unauthorized_token="$(mint_token site-b)"
           curl --fail --silent --show-error \
             -H "Authorization: Bearer ${unauthorized_token}" \
@@ -217,6 +245,26 @@ jobs:
           payload = json.load(open(sys.argv[1], encoding="utf-8"))
           if payload.get("data") != []:
               raise SystemExit(f"unauthorized site rows leaked: {payload}")
+          PY
+
+          unauthorized_status="$(curl --silent --show-error --get \
+            -H "Authorization: Bearer ${unauthorized_token}" \
+            --data-urlencode "metric=sentinel_collector_heartbeat_total" \
+            --data-urlencode "site_id=site-a" \
+            --data-urlencode "start=${range_start}" \
+            --data-urlencode "end=${range_end}" \
+            --data-urlencode "step=30" \
+            -o "${RUNNER_TEMP}/api-unauthorized-metrics.json" \
+            --write-out '%{http_code}' \
+            http://localhost:8080/api/v1/metrics/range)"
+          test "${unauthorized_status}" = "404"
+          python - "${RUNNER_TEMP}/api-unauthorized-metrics.json" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          if payload.get("error", {}).get("code") != "not_found":
+              raise SystemExit(f"unexpected unauthorized metrics response: {payload}")
           PY
 
       - name: Diagnostics and cleanup

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Xore/analyseLaptop/backend/api/internal/auth"
+	"github.com/Xore/analyseLaptop/backend/api/internal/metricquery"
 	"github.com/Xore/analyseLaptop/backend/api/internal/registry"
 	"github.com/gin-gonic/gin"
 )
@@ -19,10 +20,16 @@ const principalKey = "sentinel.principal"
 type Registry interface {
 	Ping(context.Context) error
 	ListCollectors(context.Context, registry.Access) ([]registry.Collector, error)
+	AuthorizeSite(context.Context, registry.Access, string) (bool, error)
+}
+
+// MetricsQuery is the site-scoped time-series query boundary.
+type MetricsQuery interface {
+	QueryRange(context.Context, metricquery.Query) (metricquery.Result, error)
 }
 
 // NewRouter constructs the site API handler.
-func NewRouter(store Registry, validator *auth.Validator) http.Handler {
+func NewRouter(store Registry, validator *auth.Validator, metrics MetricsQuery) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery(), requestID(), securityHeaders())
@@ -41,22 +48,69 @@ func NewRouter(store Registry, validator *auth.Validator) http.Handler {
 	api := router.Group("/api/v1")
 	api.Use(authenticate(validator))
 	api.GET("/collectors", func(ctx *gin.Context) {
-		principal, ok := ctx.MustGet(principalKey).(auth.Principal)
+		principal, ok := ctx.Get(principalKey)
+		if !ok {
+			writeError(ctx, http.StatusUnauthorized, "unauthorized", "authentication required")
+			return
+		}
+		typedPrincipal, ok := principal.(auth.Principal)
 		if !ok {
 			writeError(ctx, http.StatusUnauthorized, "unauthorized", "authentication required")
 			return
 		}
 		collectors, err := store.ListCollectors(ctx.Request.Context(), registry.Access{
-			UserID:   principal.UserID,
-			Role:     principal.Role,
-			SiteIDs:  principal.SiteIDs,
-			IssuedAt: principal.IssuedAt,
+			UserID:   typedPrincipal.UserID,
+			Role:     typedPrincipal.Role,
+			SiteIDs:  typedPrincipal.SiteIDs,
+			IssuedAt: typedPrincipal.IssuedAt,
 		})
 		if err != nil {
 			writeError(ctx, http.StatusServiceUnavailable, "unavailable", "service unavailable")
 			return
 		}
 		ctx.JSON(http.StatusOK, gin.H{"data": collectors})
+	})
+	api.GET("/metrics/range", func(ctx *gin.Context) {
+		query, err := metricquery.Parse(ctx.Request.URL.Query(), time.Now().UTC())
+		if err != nil {
+			writeError(ctx, http.StatusBadRequest, "invalid_request", "invalid query parameters")
+			return
+		}
+		principal, ok := ctx.Get(principalKey)
+		if !ok {
+			writeError(ctx, http.StatusUnauthorized, "unauthorized", "authentication required")
+			return
+		}
+		typedPrincipal, ok := principal.(auth.Principal)
+		if !ok {
+			writeError(ctx, http.StatusUnauthorized, "unauthorized", "authentication required")
+			return
+		}
+		access := registry.Access{
+			UserID:   typedPrincipal.UserID,
+			Role:     typedPrincipal.Role,
+			SiteIDs:  typedPrincipal.SiteIDs,
+			IssuedAt: typedPrincipal.IssuedAt,
+		}
+		authorized, err := store.AuthorizeSite(ctx.Request.Context(), access, query.SiteID)
+		if err != nil {
+			writeError(ctx, http.StatusServiceUnavailable, "unavailable", "service unavailable")
+			return
+		}
+		if !authorized {
+			writeError(ctx, http.StatusNotFound, "not_found", "resource not found")
+			return
+		}
+		if metrics == nil {
+			writeError(ctx, http.StatusServiceUnavailable, "unavailable", "service unavailable")
+			return
+		}
+		result, err := metrics.QueryRange(ctx.Request.Context(), query)
+		if err != nil {
+			writeError(ctx, http.StatusServiceUnavailable, "unavailable", "service unavailable")
+			return
+		}
+		ctx.JSON(http.StatusOK, gin.H{"data": result})
 	})
 	return router
 }

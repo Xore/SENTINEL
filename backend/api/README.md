@@ -14,6 +14,7 @@ Optional settings:
 - `SENTINEL_API_ADDRESS` (default `:8080`)
 - `SENTINEL_API_JWT_ISSUER` (default `sentinel-site`)
 - `SENTINEL_API_JWT_AUDIENCE` (default `sentinel-site-api`)
+- `SENTINEL_API_VM_QUERY_URL` (default `http://victoriametrics:8428`)
 
 The API never issues tokens. An identity provider or the deployment's
 authentication boundary issues short-lived tokens according to

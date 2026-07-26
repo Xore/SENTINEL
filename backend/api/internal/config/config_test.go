@@ -35,10 +35,12 @@ func TestLoadUsesSafeDefaults(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 	if cfg.Address != ":8080" || cfg.JWTIssuer != "sentinel-site" ||
-		cfg.JWTAudience != "sentinel-site-api" {
+		cfg.JWTAudience != "sentinel-site-api" ||
+		cfg.MetricsQueryURL != "http://victoriametrics:8428" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
-	if cfg.ReadTimeout <= 0 || cfg.QueryTimeout <= 0 || cfg.ShutdownTimeout <= 0 {
+	if cfg.ReadTimeout <= 0 || cfg.QueryTimeout <= 0 || cfg.ShutdownTimeout <= 0 ||
+		cfg.MetricsTimeout <= 0 {
 		t.Fatalf("timeouts must be positive: %+v", cfg)
 	}
 }

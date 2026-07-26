@@ -90,6 +90,18 @@ func TestListCollectorsEnforcesCurrentUserAndTokenSiteScope(t *testing.T) {
 	if len(collectors) != 0 {
 		t.Fatalf("unauthorized site leaked collectors: %+v", collectors)
 	}
+	authorized, err := store.AuthorizeSite(ctx, Access{
+		UserID: userID, Role: "viewer", SiteIDs: []string{siteID}, IssuedAt: issuedAt,
+	}, siteID)
+	if err != nil || !authorized {
+		t.Fatalf("AuthorizeSite() = %v, %v; want true, nil", authorized, err)
+	}
+	authorized, err = store.AuthorizeSite(ctx, Access{
+		UserID: userID, Role: "viewer", SiteIDs: []string{"other-site"}, IssuedAt: issuedAt,
+	}, siteID)
+	if err != nil || authorized {
+		t.Fatalf("AuthorizeSite() = %v, %v; want false, nil", authorized, err)
+	}
 
 	if _, err := pool.Exec(
 		ctx,
@@ -106,5 +118,11 @@ func TestListCollectorsEnforcesCurrentUserAndTokenSiteScope(t *testing.T) {
 	}
 	if len(collectors) != 0 {
 		t.Fatalf("revoked token retained access: %+v", collectors)
+	}
+	authorized, err = store.AuthorizeSite(ctx, Access{
+		UserID: userID, Role: "viewer", SiteIDs: []string{siteID}, IssuedAt: issuedAt,
+	}, siteID)
+	if err != nil || authorized {
+		t.Fatalf("revoked AuthorizeSite() = %v, %v; want false, nil", authorized, err)
 	}
 }

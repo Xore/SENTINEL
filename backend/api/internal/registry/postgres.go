@@ -126,3 +126,38 @@ func (s *Store) ListCollectors(ctx context.Context, access Access) ([]Collector,
 	}
 	return collectors, nil
 }
+
+// AuthorizeSite checks both current database access and the JWT's site scope.
+// The current role and token_not_before checks make authorization revocation
+// effective without waiting for token expiry.
+func (s *Store) AuthorizeSite(ctx context.Context, access Access, siteID string) (bool, error) {
+	if s.pool == nil {
+		return false, ErrUnavailable
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
+
+	var authorized bool
+	err := s.pool.QueryRow(queryCtx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM user_site_access usa
+			JOIN users u ON u.user_id = usa.user_id
+			WHERE u.user_id = $1
+			  AND u.role = $2
+			  AND u.disabled_at IS NULL
+			  AND u.token_not_before <= $3
+			  AND usa.site_id = $4
+			  AND usa.site_id = ANY($5::text[])
+		)`,
+		access.UserID,
+		access.Role,
+		access.IssuedAt,
+		siteID,
+		access.SiteIDs,
+	).Scan(&authorized)
+	if err != nil {
+		return false, fmt.Errorf("%w: authorize site", ErrUnavailable)
+	}
+	return authorized, nil
+}

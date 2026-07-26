@@ -57,7 +57,9 @@ Defined Phase 1 codes:
 
 | HTTP | Code | Meaning |
 |---:|---|---|
+| 400 | `invalid_request` | Query parameters are missing, malformed, unsupported, or exceed a bound |
 | 401 | `unauthorized` | Missing, malformed, invalid, expired, or unsupported token |
+| 404 | `not_found` | The requested site does not exist or is outside current authorization |
 | 503 | `unavailable` | API dependency is not ready or a bounded query failed |
 
 Every response includes `X-Request-ID` and `Cache-Control: no-store`.
@@ -107,3 +109,50 @@ Returns collectors in stable `(site_id, collector_id)` order:
 
 Unauthorized sites are indistinguishable from sites with no collectors: rows
 outside the intersection of JWT and database scope are omitted.
+
+## Metrics
+
+### `GET /api/v1/metrics/range`
+
+Returns a bounded Prometheus matrix for one canonical metric family. This
+endpoint does not accept arbitrary MetricsQL. Required parameters:
+
+| Parameter | Contract |
+|---|---|
+| `metric` | Exact API query name from the Metrics Contract catalogue |
+| `site_id` | One ADR 0009 site identifier authorized by both JWT and database |
+| `start`, `end` | RFC 3339 timestamps; increasing range of at most 24 hours |
+| `step` | Integer seconds from 10 through 3,600; at most 2,000 evaluation points |
+
+`collector_id` is optional and, when supplied, must be one ADR 0009 collector
+identifier. Unknown or duplicate parameters are rejected.
+
+The API injects `site_id` (and optional `collector_id`) through
+VictoriaMetrics `extra_label`; it never interpolates identifiers into query
+text. It denies partial results, uses a finite upstream timeout, and rejects
+responses larger than 4 MiB, 500 series, or 50,000 samples. It also verifies
+the requested identity on every returned series before responding.
+
+Example response:
+
+```json
+{
+  "data": {
+    "result_type": "matrix",
+    "result": [
+      {
+        "metric": {
+          "__name__": "sentinel_collector_heartbeat_total",
+          "site_id": "site-a",
+          "collector_id": "dev-node-1"
+        },
+        "values": [[1785067200, "1"]]
+      }
+    ]
+  }
+}
+```
+
+An unauthorized site returns the same `404 not_found` response whether the site
+does not exist, is absent from the JWT, or is absent from current database
+access. VictoriaMetrics is not queried in those cases.

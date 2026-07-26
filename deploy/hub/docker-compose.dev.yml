@@ -106,11 +106,14 @@ services:
       SENTINEL_API_JWT_SECRET: dev-only-api-jwt-secret-0123456789
       SENTINEL_API_JWT_ISSUER: sentinel-site
       SENTINEL_API_JWT_AUDIENCE: sentinel-site-api
+      SENTINEL_API_VM_QUERY_URL: http://victoriametrics:8428
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
       seed-dev:
         condition: service_completed_successfully
+      victoriametrics:
+        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/readyz"]
       interval: 2s

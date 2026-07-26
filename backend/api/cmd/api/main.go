@@ -12,6 +12,7 @@ import (
 	"github.com/Xore/analyseLaptop/backend/api/internal/auth"
 	"github.com/Xore/analyseLaptop/backend/api/internal/config"
 	"github.com/Xore/analyseLaptop/backend/api/internal/httpapi"
+	"github.com/Xore/analyseLaptop/backend/api/internal/metricquery"
 	"github.com/Xore/analyseLaptop/backend/api/internal/registry"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -50,10 +51,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	metricsClient, err := metricquery.NewClient(cfg.MetricsQueryURL, cfg.MetricsTimeout)
+	if err != nil {
+		return err
+	}
 
 	server := &http.Server{
 		Addr:         cfg.Address,
-		Handler:      httpapi.NewRouter(store, validator),
+		Handler:      httpapi.NewRouter(store, validator, metricsClient),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,

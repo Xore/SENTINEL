@@ -14,6 +14,7 @@ const minimumJWTSecretBytes = 32
 type Config struct {
 	Address         string
 	DatabaseURL     string
+	MetricsQueryURL string
 	JWTSecret       []byte
 	JWTIssuer       string
 	JWTAudience     string
@@ -22,6 +23,7 @@ type Config struct {
 	IdleTimeout     time.Duration
 	ShutdownTimeout time.Duration
 	QueryTimeout    time.Duration
+	MetricsTimeout  time.Duration
 }
 
 // Load reads configuration from environment variables.
@@ -30,6 +32,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		Address:         envOr("SENTINEL_API_ADDRESS", ":8080"),
 		DatabaseURL:     os.Getenv("SENTINEL_DATABASE_URL"),
+		MetricsQueryURL: envOr("SENTINEL_API_VM_QUERY_URL", "http://victoriametrics:8428"),
 		JWTSecret:       []byte(secret),
 		JWTIssuer:       envOr("SENTINEL_API_JWT_ISSUER", "sentinel-site"),
 		JWTAudience:     envOr("SENTINEL_API_JWT_AUDIENCE", "sentinel-site-api"),
@@ -38,6 +41,7 @@ func Load() (Config, error) {
 		IdleTimeout:     60 * time.Second,
 		ShutdownTimeout: 15 * time.Second,
 		QueryTimeout:    5 * time.Second,
+		MetricsTimeout:  5 * time.Second,
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("SENTINEL_DATABASE_URL is required")

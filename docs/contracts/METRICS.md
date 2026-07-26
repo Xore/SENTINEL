@@ -56,6 +56,14 @@ than creating more labels.
 | `sentinel_collector_cycle_duration_seconds` | histogram | seconds | none | 1/collector |
 | `sentinel_collector_event_loop_lag_seconds` | gauge | seconds | none | 1/collector |
 
+## Site API query catalogue
+
+The bounded range-query API accepts the exact canonical names above. For the
+two histogram families it additionally accepts the Prometheus projections
+ending in `_bucket`, `_count`, and `_sum`. Arbitrary MetricsQL expressions,
+compatibility aliases, and metrics outside this catalogue are not accepted by
+the Phase 2 API slice.
+
 ## Contract enforcement
 
 - Collector tests verify names/types/units.

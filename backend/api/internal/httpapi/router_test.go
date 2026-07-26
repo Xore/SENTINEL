@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Xore/analyseLaptop/backend/api/internal/auth"
+	"github.com/Xore/analyseLaptop/backend/api/internal/metricquery"
 	"github.com/Xore/analyseLaptop/backend/api/internal/registry"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -22,6 +23,10 @@ type fakeRegistry struct {
 	pingErr    error
 	listErr    error
 	listCalls  int
+	authorized bool
+	authErr    error
+	authCalls  int
+	authSite   string
 }
 
 func (f *fakeRegistry) Ping(context.Context) error {
@@ -34,6 +39,30 @@ func (f *fakeRegistry) ListCollectors(
 	f.listCalls++
 	f.access = access
 	return f.collectors, f.listErr
+}
+
+func (f *fakeRegistry) AuthorizeSite(
+	_ context.Context, access registry.Access, siteID string,
+) (bool, error) {
+	f.authCalls++
+	f.access = access
+	f.authSite = siteID
+	return f.authorized, f.authErr
+}
+
+type fakeMetrics struct {
+	result metricquery.Result
+	err    error
+	query  metricquery.Query
+	calls  int
+}
+
+func (f *fakeMetrics) QueryRange(
+	_ context.Context, query metricquery.Query,
+) (metricquery.Result, error) {
+	f.calls++
+	f.query = query
+	return f.result, f.err
 }
 
 func testValidator(t *testing.T) *auth.Validator {
@@ -77,7 +106,7 @@ func performRequest(handler http.Handler, method, path, token string) *httptest.
 
 func TestHealthAndReadiness(t *testing.T) {
 	store := &fakeRegistry{}
-	handler := NewRouter(store, testValidator(t))
+	handler := NewRouter(store, testValidator(t), &fakeMetrics{})
 
 	for _, path := range []string{"/healthz", "/readyz"} {
 		response := performRequest(handler, http.MethodGet, path, "")
@@ -92,7 +121,7 @@ func TestHealthAndReadiness(t *testing.T) {
 
 func TestCollectorsRequiresAuthentication(t *testing.T) {
 	store := &fakeRegistry{}
-	handler := NewRouter(store, testValidator(t))
+	handler := NewRouter(store, testValidator(t), &fakeMetrics{})
 
 	response := performRequest(handler, http.MethodGet, "/api/v1/collectors", "")
 	if response.Code != http.StatusUnauthorized {
@@ -119,7 +148,7 @@ func TestCollectorsPassesTokenScopeToRegistry(t *testing.T) {
 			},
 		},
 	}
-	handler := NewRouter(store, testValidator(t))
+	handler := NewRouter(store, testValidator(t), &fakeMetrics{})
 
 	response := performRequest(
 		handler,
@@ -150,7 +179,7 @@ func TestReadinessAndCollectorFailureHideDetails(t *testing.T) {
 		pingErr: registry.ErrUnavailable,
 		listErr: registry.ErrUnavailable,
 	}
-	handler := NewRouter(store, testValidator(t))
+	handler := NewRouter(store, testValidator(t), &fakeMetrics{})
 
 	ready := performRequest(handler, http.MethodGet, "/readyz", "")
 	if ready.Code != http.StatusServiceUnavailable {
@@ -167,5 +196,101 @@ func TestReadinessAndCollectorFailureHideDetails(t *testing.T) {
 	}
 	if strings.Contains(collectors.Body.String(), "registry") {
 		t.Fatalf("internal detail leaked: %s", collectors.Body.String())
+	}
+}
+
+func TestMetricsRangeEnforcesSiteAccessAndPassesBoundedQuery(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	store := &fakeRegistry{authorized: true}
+	metrics := &fakeMetrics{result: metricquery.Result{
+		ResultType: "matrix",
+		Series: []metricquery.Series{{
+			Metric: map[string]string{
+				"site_id":      "site-a",
+				"collector_id": "dev-node-1",
+			},
+			Values: [][]json.RawMessage{
+				{json.RawMessage("1720000000"), json.RawMessage(`"1"`)},
+			},
+		}},
+	}}
+	handler := NewRouter(store, testValidator(t), metrics)
+	path := "/api/v1/metrics/range?metric=sentinel_collector_heartbeat_total" +
+		"&site_id=site-a&collector_id=dev-node-1" +
+		"&start=" + now.Add(-time.Minute).Format(time.RFC3339) +
+		"&end=" + now.Format(time.RFC3339) + "&step=30"
+
+	response := performRequest(handler, http.MethodGet, path, testToken(t, []string{"site-a"}))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if store.authCalls != 1 || store.authSite != "site-a" || metrics.calls != 1 ||
+		metrics.query.Metric != "sentinel_collector_heartbeat_total" ||
+		metrics.query.CollectorID != "dev-node-1" {
+		t.Fatalf("unexpected store/metrics calls: store=%+v metrics=%+v", store, metrics)
+	}
+	if !strings.Contains(response.Body.String(), `"result_type":"matrix"`) {
+		t.Fatalf("unexpected body: %s", response.Body.String())
+	}
+}
+
+func TestMetricsRangeRejectsInvalidAndUnauthorizedQueriesBeforeVictoriaMetrics(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	validPath := "/api/v1/metrics/range?metric=sentinel_collector_heartbeat_total" +
+		"&site_id=site-a&start=" + now.Add(-time.Minute).Format(time.RFC3339) +
+		"&end=" + now.Format(time.RFC3339) + "&step=30"
+	tests := []struct {
+		name       string
+		path       string
+		authorized bool
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "arbitrary MetricsQL",
+			path:       strings.Replace(validPath, "sentinel_collector_heartbeat_total", "rate(up%5B5m%5D)", 1),
+			authorized: true,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_request",
+		},
+		{
+			name:       "unauthorized site",
+			path:       validPath,
+			authorized: false,
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fakeRegistry{authorized: test.authorized}
+			metrics := &fakeMetrics{}
+			handler := NewRouter(store, testValidator(t), metrics)
+			response := performRequest(
+				handler, http.MethodGet, test.path, testToken(t, []string{"site-a"}),
+			)
+			if response.Code != test.wantStatus ||
+				!strings.Contains(response.Body.String(), `"code":"`+test.wantCode+`"`) {
+				t.Fatalf("status/body = %d %s", response.Code, response.Body.String())
+			}
+			if metrics.calls != 0 {
+				t.Fatalf("VictoriaMetrics called %d times", metrics.calls)
+			}
+		})
+	}
+}
+
+func TestMetricsRangeHidesDependencyErrors(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	store := &fakeRegistry{authorized: true}
+	metrics := &fakeMetrics{err: metricquery.ErrUnavailable}
+	handler := NewRouter(store, testValidator(t), metrics)
+	path := "/api/v1/metrics/range?metric=sentinel_collector_heartbeat_total" +
+		"&site_id=site-a&start=" + now.Add(-time.Minute).Format(time.RFC3339) +
+		"&end=" + now.Format(time.RFC3339) + "&step=30"
+	response := performRequest(handler, http.MethodGet, path, testToken(t, []string{"site-a"}))
+	if response.Code != http.StatusServiceUnavailable ||
+		strings.Contains(response.Body.String(), "metrics query") {
+		t.Fatalf("unexpected response: %d %s", response.Code, response.Body.String())
 	}
 }
