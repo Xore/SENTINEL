@@ -78,7 +78,7 @@ collector/
 ├── __main__.py               [CREATE]  Entry point
 ├── __init__.py               [EXISTS]  Package marker + __version__
 ├── config.py                 [EXISTS]  pydantic Settings + YAML loader + SIGHUP
-├── scheduler.py              [CREATE]  asyncio priority queue task loop
+├── scheduler.py              [CREATE]  asyncio.TaskGroup-based priority scheduler (see §5.8)
 ├── requirements.txt          [EXISTS]  pinned deps (see §4.1)
 ├── requirements-dev.txt      [EXISTS]  pinned dev deps incl. pylint, ruff, mypy, pytest
 ├── pyproject.toml            [EXISTS]  project metadata + ruff/mypy/pylint config
@@ -186,7 +186,7 @@ Follow this order strictly. Each phase produces a testable unit before the next 
 7. `collector/transport/otlp.py` — OTLP/gRPC exporter wrapping `opentelemetry-exporter-otlp-proto-grpc`
 8. `collector/transport/retry.py` — exponential backoff queue; lmdb buffer on failure
 9. `collector/health/score.py` — `CollectorStats` model + `collector_health_score()` function
-10. `collector/scheduler.py` — `CheckTask` dataclass + `run_scheduler()` async loop
+10. `collector/scheduler.py` — `CheckTask` dataclass + `run_scheduler()` using `asyncio.TaskGroup` (see §5.8)
 11. `collector/__main__.py` — wire everything together; emit `collector_heartbeat_total` on each cycle
 
 **Test:** `docker compose -f deploy/collector/docker-compose.yml up` on a test node should show the collector connecting to a stub backend and emitting a heartbeat metric.
@@ -493,6 +493,177 @@ collector_health_score      # gauge — 0.0 to 1.0
 
 **Rule:** Counters always end in `_total`. Gauges never use `_total`. Memory/disk sizes always in bytes. Times always in milliseconds for probe RTTs; seconds for durations > 60s.
 
+### 5.8 Scheduler Pattern — asyncio.TaskGroup (Python 3.11+)
+
+Use `asyncio.TaskGroup` (PEP 654, stdlib since Python 3.11) instead of raw `asyncio.create_task()` for all concurrent check execution. TaskGroup gives you **structured concurrency**: if any child task raises an unhandled exception, the group cancels all siblings and re-raises as `ExceptionGroup`, making failures visible rather than silently swallowed.
+
+> **Why not trio?** trio's nurseries inspired TaskGroup, but our entire dependency stack
+> (grpcio, aiohttp, dnspython, pysnmp, pymodbus) is asyncio-only. TaskGroup gives us the
+> same structured-concurrency safety guarantee at zero ecosystem cost.
+
+#### Canonical Scheduler Pattern
+
+```python
+# collector/scheduler.py
+import asyncio
+import time
+from dataclasses import dataclass, field
+from typing import Sequence
+
+import structlog
+
+from collector.checks import BaseCheck, CheckResult
+
+log = structlog.get_logger()
+
+@dataclass(order=True)
+class CheckTask:
+    """Priority-queue entry: lower next_run_at = higher urgency."""
+    next_run_at: float              # monotonic timestamp
+    priority: int                   # tiebreaker: lower = higher priority
+    check: BaseCheck = field(compare=False)
+    interval_s: float = field(compare=False)
+
+
+async def _run_one(task: CheckTask) -> CheckResult:
+    """Run a single check; all exceptions are caught inside BaseCheck.run()."""
+    result = await task.check.run()
+    if not result.ok:
+        log.warning(
+            "scheduler.check_failed",
+            check=task.check.name,
+            error=result.error,
+        )
+    return result
+
+
+async def run_scheduler(
+    checks: Sequence[BaseCheck],
+    *,
+    cycle_s: float = 30.0,
+    stop_event: asyncio.Event | None = None,
+) -> None:
+    """
+    Main scheduler loop.
+
+    Each cycle:
+      1. Collect all checks whose next_run_at <= now.
+      2. Run them concurrently inside a TaskGroup.
+      3. Sleep for the remainder of cycle_s.
+
+    Uses asyncio.TaskGroup so that an unexpected exception in any check
+    (i.e. a bug that bypasses the BaseCheck.run() try/except) is surfaced
+    immediately as an ExceptionGroup rather than silently dropped.
+    """
+    import heapq
+
+    now = time.monotonic()
+    heap: list[CheckTask] = [
+        CheckTask(
+            next_run_at=now,
+            priority=i,
+            check=c,
+            interval_s=getattr(c, "interval_s", cycle_s),
+        )
+        for i, c in enumerate(checks)
+        if c.is_enabled()
+    ]
+    heapq.heapify(heap)
+
+    while stop_event is None or not stop_event.is_set():
+        cycle_start = time.monotonic()
+        due: list[CheckTask] = []
+
+        # Drain all due tasks
+        while heap and heap[0].next_run_at <= cycle_start:
+            due.append(heapq.heappop(heap))
+
+        if due:
+            # --- structured concurrency: all or nothing ---
+            async with asyncio.TaskGroup() as tg:
+                futures = {
+                    task: tg.create_task(_run_one(task), name=task.check.name)
+                    for task in due
+                }
+            # Re-schedule completed tasks
+            for task in due:
+                task.next_run_at = cycle_start + task.interval_s
+                heapq.heappush(heap, task)
+
+        elapsed = time.monotonic() - cycle_start
+        sleep_for = max(0.0, cycle_s - elapsed)
+        log.debug("scheduler.cycle", checks_run=len(due), elapsed_ms=round(elapsed * 1000, 1))
+        await asyncio.sleep(sleep_for)
+```
+
+#### Key Rules
+
+- **Always use `asyncio.TaskGroup`** for concurrent check execution — never bare `asyncio.gather()` or `asyncio.create_task()` in the scheduler.
+- **`BaseCheck.run()` must never raise** (see §5.2). TaskGroup is a safety net, not the primary error boundary. A bug that escapes `run()` will cancel all sibling checks in that cycle.
+- **Per-check `interval_s`** can differ from `cycle_s`. Set `check.interval_s = 60` on expensive checks (SNMP WALK, eBPF flush) and `check.interval_s = 10` on fast checks (ICMP, TCP). The heap scheduler handles mixed intervals correctly.
+- **`stop_event`** is an `asyncio.Event` set by the `SIGTERM` handler in `__main__.py` to allow graceful shutdown without `sys.exit()`.
+- **Do not use `asyncio.wait_for()` around the TaskGroup** — each individual check is responsible for its own timeout (use `asyncio.wait_for` inside `run()` or in the subprocess helper §5.4).
+
+#### Testing the Scheduler
+
+```python
+# tests/test_scheduler.py
+import asyncio
+import pytest
+from unittest.mock import AsyncMock
+from collector.checks import BaseCheck, CheckResult
+from collector.scheduler import run_scheduler
+
+class FakeCheck(BaseCheck):
+    name = "fake"
+    scan_level = 1
+    interval_s = 1.0
+
+    def __init__(self):
+        self.call_count = 0
+
+    def is_enabled(self):
+        return True
+
+    async def run(self) -> CheckResult:
+        self.call_count += 1
+        return CheckResult(ok=True, metrics={}, labels={})
+
+
+@pytest.mark.asyncio
+async def test_scheduler_runs_checks():
+    check = FakeCheck()
+    stop = asyncio.Event()
+
+    async def stop_after_two_cycles():
+        await asyncio.sleep(0.1)  # let one cycle complete
+        stop.set()
+
+    await asyncio.gather(
+        run_scheduler([check], cycle_s=0.05, stop_event=stop),
+        stop_after_two_cycles(),
+    )
+    assert check.call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_isolates_exception():
+    """A check that raises (bypassing BaseCheck contract) causes ExceptionGroup."""
+    class BrokenCheck(BaseCheck):
+        name = "broken"
+        scan_level = 1
+        interval_s = 1.0
+        def is_enabled(self): return True
+        async def run(self) -> CheckResult:
+            raise RuntimeError("unexpected")
+
+    stop = asyncio.Event()
+    stop.set()  # run exactly one cycle
+
+    with pytest.raises(ExceptionGroup):
+        await run_scheduler([BrokenCheck()], cycle_s=0.0, stop_event=stop)
+```
+
 ---
 
 ## 6. Docker Compose and Deployment
@@ -579,7 +750,7 @@ collector/tests/
 ├── __init__.py              # Package marker (empty)
 ├── conftest.py              # pytest fixtures: env isolation, settings fixture
 ├── test_config.py           # pydantic validation, layered loader, SIGHUP reload
-├── test_scheduler.py        # task ordering, interval accuracy, exception isolation [CREATE]
+├── test_scheduler.py        # TaskGroup isolation, interval accuracy, stop_event [CREATE]
 ├── checks/
 │   ├── test_net_icmp.py     # mock raw socket; verify CheckResult metrics [CREATE]
 │   ├── test_net_tcp.py      # mock asyncio.open_connection [CREATE]
@@ -717,7 +888,7 @@ These are hard limits from `COLLECTOR-V2-REFACTOR.md §2.2`. Every implementatio
 | Memory footprint | ≤ 80 MB RSS on Raspberry Pi 3B | No in-memory caching of raw packet data. Scapy top-talker window = 30s max. lmdb buffer size capped at 200 MB. |
 | CPU usage | ≤ 5% average on Pi 3B | All checks must be async. No blocking I/O. eBPF is kernel-side (no CPU cost in Python). scapy sniffer uses kernel BPF filter to drop non-matching packets before Python sees them. |
 | Binary size | ≤ 25 MB PyInstaller bundle | Do not add heavy dependencies (NumPy, pandas) to the collector. ML is hub-side only. |
-| Check cycle | ≤ 30s wall-clock for full scan level 2 | All checks run concurrently via asyncio tasks. No sequential scan loop. |
+| Check cycle | ≤ 30s wall-clock for full scan level 2 | All checks run concurrently via asyncio.TaskGroup. No sequential scan loop. |
 | Local buffer | ≤ 200 MB lmdb | Implement LRU eviction in `store/hot.py` when the 200 MB limit is approached. |
 | Zero external runtime deps | PyInstaller bundle must be self-contained | All dependencies in `requirements.txt` must be pip-installable and PyInstaller-bundlable. Exception: `bcc` (apt only). |
 
@@ -743,6 +914,7 @@ These are hard limits from `COLLECTOR-V2-REFACTOR.md §2.2`. Every implementatio
 |---|---|---|
 | Using `time.sleep()` in a check | Blocks the asyncio event loop; all other checks freeze for that duration | `await asyncio.sleep(n)` |
 | Raising exceptions from `run()` | The scheduler calls `run()` without try/except; one bad check crashes the scheduler task | Catch all exceptions in `run()`, return `CheckResult(ok=False, error=...)` |
+| Using `asyncio.gather()` or bare `create_task()` in the scheduler | Exceptions are silently swallowed unless you inspect each return value manually | Use `asyncio.TaskGroup` (§5.8) — unhandled exceptions surface immediately as ExceptionGroup |
 | Accessing `os.environ` directly | Bypasses pydantic validation and default handling; breaks test mocking | Always use `CollectorSettings` |
 | Adding `NET_ADMIN` to `docker-compose.yml` (base) | All wired-only nodes get unnecessary kernel privilege | Add only to `docker-compose.wifi.yml` |
 | Installing `bcc` via pip in `requirements.txt` | `bcc` is kernel-version-matched; pip installs a generic wheel that may not match the running kernel's headers | Install via `apt install python3-bpfcc` on the node; use import guard in code |
@@ -801,6 +973,7 @@ collector_health_score{collector_id, site_id}                  gauge — 0.0 to 
 | bcc not in requirements.txt (why) | `COLLECTOR-V2-REFACTOR.md` | §8 |
 | Linux capabilities table | This document | §9 |
 | NFR limits (memory, CPU, binary size) | This document | §8 |
+| asyncio.TaskGroup scheduler pattern | This document | §5.8 |
 
 ---
 
