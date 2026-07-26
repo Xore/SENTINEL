@@ -71,7 +71,7 @@ The revisions must match. The final command is the required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S1-01 | 1 | Collector contract and lifecycle hardening | SONNET5 | READY | C0-02, S0-01 | `collector/**`; exclusions in assignment |
+| S1-01 | 1 | Collector contract and lifecycle hardening | SONNET5 | IN_PROGRESS | C0-02, S0-01 | `collector/**`; exclusions in assignment |
 | C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | IN_PROGRESS | C0-02 | `backend/`, `contracts/`, `deploy/hub/`, migration tests |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 
@@ -86,8 +86,7 @@ Completed Phase 0: C0-01, C0-02, and S0-01. See
 |---|---|---|---|
 | 2026-07-26T09:18:30Z | CODEX | C1-01 | `backend/`, `contracts/`, `deploy/hub/`, migration tests, this ledger |
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
-
-Sonnet must add and push its S1-01 claim before editing.
+| 2026-07-26T09:28:04Z | SONNET5 | S1-01 | `collector/**` (per A-S1-01-1 exclusions), this ledger |
 
 ---
 
