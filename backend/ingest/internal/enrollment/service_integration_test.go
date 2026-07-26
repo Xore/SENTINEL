@@ -42,18 +42,29 @@ func TestServiceConsumesTokenAndIssuesBoundCertificate(t *testing.T) {
 	if _, err := pool.Exec(ctx, `
 INSERT INTO sites (site_id, display_name)
 VALUES ($1, 'Enrollment integration site')
-ON CONFLICT (site_id) DO NOTHING;
+ON CONFLICT (site_id) DO NOTHING`, siteID); err != nil {
+		t.Fatalf("seed enrollment site: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
 INSERT INTO collectors (site_id, collector_id)
 VALUES ($1, $2)
 ON CONFLICT (site_id, collector_id) DO UPDATE
 SET certificate_serial = NULL, certificate_not_after = NULL,
-    disabled_at = NULL;
-DELETE FROM enrollment_tokens WHERE site_id = $1 AND collector_id = $2;
+    disabled_at = NULL`, siteID, collectorID); err != nil {
+		t.Fatalf("seed enrollment collector: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM enrollment_tokens WHERE site_id = $1 AND collector_id = $2`,
+		siteID, collectorID,
+	); err != nil {
+		t.Fatalf("remove prior enrollment token: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
 INSERT INTO enrollment_tokens (token_sha256, site_id, collector_id, expires_at)
 VALUES ($3, $1, $2, now() + interval '5 minutes')`,
 		siteID, collectorID, tokenHash[:],
 	); err != nil {
-		t.Fatalf("seed enrollment identity: %v", err)
+		t.Fatalf("seed enrollment token: %v", err)
 	}
 
 	ca := newTestAuthority(t)
