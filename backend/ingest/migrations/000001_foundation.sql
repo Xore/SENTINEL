@@ -3,7 +3,7 @@
 
 CREATE TABLE sites (
     site_id TEXT PRIMARY KEY
-        CHECK (site_id ~ '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$'),
+        CHECK (site_id ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'),
     display_name TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -11,7 +11,7 @@ CREATE TABLE sites (
 CREATE TABLE collectors (
     site_id TEXT NOT NULL REFERENCES sites(site_id),
     collector_id TEXT NOT NULL
-        CHECK (collector_id ~ '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$'),
+        CHECK (collector_id ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'),
     certificate_serial TEXT,
     certificate_not_after TIMESTAMPTZ,
     enrolled_at TIMESTAMPTZ NOT NULL DEFAULT now(),

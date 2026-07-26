@@ -1,0 +1,145 @@
+name: backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "docs/contracts/**"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "docs/contracts/**"
+      - ".github/workflows/backend.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go build, vet, and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/ingest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/ingest/go.mod
+          cache: false
+
+      - name: Verify formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          test -z "$unformatted" || {
+            echo "The following Go files require gofmt:"
+            echo "$unformatted"
+            exit 1
+          }
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+      - name: Build
+        run: go build ./...
+
+  migrations:
+    name: PostgreSQL migration validation
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: sentinel_ci
+          POSTGRES_USER: sentinel_ci
+          POSTGRES_PASSWORD: sentinel_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sentinel_ci -d sentinel_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGDATABASE: sentinel_ci
+      PGUSER: sentinel_ci
+      PGPASSWORD: sentinel_ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate migration filenames
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(backend/ingest/migrations/*.sql)
+          test "${#files[@]}" -gt 0
+          declare -A seen=()
+          for file in "${files[@]}"; do
+            base="${file##*/}"
+            if [[ ! "$base" =~ ^[0-9]{6}_[a-z0-9_]+\.sql$ ]]; then
+              echo "invalid migration filename: $file"
+              exit 1
+            fi
+            version="${base:0:6}"
+            if [[ -n "${seen[$version]:-}" ]]; then
+              echo "duplicate migration version: $version"
+              exit 1
+            fi
+            seen[$version]=1
+          done
+
+      - name: Apply migrations to an empty database
+        shell: bash
+        run: |
+          for migration in backend/ingest/migrations/*.sql; do
+            echo "Applying $migration"
+            psql -v ON_ERROR_STOP=1 -f "$migration"
+          done
+
+      - name: Verify foundation schema
+        shell: bash
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT to_regclass('public.sites') IS NOT NULL AS sites_exists \gset
+          SELECT to_regclass('public.collectors') IS NOT NULL AS collectors_exists \gset
+          SELECT to_regclass('public.enrollment_tokens') IS NOT NULL AS enrollment_tokens_exists \gset
+          SELECT to_regclass('public.durable_events') IS NOT NULL AS durable_events_exists \gset
+          SELECT to_regclass('public.federation_outbox') IS NOT NULL AS federation_outbox_exists \gset
+          \if :sites_exists
+          \else
+            \quit 1
+          \endif
+          \if :collectors_exists
+          \else
+            \quit 1
+          \endif
+          \if :enrollment_tokens_exists
+          \else
+            \quit 1
+          \endif
+          \if :durable_events_exists
+          \else
+            \quit 1
+          \endif
+          \if :federation_outbox_exists
+          \else
+            \quit 1
+          \endif
+          SQL
