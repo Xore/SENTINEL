@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 from collector.checks import BaseCheck, CheckResult
 from collector.scheduler import run_scheduler
 
@@ -131,6 +133,45 @@ async def test_timed_out_check_does_not_block_healthy_sibling(settings):
     assert healthy.call_count >= 4
 
 
+@pytest.mark.parametrize("bad_timeout", [0, -1.0, float("nan"), float("inf")])
+async def test_check_timeout_s_rejects_non_positive_or_non_finite(bad_timeout):
+    with pytest.raises(ValueError, match="check_timeout_s"):
+        await run_scheduler([], check_timeout_s=bad_timeout)
+
+
+async def test_stop_event_during_hanging_check_returns_promptly_with_no_pending_task(settings):
+    # Codex review 1: without racing stop_event against the in-flight batch,
+    # this would take ~5s (check_timeout_s) or the check's real 10s sleep —
+    # it must return promptly instead once stop_event fires mid-batch.
+    hanging = _HangingCheck(settings, meter=None)
+    stop_event = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.05, stop_event.set)
+
+    before = asyncio.all_tasks() - {asyncio.current_task()}
+    start = time.monotonic()
+    await run_scheduler([hanging], cycle_s=0.01, check_timeout_s=5.0, stop_event=stop_event)
+    elapsed = time.monotonic() - start
+    after = asyncio.all_tasks() - {asyncio.current_task()}
+
+    assert elapsed < 1.0
+    assert after <= before
+
+
+async def test_cancelling_scheduler_task_propagates_cancelled_error(settings):
+    # A true external cancellation of the scheduler's own task (not a
+    # stop_event-triggered shutdown) must still propagate as CancelledError,
+    # even with a stop_event present and a check hanging in the batch.
+    hanging = _HangingCheck(settings, meter=None)
+    stop_event = asyncio.Event()  # never set — the task itself is cancelled instead
+    task = asyncio.ensure_future(
+        run_scheduler([hanging], cycle_s=0.01, check_timeout_s=5.0, stop_event=stop_event)
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
 async def test_no_pending_tasks_after_shutdown(settings):
     check = _CountingCheck(settings, interval_s=0.02)
     stop_event = asyncio.Event()
@@ -204,6 +245,53 @@ async def test_canonical_metrics_names_units_and_labels(settings):
 
     assert {attrs["check"] for _, attrs in duration_instrument.calls} == {"counting", "broken"}
     assert len(cycle_instrument.calls) >= 1
+
+
+class _FailingCheck(BaseCheck):
+    """Never raises — returns a genuine CheckResult(ok=False), distinct from
+    _BrokenCheck's contract-violating raise."""
+
+    name = "failing"
+    scan_level = 1
+    interval_s = 1.0
+
+    def is_enabled(self) -> bool:
+        return True
+
+    async def run(self) -> CheckResult:
+        return CheckResult(ok=False, error="degraded")
+
+
+async def test_returned_failure_emits_outcome_failed_with_bounded_labels(settings):
+    meter = _FakeMeter()
+    check = _FailingCheck(settings, meter=None)
+    stop_event = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.03, stop_event.set)
+
+    await run_scheduler([check], cycle_s=0.01, stop_event=stop_event, meter=meter)
+
+    runs_instrument, _ = meter.instruments["sentinel_collector_check_runs_total"]
+    outcomes = {(attrs["check"], attrs["outcome"]) for _, attrs in runs_instrument.calls}
+    assert ("failing", "failed") in outcomes
+    for _, attrs in runs_instrument.calls:
+        assert set(attrs) <= {"check", "outcome"}
+
+
+async def test_timeout_emits_outcome_timeout_with_bounded_labels(settings):
+    meter = _FakeMeter()
+    check = _HangingCheck(settings, meter=None)
+    stop_event = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.05, stop_event.set)
+
+    await run_scheduler(
+        [check], cycle_s=0.01, check_timeout_s=0.02, stop_event=stop_event, meter=meter
+    )
+
+    runs_instrument, _ = meter.instruments["sentinel_collector_check_runs_total"]
+    outcomes = {(attrs["check"], attrs["outcome"]) for _, attrs in runs_instrument.calls}
+    assert ("hanging", "timeout") in outcomes
+    for _, attrs in runs_instrument.calls:
+        assert set(attrs) <= {"check", "outcome"}
 
 
 async def test_stop_event_already_set_runs_zero_cycles(settings):

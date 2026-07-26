@@ -6,15 +6,19 @@ concurrently inside an `asyncio.TaskGroup`, then sleep for the remainder of
 single broken or hanging check is recorded as one failed run rather than
 cancelling its siblings or crashing the scheduler — `BaseCheck.run()` must
 never raise, but this is the safety net for bugs that violate that contract.
-`asyncio.CancelledError` still propagates through `TaskGroup` for prompt
-shutdown. See `docs/guides/OPUS-AGENT-GUIDE-V2.md` §5.8 and
-`docs/contracts/METRICS.md` for the canonical run/duration telemetry emitted
-here.
+The in-flight batch also races against `stop_event` (`_run_batch_or_stop`) so
+a hanging check can't delay a graceful shutdown for the full
+`check_timeout_s`; `asyncio.CancelledError` from true task cancellation (not
+just `stop_event`) still propagates for prompt shutdown. See
+`docs/guides/OPUS-AGENT-GUIDE-V2.md` §5.8 and `docs/contracts/METRICS.md` for
+the canonical run/duration telemetry emitted here.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import heapq
+import math
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -118,6 +122,65 @@ async def _run_one(
     return result
 
 
+async def _run_batch(
+    due: list[CheckTask], *, check_timeout_s: float, metrics: _SchedulerMetrics
+) -> None:
+    async with asyncio.TaskGroup() as tg:
+        for task in due:
+            tg.create_task(
+                _run_one(task, check_timeout_s=check_timeout_s, metrics=metrics),
+                name=task.check.name,
+            )
+
+
+async def _run_batch_or_stop(
+    due: list[CheckTask],
+    *,
+    check_timeout_s: float,
+    metrics: _SchedulerMetrics,
+    stop_event: asyncio.Event | None,
+) -> None:
+    """Run one cycle's due checks, but return promptly if `stop_event` is
+    set mid-batch instead of waiting out up to `check_timeout_s` per check.
+    Without this, a single hanging check could delay a graceful shutdown for
+    the full default 30s (Codex review 1). A check cancelled this way is not
+    recorded as a failed/timeout outcome: `CancelledError` propagates past
+    `_run_one`'s `except TimeoutError`/`except Exception` clauses untouched,
+    so its metrics call is simply never reached.
+    """
+    if stop_event is None:
+        await _run_batch(due, check_timeout_s=check_timeout_s, metrics=metrics)
+        return
+
+    batch_task = asyncio.ensure_future(
+        _run_batch(due, check_timeout_s=check_timeout_s, metrics=metrics)
+    )
+    stop_wait = asyncio.ensure_future(stop_event.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {batch_task, stop_wait}, return_when=asyncio.FIRST_COMPLETED
+        )
+    except asyncio.CancelledError:
+        # This coroutine's own task was cancelled (e.g. by the collector's
+        # outer TaskGroup, not by stop_event) — not our cancellation to own;
+        # clean up both waiters and propagate.
+        batch_task.cancel()
+        stop_wait.cancel()
+        await asyncio.gather(batch_task, stop_wait, return_exceptions=True)
+        raise
+
+    if batch_task in done:
+        stop_wait.cancel()
+        await asyncio.gather(stop_wait, return_exceptions=True)
+        batch_task.result()
+        return
+
+    log.info("scheduler.batch_cancelled_for_shutdown", checks_pending=len(due))
+    batch_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await batch_task
+
+
 async def run_scheduler(
     checks: Sequence[BaseCheck],
     *,
@@ -133,11 +196,17 @@ async def run_scheduler(
     check's own `interval_s` (not `cycle_s`) determines when it next
     becomes due, so mixed intervals (e.g. a 10s ICMP check alongside a 60s
     SNMP walk) are handled correctly across cycles. Each check is bounded by
-    `check_timeout_s` and any exception it raises is contained as a failed
-    run (see `_run_one`) — one broken or hanging check never cancels its
-    siblings or stops the scheduler. `meter` (`None` in most unit tests)
-    emits the canonical run/duration telemetry from `docs/contracts/METRICS.md`.
+    `check_timeout_s` (must be positive and finite) and any exception it
+    raises is contained as a failed run (see `_run_one`) — one broken or
+    hanging check never cancels its siblings or stops the scheduler. An
+    in-flight batch also races against `stop_event` so shutdown doesn't wait
+    out a hanging check (see `_run_batch_or_stop`). `meter` (`None` in most
+    unit tests) emits the canonical run/duration telemetry from
+    `docs/contracts/METRICS.md`.
     """
+    if not math.isfinite(check_timeout_s) or check_timeout_s <= 0:
+        raise ValueError(f"check_timeout_s must be positive and finite, got {check_timeout_s!r}")
+
     metrics = _SchedulerMetrics(meter)
     now = time.monotonic()
     heap: list[CheckTask] = [
@@ -160,16 +229,9 @@ async def run_scheduler(
             due.append(heapq.heappop(heap))
 
         if due:
-            # _run_one contains any timeout/exception per check, so a broken
-            # or hanging check can never make this TaskGroup raise —
-            # CancelledError (shutdown) is the only thing that still
-            # propagates through it.
-            async with asyncio.TaskGroup() as tg:
-                for task in due:
-                    tg.create_task(
-                        _run_one(task, check_timeout_s=check_timeout_s, metrics=metrics),
-                        name=task.check.name,
-                    )
+            await _run_batch_or_stop(
+                due, check_timeout_s=check_timeout_s, metrics=metrics, stop_event=stop_event
+            )
             for task in due:
                 task.next_run_at = cycle_start + task.interval_s
                 heapq.heappush(heap, task)
