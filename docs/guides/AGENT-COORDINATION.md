@@ -73,6 +73,7 @@ The revisions must match; the final command is required remote read-back.
 | S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
 | S4-01 | 4 | Crash-safe offline queue foundation | SONNET5 | QUEUED | S3-01 DONE, envelope decision | planned scope in work queue |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
+| C1-04 | 1 | Authenticated site API and collector `last_seen` vertical slice | CODEX | IN_PROGRESS | C1-01, C1-03 | exact claim below |
 
 Completed: C0-01, C0-02, S0-01, S1-01, C1-01, C1-03. See
 [July 2026 history](agent-coordination-history/2026-07.md).
@@ -87,6 +88,7 @@ Detailed Sonnet follow-on scopes and gates are in
 |---|---|---|---|
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-26T10:38:14Z | SONNET5 | S1-02 | `collector/config.py`, `collector/pki/enroll.py`, `collector/utils/thread_pool.py`, `collector/tests/test_config.py`, `collector/tests/pki/test_enroll.py`, corresponding narrowly focused tests, this ledger |
+| 2026-07-26T10:55:57Z | CODEX | C1-04 | `backend/api/**`, `backend/ingest/migrations/000002_api_users.sql`, `docs/contracts/API.md`, `deploy/hub/docker-compose.dev.yml`, `deploy/hub/postgres/seed-dev.sql`, `.github/workflows/backend.yml`, `.github/workflows/integration-test.yml`, this ledger |
 
 ---
 
@@ -304,6 +306,30 @@ Implementation commit: `6745750`.
   VictoriaMetrics identity query, diagnostics, and volume cleanup.
 - Still gated: intentional tag-path verification, protected delivery, canary
   rollout, and rollback.
+
+### A-C1-04-1 — Codex authenticated site API assignment
+
+- **Timestamp:** 2026-07-26T10:55:57Z.
+- **Status:** IN_PROGRESS.
+- **Goal:** Close the remaining Phase 1 API gate with a production-shaped
+  `backend/api/` Go/Gin service exposing health/readiness and authenticated,
+  site-scoped collector status from PostgreSQL, including `last_seen`.
+- **Allowed:** exact C1-04 File Claims entry only.
+- **Excluded:** all Sonnet-owned collector code, ingest runtime behavior,
+  VictoriaMetrics query endpoints, frontend, mutation APIs, WebSockets, and
+  Phase 18's complete RBAC/audit surface.
+- **Security contract:** bearer JWT only; fixed accepted algorithm, issuer and
+  audience validation; expiry required; minimum 256-bit secret; database-backed
+  active user/role check; every collector query constrained to token-authorized
+  sites; uniform JSON errors without database/internal details.
+- **Required:** versioned API/error contract, forward-only users migration,
+  deterministic repository/handler/auth/config tests, graceful shutdown,
+  bounded server/database timeouts, container build, Compose wiring, and an E2E
+  assertion that an authorized viewer sees `dev-node-1.last_seen` while an
+  unauthorized site token cannot.
+- **Exit:** Go format/vet/race/build, migration, container/Compose, and
+  GitHub-hosted end-to-end gates pass; push a result checkpoint for review and
+  archive.
 
 ---
 
