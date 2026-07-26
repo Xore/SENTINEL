@@ -88,7 +88,7 @@ Detailed Sonnet follow-on scopes and gates are in
 |---|---|---|---|
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-26T10:38:14Z | SONNET5 | S1-02 | `collector/config.py`, `collector/pki/enroll.py`, `collector/utils/thread_pool.py`, `collector/tests/test_config.py`, `collector/tests/pki/test_enroll.py`, corresponding narrowly focused tests, this ledger |
-| 2026-07-26T10:55:57Z | CODEX | C1-04 | `backend/api/**`, `backend/ingest/migrations/000002_api_users.sql`, `docs/contracts/API.md`, `deploy/hub/docker-compose.dev.yml`, `deploy/hub/postgres/seed-dev.sql`, `.github/workflows/backend.yml`, `.github/workflows/integration-test.yml`, this ledger |
+| 2026-07-26T11:09:02Z | CODEX | C1-04 | `backend/api/**`, `backend/ingest/migrations/000002_api_users.sql`, `backend/ingest/migrations/runner_integration_test.go`, `docs/contracts/API.md`, `deploy/hub/docker-compose.dev.yml`, `deploy/hub/postgres/seed-dev.sql`, `.github/workflows/backend.yml`, `.github/workflows/integration-test.yml`, this ledger |
 
 ---
 
@@ -330,6 +330,11 @@ Implementation commit: `6745750`.
 - **Exit:** Go format/vet/race/build, migration, container/Compose, and
   GitHub-hosted end-to-end gates pass; push a result checkpoint for review and
   archive.
+- **Scope refinement at 2026-07-26T11:09:02Z:** GitHub migration run
+  `30199453151` showed the existing invariant test reset and expected-count
+  logic was hard-coded for one migration. Add only
+  `backend/ingest/migrations/runner_integration_test.go` to update that generic
+  invariant for the second immutable migration; no ingest runtime change.
 
 ---
 
