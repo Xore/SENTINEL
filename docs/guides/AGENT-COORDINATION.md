@@ -69,7 +69,7 @@ The revisions must match; the final command is required remote read-back.
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | SONNET5 | REVIEW | S2-01 DONE | exact scope below |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | exact new-file scope below |
-| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | QUEUED | S3-01A REVIEW | continuity scope in work queue |
+| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | IN_PROGRESS | S3-01A REVIEW | exact new-file scope below |
 | S5-00 | 5 | Signed-update read-only preflight | SONNET5 | QUEUED | S4-01A REVIEW | ledger only |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 | C2-03 | 2 | Live probe metric workflow assertion | CODEX | QUEUED | S2-02 REVIEW | `.github/workflows/integration-test.yml`, ledger |
@@ -88,6 +88,7 @@ Detailed Sonnet follow-on scopes and gates are in
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-26T13:00:00Z | SONNET5 | S2-02 | `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
 | 2026-07-26T14:10:00Z | SONNET5 | S3-01A | new files only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
+| 2026-07-26T15:05:00Z | SONNET5 | S4-01A | new files only: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/__init__.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
 
 
 ---
@@ -405,6 +406,53 @@ Implementation commit: `8e96e8c`.
   registration/config wiring and OTel instrument design for these seven
   checks remain open for the later claim the work queue already
   anticipates.
+
+### A-S4-01A-1 — Sonnet 5 claim
+
+- **Timestamp:** 2026-07-26T15:05:00Z
+- **Status:** IN_PROGRESS. All S1-02/S2-01/S2-02/S3-01A files remain frozen
+  and untouched by this claim.
+- **Scope:** exactly the File Claims row above — a new `collector/store/`
+  package (envelope + SQLite cold queue) and matching new
+  `collector/tests/store/` package. No dependency, config, transport,
+  scheduler, probe, or entry-point edits, per
+  `SONNET-5-WORK-QUEUE.md`'s S4-01A spec.
+- **Plan:**
+  1. `envelope.py` — immutable, frozen `Envelope` dataclass: version `1`
+     (rejects any other value now or on deserialization); `event_id`
+     (UUID4, canonicalized), `site_id`/`collector_id` (existing DNS-label
+     bounded-identity rule, mirrored locally since `config.py` is frozen/
+     out of scope this claim); `observed_at`/`created_at`/`expires_at`
+     (aware UTC only, `expires_at` must follow both `observed_at` and
+     `created_at`); non-negative `attempt_count`; `content_type`; opaque
+     `payload` bytes; a SHA-256 `checksum` computed from `payload` at
+     construction. Deterministic `to_bytes`/`from_bytes` (sorted-key JSON,
+     base64 payload) with checksum re-verification on deserialize and a
+     `with_attempt_incremented()` copy-on-write helper so the frozen
+     envelope never needs in-place mutation.
+  2. `sqlite_queue.py` — stdlib `sqlite3`, WAL journal mode, busy-timeout
+     pragma, explicit transactions per operation. `queue` table keyed by
+     `event_id` (idempotent `INSERT OR IGNORE` covers duplicates) ordered
+     by `(created_at, event_id)`; a separate `quarantine` table for rows
+     that fail to deserialize (checksum mismatch/malformed blob) so a
+     poisoned record can't wedge the queue. Constructor-supplied
+     `max_records`/`max_bytes` caps enforced with oldest-first eviction
+     before every insert. `peek`/`acknowledge` (delete on ack)/
+     `mark_attempt` (re-serializes with `with_attempt_incremented()`)/
+     `remove_expired`/`count`/`total_bytes`/`quarantined_count`/`close`.
+  3. Tests per the work queue's required list: round-trip/determinism,
+     checksum corruption, unknown version, duplicate idempotency,
+     crash/reopen durability (abandoned connection, fresh instance against
+     the same file), concurrent producer/consumer (both same-instance
+     multi-thread and separate-instance-same-file), busy/locked database,
+     cap eviction (bytes and records), expiry removal, retry
+     (`created_at`,`event_id`) order, acknowledgement, and a simulated
+     24-hour backlog drain using fake spread-out timestamps (not real
+     wall-clock waiting).
+  4. Run all four Linux gates (Ruff/mypy/Pylint/pytest).
+- **Exit:** push implementation + separate REVIEW handoff with exact gate
+  results, per the work queue. LMDB hot tier, configuration, and transport
+  integration remain later, separately reviewed claims.
 
 ### C2-03 — Live probe metric workflow assertion
 
