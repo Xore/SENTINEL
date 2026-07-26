@@ -67,7 +67,7 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | IN_PROGRESS | S1-01 | exact narrowed claim below |
+| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | REVIEW | S1-01 | exact narrowed claim below |
 | S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | REVIEW | pushed S1-02 REVIEW | exact scope in work queue |
 | S2-02 | 2 | Core network probe activation and hardening | SONNET5 | QUEUED | S1-02, S2-01 DONE | planned scope in work queue |
 | S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
@@ -148,8 +148,9 @@ Archive answered questions in the commit applying the answer.
 ### A-S1-02-1 — Sonnet 5 assignment
 
 - **Timestamp:** 2026-07-26T09:47:13Z
-- **Status:** IN_PROGRESS — Codex review 2 verified Windows parity and the
-  principal fixes but returned three enrollment-contract gaps below.
+- **Status:** REVIEW — third handoff below addresses all three Codex
+  review 2 corrections (CA parsing, retryable-status allowlist,
+  Retry-After hardening).
 - **Goal:** Make the documented Windows development path accurately validate
   Phase 1 collector behavior and strengthen enrollment failure tests.
 - **Allowed:** `collector/**`.
@@ -485,6 +486,72 @@ Implementation commit: `eb5917e`.
      and cap tests.
 - **Retain:** all accepted behavior and tests. Do not change server contracts,
   dependencies, or files outside the existing narrowed claim.
+
+#### S1-02 handoff 3
+
+Implementation commit: `cf3f025`.
+
+- **Files:** `collector/pki/enroll.py`, `collector/tests/pki/test_enroll.py`
+  — exactly the narrowed claim.
+- **Correction 1 (parse leaf and CA):** `_verify_certificate_identity` now
+  takes `ca_pem` too and parses it with `x509.load_pem_x509_certificate`
+  right after the leaf; either parse failure raises `EnrollmentError`
+  (`"malformed leaf certificate: ..."` / `"malformed CA certificate:
+  ..."`) before any file is written. No chain/signature verification is
+  added — matches the review's "remains outside this narrow change"
+  scope. The test fixtures' `_FAKE_CA_PEM` was a literal placeholder
+  string that never actually parsed; replaced with a real minted
+  self-signed cert (`_mint_ca_cert`) so every existing success test still
+  exercises genuine CA parsing instead of masking it. Added
+  `test_malformed_leaf_certificate_raises_and_does_not_write_files` and
+  `test_malformed_ca_certificate_raises_and_does_not_write_files`, each
+  asserting zero cert/key files persisted.
+- **Correction 2 (retryable allowlist):** replaced `_TERMINAL_STATUSES`
+  with `_RETRYABLE_STATUSES = {408, 425, 429} | set(range(500, 600))` and
+  inverted the branch to `if status not in _RETRYABLE_STATUSES: raise
+  immediately`. An unlisted status (405/410/415, or anything else) now
+  fails fast instead of falling through to the old default-retry branch.
+  Added `test_unlisted_status_fails_immediately_without_retry`
+  (parametrized 405/410/415, 1 attempt each, no files written); the
+  existing 400/403/404/409/422 terminal-status test and all 5xx/408/425/
+  429 retry tests are unaffected since they're unchanged members of the
+  new allowlist's complement/membership respectively.
+- **Correction 3 (Retry-After hardening + backoff cap):**
+  `_parse_retry_after` now tries delay-seconds first, then falls back to
+  `email.utils.parsedate_to_datetime` for the HTTP-date form (computed
+  against a new `_utcnow()` seam so tests can monkeypatch a fixed "now"
+  instead of depending on real wall-clock timing); rejects non-finite
+  (`math.isfinite`) and negative results instead of honoring them; and
+  clamps any valid value to a new `_MAX_BACKOFF_S = 300.0`. The configured
+  exponential backoff in `ensure_enrolled`'s `_retry_or_raise` is now also
+  clamped to the same cap. Added
+  `test_retry_after_http_date_form_is_honored` (deterministic via the
+  `_utcnow` seam), `test_retry_after_non_finite_value_falls_back_to_configured_backoff`
+  (`"inf"`), `test_retry_after_invalid_value_falls_back_to_configured_backoff`,
+  `test_retry_after_huge_value_is_capped` (asserts exactly `300.0`), and
+  `test_configured_backoff_is_capped` (`retry_backoff_s=1000.0` still
+  clamps to `300.0`).
+- **Behavior retained:** every test from handoffs 1 and 2 (Windows
+  0600/0666 split, malformed-response-body tests, network-error retry
+  tests, terminal-status tests, key/identity-mismatch tests, SCAN_LEVEL_MAX
+  coercion) is unchanged and still passes; only the CA fixture's *content*
+  changed from an unparseable placeholder to a real cert; its filename
+  constant and role in every call site are identical.
+- **Gates, run from `collector/` with the repo's `.venv` (Python 3.12.3 /
+  pylint 3.3.7 / ruff 0.16.0 / mypy 1.20.2 / pytest 9.1.1):**
+  - `ruff check .` → all checks passed.
+  - `mypy .` → `Success: no issues found in 35 source files` (pre-existing
+    `annotation-unchecked` notes on untyped test bodies only).
+  - `pylint collector tests` (exact CI invocation) → 10.00/10.
+  - `pytest -q` → 189 passed, 1 skipped (`test_sighup_noop_without_signal`,
+    `non-POSIX only` — pre-existing).
+  - Windows Ruff/mypy/Pylint/pytest: **not run** — no Windows environment
+    available to this session.
+- **Remaining risk:** the Windows/Python 3.14.5-specific ThreadPoolExecutor
+  suppression (handoff 2) still can't be independently re-verified from
+  this Linux host; everything in this handoff is new Python logic
+  (CA parsing, status-set membership, date/backoff math) directly
+  exercised by the passing suite above, not platform-conditional.
 
 ### C1-02 — CI/CD checkpoint
 
