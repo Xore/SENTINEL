@@ -79,8 +79,8 @@ the shared information as stored on the remote branch.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| C0-01 | 0 | Repository audit and requirements traceability matrix | CODEX | IN_PROGRESS | None | `docs/architecture/`, traceability document |
-| C0-02 | 0 | ADRs and canonical cross-service contracts | CODEX | READY | C0-01 | `docs/architecture/decisions/`, contract specs |
+| C0-01 | 0 | Repository audit and requirements traceability matrix | CODEX | DONE | None | `docs/architecture/`, traceability document |
+| C0-02 | 0 | ADRs and canonical cross-service contracts | CODEX | IN_PROGRESS | C0-01 | `docs/architecture/decisions/`, contract specs |
 | S0-01 | 0 | Run current collector quality suite and report implementation inventory | SONNET5 | READY | None | No source edits; append results here |
 | S1-01 | 1 | Collector heartbeat vertical slice | SONNET5 | BLOCKED | C0-02 | To be assigned after contracts |
 | C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | BLOCKED | C0-02 | To be assigned after audit |
@@ -97,7 +97,8 @@ claims may remain with status `RELEASED`.
 
 | Timestamp (UTC) | Agent | Work ID | Files/directories | Claim status |
 |---|---|---|---|---|
-| 2026-07-26T09:11:04Z | CODEX | C0-01 | `docs/architecture/REQUIREMENTS-TRACEABILITY.md`, `docs/guides/AGENT-COORDINATION.md` | ACTIVE |
+| 2026-07-26T09:11:04Z | CODEX | C0-01 | `docs/architecture/REQUIREMENTS-TRACEABILITY.md`, `docs/guides/AGENT-COORDINATION.md` | RELEASED |
+| 2026-07-26T09:14:13Z | CODEX | C0-02 | `docs/architecture/decisions/`, `docs/contracts/`, `docs/guides/AGENT-COORDINATION.md` | ACTIVE |
 
 ---
 
@@ -135,6 +136,25 @@ Use this template:
 - **Commit SHA:** none, or SHA
 - **Reviewer result:** pending / accepted / changes requested
 - **Reviewer notes:**
+
+### H-C0-01-1
+
+- **Timestamp (UTC):** 2026-07-26T09:14:13Z
+- **From:** CODEX
+- **To:** CODEX / SONNET5
+- **Status requested:** READY
+- **Changed files:** `docs/architecture/REQUIREMENTS-TRACEABILITY.md`,
+  coordination and implementation guides
+- **Behavior implemented:** Audited every extended-architecture feature against
+  the current repository and established the implementation critical path.
+- **Commands run and results:** Repository file/symbol inventory, clean diff
+  check, remote synchronization and remote ledger read-back passed.
+- **Known limitations:** Sonnet's independent quality-suite results are still
+  pending under S0-01 and will be merged into the audit if they change evidence.
+- **Assumptions:** Documentation/examples do not count as implementation.
+- **Commit SHA:** `be6c04bb3f07c83a06b0b93e6ec7916dbc067fde`
+- **Reviewer result:** accepted
+- **Reviewer notes:** C0-02 may start; S1-01 remains blocked pending contracts.
 
 ---
 
