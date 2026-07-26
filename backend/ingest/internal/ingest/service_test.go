@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/Xore/analyseLaptop/backend/ingest/internal/identity"
 	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -22,6 +23,22 @@ type recordingSink struct {
 	err   error
 }
 
+type recordingRegistry struct {
+	id    identity.Collector
+	calls int
+	err   error
+}
+
+func (registry *recordingRegistry) AuthorizeAndMarkSeen(
+	_ context.Context,
+	id identity.Collector,
+	_ time.Time,
+) error {
+	registry.id = id
+	registry.calls++
+	return registry.err
+}
+
 func (sink *recordingSink) WriteMetrics(
 	_ context.Context,
 	_ *collectormetricspb.ExportMetricsServiceRequest,
@@ -35,7 +52,8 @@ func (sink *recordingSink) WriteMetrics(
 func TestExportAcceptsCertificateBoundIdentity(t *testing.T) {
 	t.Parallel()
 	sink := &recordingSink{}
-	service, err := NewService(sink)
+	registry := &recordingRegistry{}
+	service, err := NewService(sink, registry)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,16 +65,17 @@ func TestExportAcceptsCertificateBoundIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Export() error = %v", err)
 	}
-	if sink.calls != 1 || sink.id != (identity.Collector{
-		SiteID: "plant-a", CollectorID: "probe-01",
-	}) {
+	if sink.calls != 1 || sink.id.SiteID != "plant-a" || sink.id.CollectorID != "probe-01" {
 		t.Fatalf("sink calls/id = %d/%#v", sink.calls, sink.id)
+	}
+	if registry.calls != 1 {
+		t.Fatalf("registry calls = %d, want 1", registry.calls)
 	}
 }
 
 func TestExportRejectsAttributeIdentityMismatch(t *testing.T) {
 	t.Parallel()
-	service, _ := NewService(&recordingSink{})
+	service, _ := NewService(&recordingSink{}, &recordingRegistry{})
 
 	_, err := service.Export(
 		collectorContext(t, "plant-a", "probe-01"),
@@ -69,7 +88,7 @@ func TestExportRejectsAttributeIdentityMismatch(t *testing.T) {
 
 func TestExportRejectsMissingCertificate(t *testing.T) {
 	t.Parallel()
-	service, _ := NewService(&recordingSink{})
+	service, _ := NewService(&recordingSink{}, &recordingRegistry{})
 
 	_, err := service.Export(context.Background(), request("plant-a", "probe-01", "sentinel-collector"))
 	if status.Code(err) != codes.Unauthenticated {
@@ -79,7 +98,10 @@ func TestExportRejectsMissingCertificate(t *testing.T) {
 
 func TestExportHidesSinkFailure(t *testing.T) {
 	t.Parallel()
-	service, _ := NewService(&recordingSink{err: errors.New("contains internal details")})
+	service, _ := NewService(
+		&recordingSink{err: errors.New("contains internal details")},
+		&recordingRegistry{},
+	)
 
 	_, err := service.Export(
 		collectorContext(t, "plant-a", "probe-01"),
@@ -90,6 +112,26 @@ func TestExportHidesSinkFailure(t *testing.T) {
 	}
 	if status.Convert(err).Message() != "site metric storage unavailable" {
 		t.Fatalf("Export() exposed sink details: %v", err)
+	}
+}
+
+func TestExportRejectsUnauthorizedCollectorBeforeStorage(t *testing.T) {
+	t.Parallel()
+	sink := &recordingSink{}
+	service, _ := NewService(
+		sink,
+		&recordingRegistry{err: ErrCollectorUnauthorized},
+	)
+
+	_, err := service.Export(
+		collectorContext(t, "plant-a", "probe-01"),
+		request("plant-a", "probe-01", "sentinel-collector"),
+	)
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("Export() code = %v, want PermissionDenied", status.Code(err))
+	}
+	if sink.calls != 0 {
+		t.Fatalf("unauthorized metrics reached storage: %d calls", sink.calls)
 	}
 }
 

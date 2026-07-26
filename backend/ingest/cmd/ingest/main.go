@@ -14,6 +14,7 @@ import (
 
 	"github.com/Xore/analyseLaptop/backend/ingest/internal/config"
 	"github.com/Xore/analyseLaptop/backend/ingest/internal/ingest"
+	"github.com/Xore/analyseLaptop/backend/ingest/internal/registry"
 	"github.com/Xore/analyseLaptop/backend/ingest/internal/sink"
 	"github.com/Xore/analyseLaptop/backend/ingest/internal/transport"
 	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -45,7 +46,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	metricService, err := ingest.NewService(metricSink)
+	startupContext, cancelStartup := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelStartup()
+	collectorRegistry, err := registry.Open(startupContext, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer collectorRegistry.Close()
+
+	metricService, err := ingest.NewService(metricSink, collectorRegistry)
 	if err != nil {
 		return err
 	}

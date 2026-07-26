@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Xore/analyseLaptop/backend/ingest/internal/identity"
 	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -27,18 +28,29 @@ type MetricsSink interface {
 	WriteMetrics(context.Context, *collectormetricspb.ExportMetricsServiceRequest, identity.Collector) error
 }
 
+// CollectorRegistry authorizes a certificate and records authenticated contact.
+// The operation must be atomic: an unauthorized/disabled certificate cannot
+// update last_seen.
+type CollectorRegistry interface {
+	AuthorizeAndMarkSeen(context.Context, identity.Collector, time.Time) error
+}
+
 // Service is the OTLP MetricsService implementation.
 type Service struct {
 	collectormetricspb.UnimplementedMetricsServiceServer
-	sink MetricsSink
+	sink     MetricsSink
+	registry CollectorRegistry
 }
 
 // NewService creates an OTLP metrics service.
-func NewService(sink MetricsSink) (*Service, error) {
+func NewService(sink MetricsSink, registry CollectorRegistry) (*Service, error) {
 	if sink == nil {
 		return nil, errors.New("metrics sink is required")
 	}
-	return &Service{sink: sink}, nil
+	if registry == nil {
+		return nil, errors.New("collector registry is required")
+	}
+	return &Service{sink: sink, registry: registry}, nil
 }
 
 // Export authenticates certificate identity, validates all resource identities,
@@ -54,11 +66,21 @@ func (s *Service) Export(
 	if err := validateRequest(req, id); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	if err := s.registry.AuthorizeAndMarkSeen(ctx, id, time.Now().UTC()); err != nil {
+		if errors.Is(err, ErrCollectorUnauthorized) {
+			return nil, status.Error(codes.PermissionDenied, "collector certificate is not authorized")
+		}
+		return nil, status.Error(codes.Unavailable, "collector registry unavailable")
+	}
 	if err := s.sink.WriteMetrics(ctx, req, id); err != nil {
 		return nil, status.Error(codes.Unavailable, "site metric storage unavailable")
 	}
 	return &collectormetricspb.ExportMetricsServiceResponse{}, nil
 }
+
+// ErrCollectorUnauthorized is returned for unknown, disabled, or
+// certificate-mismatched collectors. Details are intentionally collapsed.
+var ErrCollectorUnauthorized = errors.New("collector is not authorized")
 
 func identityFromContext(ctx context.Context) (identity.Collector, error) {
 	remotePeer, ok := peer.FromContext(ctx)

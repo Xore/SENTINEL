@@ -80,6 +80,7 @@ jobs:
       PGDATABASE: sentinel_ci
       PGUSER: sentinel_ci
       PGPASSWORD: sentinel_ci
+      SENTINEL_TEST_DATABASE_URL: postgres://sentinel_ci:sentinel_ci@localhost:5432/sentinel_ci?sslmode=disable
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -143,3 +144,7 @@ jobs:
             \quit 1
           \endif
           SQL
+
+      - name: Test collector authorization and last_seen
+        working-directory: backend/ingest
+        run: go test -tags=integration -count=1 ./internal/registry

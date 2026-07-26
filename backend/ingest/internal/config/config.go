@@ -16,6 +16,7 @@ type Config struct {
 	TLSKeyFile      string
 	ClientCAFile    string
 	VMOTLPURL       string
+	DatabaseURL     string
 	MaxMessageBytes int
 	ShutdownTimeout time.Duration
 }
@@ -28,6 +29,7 @@ func Load() (Config, error) {
 		TLSCertFile:  os.Getenv("SENTINEL_INGEST_TLS_CERT_FILE"),
 		TLSKeyFile:   os.Getenv("SENTINEL_INGEST_TLS_KEY_FILE"),
 		ClientCAFile: os.Getenv("SENTINEL_INGEST_CLIENT_CA_FILE"),
+		DatabaseURL:  os.Getenv("SENTINEL_DATABASE_URL"),
 		VMOTLPURL: envOr(
 			"SENTINEL_INGEST_VM_OTLP_URL",
 			"http://victoriametrics:8428/opentelemetry/v1/metrics",
@@ -40,6 +42,9 @@ func Load() (Config, error) {
 			"SENTINEL_INGEST_TLS_CERT_FILE, SENTINEL_INGEST_TLS_KEY_FILE, " +
 				"and SENTINEL_INGEST_CLIENT_CA_FILE are required",
 		)
+	}
+	if cfg.DatabaseURL == "" {
+		return Config{}, errors.New("SENTINEL_DATABASE_URL is required")
 	}
 	if cfg.GRPCAddress == cfg.HTTPAddress {
 		return Config{}, fmt.Errorf("gRPC and HTTP addresses must differ: %s", cfg.GRPCAddress)

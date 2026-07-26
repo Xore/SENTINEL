@@ -16,8 +16,9 @@ var identifierPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])
 
 // Collector identifies one collector within one site.
 type Collector struct {
-	SiteID      string
-	CollectorID string
+	SiteID            string
+	CollectorID       string
+	CertificateSerial string
 }
 
 // ValidateIdentifier applies ADR 0009's DNS-label-compatible identifier rule.
@@ -63,6 +64,7 @@ func FromCertificate(cert *x509.Certificate) (Collector, error) {
 			len(found),
 		)
 	}
+	found[0].CertificateSerial = cert.SerialNumber.String()
 	return found[0], nil
 }
 

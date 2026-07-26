@@ -2,6 +2,7 @@ package identity
 
 import (
 	"crypto/x509"
+	"math/big"
 	"net/url"
 	"testing"
 )
@@ -13,11 +14,16 @@ func TestFromCertificate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := FromCertificate(&x509.Certificate{URIs: []*url.URL{uri}})
+	got, err := FromCertificate(&x509.Certificate{
+		URIs:         []*url.URL{uri},
+		SerialNumber: big.NewInt(42),
+	})
 	if err != nil {
 		t.Fatalf("FromCertificate() error = %v", err)
 	}
-	want := (Collector{SiteID: "plant-a", CollectorID: "probe-01"})
+	want := (Collector{
+		SiteID: "plant-a", CollectorID: "probe-01", CertificateSerial: "42",
+	})
 	if got != want {
 		t.Fatalf("FromCertificate() = %#v, want %#v", got, want)
 	}
