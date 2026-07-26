@@ -5,11 +5,13 @@ on:
     branches: [main]
     paths:
       - "backend/**"
+      - "deploy/hub/**"
       - "docs/contracts/**"
       - ".github/workflows/backend.yml"
   pull_request:
     paths:
       - "backend/**"
+      - "deploy/hub/**"
       - "docs/contracts/**"
       - ".github/workflows/backend.yml"
   workflow_dispatch: {}
@@ -56,6 +58,12 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+      - name: Build ingest container
+        run: docker build .
+
+      - name: Validate dev hub composition
+        run: docker compose -f ../../deploy/hub/docker-compose.dev.yml config --quiet
 
   migrations:
     name: PostgreSQL migration validation

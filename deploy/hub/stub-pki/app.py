@@ -35,7 +35,7 @@ OTEL_CERT_PATH = PKI_DIR / "otel-collector.crt"
 # Server identity the otel-collector's OTLP receiver presents; must cover
 # every hostname a client (host-side test collector, or a containerized one
 # on the compose network) connects through.
-OTEL_SERVER_SANS = ["localhost", "127.0.0.1", "otel-collector"]
+OTEL_SERVER_SANS = ["localhost", "127.0.0.1", "otel-collector", "ingest"]
 
 CA_VALIDITY = datetime.timedelta(days=3650)  # dev CA — 10 years, never rotated
 LEAF_VALIDITY = datetime.timedelta(days=825)  # matches common CA/Browser Forum limits

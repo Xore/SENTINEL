@@ -1,71 +1,81 @@
 # Dev hub stack
 
-Stands up just enough of a hub to run the Phase 1 integration test from
-[`docs/guides/OPUS-AGENT-GUIDE-V2.md`](../../docs/guides/OPUS-AGENT-GUIDE-V2.md)
-§4: *"collector connects, enrolls its certificate, and emits a heartbeat
-metric that lands in VictoriaMetrics."* **Not the production hub** — see
-[`docs/architecture/IaC-DEPLOYMENT-STRATEGY.md`](../../docs/architecture/IaC-DEPLOYMENT-STRATEGY.md)
-for that. In particular:
+This disposable stack runs the production Go migration, enrollment, mTLS
+identity, PostgreSQL authorization, and OTLP ingest code for the Phase 1 gate:
+a collector enrolls and its heartbeat lands in VictoriaMetrics.
 
-- `stub-pki/` signs collector CSRs against a throwaway CA generated on
-  first startup. It implements the same wire contract as the real hub's
-  PKI endpoint (`collector/pki/enroll.py`'s `POST {collector_id, site_id,
-  csr_pem} -> {certificate_pem, ca_certificate_pem}`), but has no
-  bootstrap-token auth, no revocation, and is not the Go ingest service the
-  design docs describe.
-- `otel-collector/` (the real, off-the-shelf OpenTelemetry Collector,
-  `otel/opentelemetry-collector-contrib`) terminates the collector's
-  OTLP/gRPC + mTLS connection and forwards metrics to VictoriaMetrics via
-  Prometheus remote-write. Stands in for the future Go ingest service.
-- `postgres/init.sql` is a minimal `sites`/`collectors`/`events` schema,
-  not the full production schema.
+The `pki-init` container only generates a throwaway development CA and server
+certificate. It does not expose the old stub enrollment server. The Go
+`ingest` service owns both `POST /api/pki/enroll` and OTLP authorization.
 
-## Run it
+## Start
 
 ```bash
 docker compose -f deploy/hub/docker-compose.dev.yml up -d --build
+docker compose -f deploy/hub/docker-compose.dev.yml ps
 ```
 
-Then run the collector against it from the repo root (adjust `COLLECTOR_ID`
-per node; PKI enrollment is idempotent — rerunning with the same
-`BACKEND__PKI_DIR` just reuses the existing cert):
+The deterministic development identity is:
+
+- site: `site-a`
+- collector: `dev-node-1`
+- one-time token: `dev-only-bootstrap-token`
+
+Never use this identity or token outside the disposable dev stack.
+
+## Run a collector
+
+Enrollment itself is HTTPS. Copy the throwaway CA out of the named volume so
+Python can authenticate the enrollment server before it has a client
+certificate:
 
 ```bash
-cd collector && . .venv/bin/activate && cd ..
+docker compose -f deploy/hub/docker-compose.dev.yml \
+  cp pki-init:/pki/ca.crt /tmp/sentinel-dev-ca.crt
+
+cd collector
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+cd ..
+
+SSL_CERT_FILE=/tmp/sentinel-dev-ca.crt \
 COLLECTOR_ID=dev-node-1 \
 SITE_ID=site-a \
 BACKEND__PKI_DIR=/tmp/dev-node-1-pki \
 BACKEND__URL=https://localhost:4317 \
-BACKEND__ENROLL_URL=http://localhost:8443/api/pki/enroll \
+BACKEND__ENROLL_URL=https://localhost:8443/api/pki/enroll \
+BACKEND__BOOTSTRAP_TOKEN=dev-only-bootstrap-token \
 python3 -m collector
 ```
+
+The token is consumed once. Remove the three files under
+`/tmp/dev-node-1-pki` only together with a fresh `docker compose down -v`;
+otherwise reenrollment correctly fails.
 
 ## Verify
 
 ```bash
-curl -s 'http://localhost:8428/api/v1/query?query=collector_heartbeat_total' | python3 -m json.tool
+curl -fsS \
+  'http://localhost:8428/api/v1/query?query=sentinel_collector_heartbeat_total' \
+  | python3 -m json.tool
 ```
 
-Or open the VictoriaMetrics UI at <http://localhost:8428/vmui> and query
-`collector_heartbeat_total`. Expect one series per enrolled `collector_id`,
-labeled with both `collector_id` and `site_id`.
+Expect one series labeled `collector_id="dev-node-1"` and `site_id="site-a"`.
+The ingest logs must show no unauthenticated fallback:
 
-## Notes from getting this working
+```bash
+docker compose -f deploy/hub/docker-compose.dev.yml logs ingest
+```
 
-- **PKI file permissions:** `stub-pki` and `otel-collector` are different
-  containers running as different, unrelated UIDs, sharing the `pki_data`
-  volume. Private keys there are `0644`, not the usual `0600` — acceptable
-  only because this is a throwaway dev CA that exists solely to unblock
-  this test, never for a real CA/server key.
-- **`resource_to_telemetry_conversion: enabled: true`** is required on the
-  `prometheus_remote_write` exporter, or every OTLP resource attribute
-  (including `collector_id`/`site_id`) is dropped — only `job`/`instance`
-  (from `service.name`/`service.instance.id`) reach VictoriaMetrics by
-  default.
-- **Resource attribute names must be Prometheus-label-safe** (no dots).
-  `collector/transport/otlp.py` originally used OTel's usual dotted
-  resource-attribute style (`collector.id`, `site.id`); the remote-write
-  exporter silently dropped them instead of sanitizing. Renamed to
-  `collector_id`/`site_id`, matching this project's own metric-label
-  convention (`COLLECTOR-V2-REFACTOR.md` §10) — fixed at the source rather
-  than worked around here.
+## Tear down
+
+```bash
+docker compose -f deploy/hub/docker-compose.dev.yml down -v
+rm -rf /tmp/dev-node-1-pki /tmp/sentinel-dev-ca.crt
+```
+
+The CA key is deliberately shared between the one-shot initializer and Go
+ingest inside a private throwaway volume. Production uses an external secret
+provider/HSM boundary and the deployment strategy in
+`docs/architecture/IaC-DEPLOYMENT-STRATEGY.md`.
