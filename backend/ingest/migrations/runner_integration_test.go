@@ -37,8 +37,12 @@ func TestRunnerAppliesAndRevalidatesMigrations(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM sentinel_schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("count migration records: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("migration record count = %d, want 1", count)
+	expected, err := loadMigrations(embeddedFiles)
+	if err != nil {
+		t.Fatalf("load embedded migrations: %v", err)
+	}
+	if count != len(expected) {
+		t.Fatalf("migration record count = %d, want %d", count, len(expected))
 	}
 }
 
@@ -74,8 +78,8 @@ WHERE version = 1`); err != nil {
 func resetDatabase(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 	const reset = `
-DROP TABLE IF EXISTS federation_outbox, durable_events, enrollment_tokens,
-    collectors, sites, sentinel_schema_migrations CASCADE`
+DROP TABLE IF EXISTS user_site_access, users, federation_outbox, durable_events,
+    enrollment_tokens, collectors, sites, sentinel_schema_migrations CASCADE`
 	if _, err := pool.Exec(ctx, reset); err != nil {
 		t.Fatalf("reset database: %v", err)
 	}
