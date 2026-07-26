@@ -6,6 +6,8 @@ func TestLoadRequiresTLSFiles(t *testing.T) {
 	t.Setenv("SENTINEL_INGEST_TLS_CERT_FILE", "")
 	t.Setenv("SENTINEL_INGEST_TLS_KEY_FILE", "")
 	t.Setenv("SENTINEL_INGEST_CLIENT_CA_FILE", "")
+	t.Setenv("SENTINEL_COLLECTOR_CA_CERT_FILE", "")
+	t.Setenv("SENTINEL_COLLECTOR_CA_KEY_FILE", "")
 	t.Setenv("SENTINEL_DATABASE_URL", "")
 
 	if _, err := Load(); err == nil {
@@ -17,6 +19,8 @@ func TestLoad(t *testing.T) {
 	t.Setenv("SENTINEL_INGEST_TLS_CERT_FILE", "/tls/server.crt")
 	t.Setenv("SENTINEL_INGEST_TLS_KEY_FILE", "/tls/server.key")
 	t.Setenv("SENTINEL_INGEST_CLIENT_CA_FILE", "/tls/ca.crt")
+	t.Setenv("SENTINEL_COLLECTOR_CA_CERT_FILE", "/tls/ca.crt")
+	t.Setenv("SENTINEL_COLLECTOR_CA_KEY_FILE", "/tls/ca.key")
 	t.Setenv("SENTINEL_DATABASE_URL", "postgres://sentinel@postgres/sentinel")
 	t.Setenv("SENTINEL_INGEST_GRPC_ADDRESS", ":14317")
 	t.Setenv("SENTINEL_INGEST_HTTP_ADDRESS", ":18081")

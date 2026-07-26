@@ -162,3 +162,7 @@ jobs:
       - name: Test collector authorization and last_seen
         working-directory: backend/ingest
         run: go test -tags=integration -count=1 ./internal/registry
+
+      - name: Test one-time-token enrollment and certificate identity
+        working-directory: backend/ingest
+        run: go test -tags=integration -count=1 ./internal/enrollment

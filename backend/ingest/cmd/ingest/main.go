@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log/slog"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Xore/analyseLaptop/backend/ingest/internal/config"
+	"github.com/Xore/analyseLaptop/backend/ingest/internal/enrollment"
 	"github.com/Xore/analyseLaptop/backend/ingest/internal/ingest"
 	"github.com/Xore/analyseLaptop/backend/ingest/internal/registry"
 	"github.com/Xore/analyseLaptop/backend/ingest/internal/sink"
@@ -42,6 +44,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	publicTLSConfig, err := transport.PublicServerTLSConfig(
+		cfg.TLSCertFile,
+		cfg.TLSKeyFile,
+	)
+	if err != nil {
+		return err
+	}
 	metricSink, err := sink.NewOTLPHTTP(cfg.VMOTLPURL, 10*time.Second)
 	if err != nil {
 		return err
@@ -53,6 +62,17 @@ func run() error {
 		return err
 	}
 	defer collectorRegistry.Close()
+	enrollmentService, err := enrollment.Open(
+		startupContext,
+		cfg.DatabaseURL,
+		cfg.CollectorCACertFile,
+		cfg.CollectorCAKeyFile,
+		cfg.CertificateValidity,
+	)
+	if err != nil {
+		return err
+	}
+	defer enrollmentService.Close()
 
 	metricService, err := ingest.NewService(metricSink, collectorRegistry)
 	if err != nil {
@@ -72,11 +92,16 @@ func run() error {
 	collectormetricspb.RegisterMetricsServiceServer(grpcServer, metricService)
 
 	var ready atomic.Bool
-	healthServer := newHealthServer(cfg.HTTPAddress, &ready)
+	healthServer := newHTTPServer(
+		cfg.HTTPAddress,
+		publicTLSConfig,
+		&ready,
+		enrollment.NewHandler(enrollmentService),
+	)
 	errorChannel := make(chan error, 2)
 	go func() {
-		slog.Info("health server listening", "address", cfg.HTTPAddress)
-		errorChannel <- healthServer.ListenAndServe()
+		slog.Info("HTTPS health and enrollment server listening", "address", cfg.HTTPAddress)
+		errorChannel <- healthServer.ListenAndServeTLS("", "")
 	}()
 	go func() {
 		ready.Store(true)
@@ -111,7 +136,12 @@ func run() error {
 	return nil
 }
 
-func newHealthServer(address string, ready *atomic.Bool) *http.Server {
+func newHTTPServer(
+	address string,
+	tlsConfig *tls.Config,
+	ready *atomic.Bool,
+	enrollmentHandler http.Handler,
+) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
@@ -123,9 +153,11 @@ func newHealthServer(address string, ready *atomic.Bool) *http.Server {
 		}
 		writer.WriteHeader(http.StatusNoContent)
 	})
+	mux.Handle("/api/pki/enroll", enrollmentHandler)
 	return &http.Server{
 		Addr:              address,
 		Handler:           mux,
+		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

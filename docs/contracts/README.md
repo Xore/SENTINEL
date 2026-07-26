@@ -8,6 +8,7 @@ API, federation, global services, and frontends.
 | [`METRICS.md`](METRICS.md) | Metric naming, labels, units, and cardinality |
 | [`EVENTS.md`](EVENTS.md) | Durable event envelope and idempotency |
 | [`event-envelope.schema.json`](event-envelope.schema.json) | Machine-readable event schema |
+| [`ENROLLMENT.md`](ENROLLMENT.md) | One-time-token CSR enrollment and certificate identity |
 | [`SERVICE-BOUNDARIES.md`](SERVICE-BOUNDARIES.md) | Component ownership and data flow |
 
 Contract changes require:
