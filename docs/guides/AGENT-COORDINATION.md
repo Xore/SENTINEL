@@ -133,14 +133,23 @@ Archive answered questions in the commit applying the answer.
 
 ### Pending C1-01 handoff
 
-Latest implementation commit: `96a21b6`.
+Latest implementation commit: `8fbe62f`.
 
 - TLS 1.3 mTLS, certificate-bound OTLP identity, resource validation, bounded
   VictoriaMetrics OTLP/HTTP forwarding, health/readiness, graceful shutdown.
+- PostgreSQL collector authorization now rejects unknown, disabled, or
+  certificate-mismatched collectors and updates `last_seen` on accepted
+  requests.
 - Local Windows full race suite now passes with MSYS2 UCRT64 GCC 16.1.0.
-- GitHub backend run `30196833991` passed Linux race tests and PostgreSQL
-  migration validation.
-- Next: PostgreSQL `last_seen`, migration runner, production enrollment.
+- GitHub backend run `30197250309` passed Linux race tests, PostgreSQL registry
+  integration tests, and migration validation for `8fbe62f`.
+- Ubuntu 24.04 lab host `192.168.50.33` independently passed `go test -race
+  -count=1 ./...`, `go vet ./...`, and `go build ./...` at exact commit
+  `8fbe62f` with Go 1.26.3 and GCC 13.3.0.
+- Lab safety boundary: `.33` is user-authorized for disposable integration and
+  deployment tests, including service teardown when required. Never operate on
+  `.32`.
+- Next: advisory-lock migration runner, production enrollment.
 
 ### C1-02 — CI/CD checkpoint
 
