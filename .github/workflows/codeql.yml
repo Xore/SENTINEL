@@ -43,18 +43,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-
+      # For compiled languages, install the requested toolchain before CodeQL
+      # initializes its tracing wrapper. Installing Go after init replaces the
+      # wrapper and produces a "no source code seen during build" failure.
       - name: Set up Go
         if: matrix.language == 'go'
         uses: actions/setup-go@v6
         with:
           go-version-file: backend/ingest/go.mod
           cache: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
 
       - name: Build Go backend
         if: matrix.language == 'go'
