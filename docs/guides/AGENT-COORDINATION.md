@@ -256,7 +256,7 @@ Implementation commit: `6745750`.
 
 ### Pending C1-01 handoff
 
-Latest implementation commit: `a42b81f`.
+Latest implementation commit: `5013b7d`.
 
 - TLS 1.3 mTLS, certificate-bound OTLP identity, resource validation, bounded
   VictoriaMetrics OTLP/HTTP forwarding, health/readiness, graceful shutdown.
@@ -276,7 +276,18 @@ Latest implementation commit: `a42b81f`.
   file transactionally, records SHA-256, is idempotent, and rejects changed,
   gapped, or future histories. GitHub backend run `30197581879` passed Go
   race/vet/build plus empty/current schema and tamper integration gates.
-- Next: production enrollment.
+- Production HTTPS enrollment now validates CSR identity/signature, atomically
+  consumes a SHA-256 one-time token, signs a client-auth leaf with the canonical
+  SPIFFE URI SAN, and registers its serial/expiry. The response and retry
+  contract is `docs/contracts/ENROLLMENT.md`.
+- GitHub backend run `30197933702` passed all Go and PostgreSQL gates, including
+  one-time-token reuse rejection and signed certificate identity verification.
+- Ubuntu 24.04 lab host `.33` independently passed exact commit `5013b7d`:
+  migration apply plus idempotent rerun, enrollment PostgreSQL integration,
+  full race tests, vet, and build. PostgreSQL 16.14 is now installed and active;
+  the temporary integration database was dropped after the run.
+- Next: replace the dev stub PKI/OTel ingest path with the production Go ingest
+  and migration runner, then execute the Phase 1 end-to-end gate on `.33`.
 
 ### C1-02 — CI/CD checkpoint
 
