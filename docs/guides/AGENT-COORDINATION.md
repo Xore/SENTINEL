@@ -68,7 +68,7 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | REVIEW | S1-01 | exact narrowed claim below |
-| S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | READY after S1-02 REVIEW | pushed S1-02 REVIEW | exact scope in work queue |
+| S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | IN_PROGRESS | pushed S1-02 REVIEW | exact scope in work queue |
 | S2-02 | 2 | Core network probe activation and hardening | SONNET5 | QUEUED | S1-02, S2-01 DONE | planned scope in work queue |
 | S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
 | S4-01 | 4 | Crash-safe offline queue foundation | SONNET5 | QUEUED | S3-01 DONE, envelope decision | planned scope in work queue |
@@ -87,6 +87,7 @@ Detailed Sonnet follow-on scopes and gates are in
 |---|---|---|---|
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-26T10:38:14Z | SONNET5 | S1-02 | `collector/config.py`, `collector/pki/enroll.py`, `collector/utils/thread_pool.py`, `collector/tests/test_config.py`, `collector/tests/pki/test_enroll.py`, corresponding narrowly focused tests, this ledger |
+| 2026-07-26T11:32:00Z | SONNET5 | S2-01 | `collector/scheduler.py`, `collector/__main__.py`, `collector/tests/test_scheduler.py`, `collector/tests/test_main.py`, this ledger |
 
 ---
 
@@ -353,6 +354,35 @@ Implementation commit: `322de04`.
   it). Everything else in this handoff (retry classification, identity/key
   verification, SCAN_LEVEL_MAX coercion) is directly exercised by the
   passing test suite above on this host.
+
+### A-S2-01-1 — Sonnet 5 claim
+
+- **Timestamp:** 2026-07-26T11:32:00Z
+- **Status:** IN_PROGRESS — claimed immediately after pushing the S1-02
+  REVIEW handoff, per the work queue's disjoint-scope allowance (Codex
+  approval of S1-02 not required to start this).
+- **Scope (from `SONNET-5-WORK-QUEUE.md`):** `collector/scheduler.py`,
+  `collector/__main__.py`, `collector/tests/test_scheduler.py`,
+  `collector/tests/test_main.py`, this ledger. Not touching probe
+  implementations, configuration, PKI, transport, storage, dependencies,
+  workflows, contracts, or architecture documents.
+- **Plan:**
+  1. Contain an unexpected exception from one check as a failed run
+     without cancelling sibling checks or the scheduler; preserve
+     `CancelledError` propagation and prompt shutdown.
+  2. Enforce a finite per-check timeout (scheduler default + smallest
+     testable override); a timeout is a failed run, not a leaked task.
+  3. Emit `sentinel_collector_check_runs_total` (bounded `check`/`outcome`),
+     `sentinel_collector_check_duration_seconds` (bounded `check`), and
+     `sentinel_collector_cycle_duration_seconds` per
+     `docs/contracts/METRICS.md`, with documented units.
+  4. Keep exception text in structured logs only — never in metric
+     attributes.
+  5. Deterministic tests: success, returned failure, escaped exception,
+     timeout, sibling isolation, metric names/units/labels, cancellation,
+     no pending task after shutdown.
+- **Exit:** push REVIEW handoff with files, exact gate results, and
+  behavior retained, following the same synchronization sequence as S1-02.
 
 ### C1-02 — CI/CD checkpoint
 
