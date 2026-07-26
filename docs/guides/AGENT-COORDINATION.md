@@ -66,7 +66,7 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | REVIEW | S1-01 | `collector/**`; exclusions below |
+| S1-02 | 1 | Collector Windows parity and enrollment failure-path hardening | SONNET5 | IN_PROGRESS | S1-01 | `collector/**`; exclusions below |
 | C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | IN_PROGRESS | C0-02 | `backend/`, `contracts/`, `deploy/hub/`, migration tests |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 
@@ -105,7 +105,20 @@ Completed: C0-01, C0-02, S0-01, S1-01. See
   decision (`docs/contracts/**` is outside S1-02's write scope). Tests
   added under S1-02 exercise the *current* generic-retry, no-identity-echo
   contract; they will need updating if the contract changes.
-- Decision: pending
+- Decision: 2026-07-26T10:06:26Z / CODEX:
+  1. Terminal client/authentication statuses `400`, `401`, `403`, `404`,
+     `409`, and `422` fail immediately. `408`, `425`, `429`, all `5xx`, and
+     network/timeouts remain retryable; honor `Retry-After` when present,
+     otherwise use bounded configured backoff.
+  2. Do not add unauthenticated identity-echo response fields. The signed leaf
+     certificate is the authority: before persisting any files, the client must
+     parse the leaf and CA, verify that the leaf public key matches the generated
+     private key, and verify exactly one URI SAN equal to
+     `spiffe://sentinel.local/sites/{site_id}/collectors/{collector_id}`.
+     Full chain/signature verification is part of the production enrollment
+     integration owned by C1-01. S1-02 adds the narrow retry classification and
+     identity/key mismatch client tests; record a blocker if this cannot be
+     isolated safely.
 
 Use:
 
@@ -127,7 +140,8 @@ Archive answered questions in the commit applying the answer.
 ### A-S1-02-1 — Sonnet 5 assignment
 
 - **Timestamp:** 2026-07-26T09:47:13Z
-- **Status:** REVIEW — handoff below.
+- **Status:** IN_PROGRESS — Codex review returned one Windows failure and
+  resolved Q-1; Sonnet must push a new REVIEW handoff.
 - **Goal:** Make the documented Windows development path accurately validate
   Phase 1 collector behavior and strengthen enrollment failure tests.
 - **Allowed:** `collector/**`.
@@ -222,9 +236,27 @@ Implementation commit: `6745750`.
   identity echo) and the unreproduced `ThreadPoolExecutor` Pylint report
   above.
 
+#### S1-02 Codex review 1
+
+- **Timestamp:** 2026-07-26T10:06:26Z.
+- **Reviewed:** implementation `6745750`, handoff `3f0f104`, and remote ledger.
+- **Windows/Python 3.14.5 results:** Ruff passed; mypy passed (35 files);
+  pytest passed with `161 passed, 1 skipped` (POSIX-only); Pylint failed at
+  `collector/utils/thread_pool.py:13:0` with
+  `E0611: No name 'ThreadPoolExecutor' in module 'concurrent.futures'
+  (no-name-in-module)`, rating 9.96/10.
+- **Disposition:** not approved. Fix only this reproducible Pylint false
+  positive with a platform-safe import or the narrowest line-level suppression,
+  then run and report all four gates. Do not remove the Windows 0600 test fix or
+  the new failure tests.
+- **Q-1 follow-up:** implement the retry classification and certificate
+  identity/key validation described in the decision above, with focused tests.
+  The canonical URI is already implemented by
+  `backend/ingest/internal/identity.SPIFFEURI`.
+
 ### Pending C1-01 handoff
 
-Latest implementation commit: `8fbe62f`.
+Latest implementation commit: `a42b81f`.
 
 - TLS 1.3 mTLS, certificate-bound OTLP identity, resource validation, bounded
   VictoriaMetrics OTLP/HTTP forwarding, health/readiness, graceful shutdown.
@@ -240,7 +272,11 @@ Latest implementation commit: `8fbe62f`.
 - Lab safety boundary: `.33` is user-authorized for disposable integration and
   deployment tests, including service teardown when required. Never operate on
   `.32`.
-- Next: advisory-lock migration runner, production enrollment.
+- The embedded migration runner now holds a global advisory lock, applies each
+  file transactionally, records SHA-256, is idempotent, and rejects changed,
+  gapped, or future histories. GitHub backend run `30197581879` passed Go
+  race/vet/build plus empty/current schema and tamper integration gates.
+- Next: production enrollment.
 
 ### C1-02 — CI/CD checkpoint
 
