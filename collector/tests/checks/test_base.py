@@ -90,3 +90,8 @@ async def test_run_with_semaphore_serializes_concurrent_calls():
 
     # With a semaphore of 1, the second call cannot start until the first ends.
     assert order == ["start", "end", "start", "end"]
+
+
+async def test_default_aclose_is_a_noop(settings):
+    check = _DummyCheck(settings, meter=None)
+    assert await check.aclose() is None

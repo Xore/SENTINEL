@@ -10,10 +10,14 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 
+import collector
 from collector.config import CollectorSettings
 from collector.transport.mtls import load_channel_credentials
 
 METER_NAME = "analyselaptop.collector"
+
+# docs/contracts/METRICS.md's required-attributes table.
+SERVICE_NAME = "sentinel-collector"
 
 
 def build_meter_provider(settings: CollectorSettings) -> MeterProvider:
@@ -27,15 +31,25 @@ def build_meter_provider(settings: CollectorSettings) -> MeterProvider:
     reader = PeriodicExportingMetricReader(exporter)
     resource = Resource.create(
         {
-            "service.name": "analyselaptop-collector",
+            # Dotted "service.name"/"service.version" are standard OTel
+            # semantic-convention resource attributes with dedicated
+            # promotion handling in the OTLP/Prometheus remote-write path
+            # (service.name -> the `job` label, always; also -> the
+            # generically-converted `service_name` label when
+            # resource_to_telemetry_conversion is enabled — see
+            # docs/contracts/METRICS.md's required-attributes table, which
+            # specifies the resulting underscored `service_name` label).
+            "service.name": SERVICE_NAME,
+            "service.version": collector.__version__,
             # Underscored, not OTel's usual dotted resource-attribute style
             # ("collector.id") — Prometheus/VictoriaMetrics label names can't
             # contain dots, and every metric in this project's naming
-            # convention (COLLECTOR-V2-REFACTOR.md §10) uses
-            # {collector_id, site_id} as the label names. Confirmed via the
-            # Phase 1 hub integration test: dotted names were silently
-            # dropped by the remote-write exporter's resource-to-label
-            # conversion instead of being sanitized.
+            # convention (docs/contracts/METRICS.md) uses
+            # {collector_id, site_id} as the label names directly (no
+            # promotion/sanitization involved). Confirmed via the Phase 1
+            # hub integration test: dotted names were silently dropped by
+            # the remote-write exporter's resource-to-label conversion
+            # instead of being sanitized.
             "collector_id": settings.collector_id,
             "site_id": settings.site_id,
         }

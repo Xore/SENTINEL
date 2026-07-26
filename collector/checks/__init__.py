@@ -69,3 +69,15 @@ class BaseCheck(ABC):
     def is_enabled(self) -> bool:
         """False if this check should be skipped on this node."""
         return self.config.scan_level_max >= self.scan_level
+
+    async def aclose(self) -> None:  # noqa: B027 — intentional default no-op, not abstract
+        """Release any resource this check owns (sessions, sockets, file
+        handles). Called once per check during collector shutdown.
+
+        Default is a no-op — most checks own nothing beyond `self.config`/
+        `self.meter`. Override when a check holds something that needs an
+        explicit close (e.g. `checks.net_http.HttpCheck`'s shared
+        `aiohttp.ClientSession`). Must itself never raise, for the same
+        reason `run()` must never raise: one check's shutdown failure must
+        not stop the rest of the collector from shutting down cleanly.
+        """

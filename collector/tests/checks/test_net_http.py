@@ -110,6 +110,43 @@ class TestHttpCheckSharedSession:
         assert second is not first
         assert not second.closed
 
+    async def test_aclose_closes_the_shared_session(self):
+        settings = load_settings(collector_id="c")
+        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+
+        session = await check._get_session()
+        assert not session.closed
+
+        await check.aclose()
+
+        assert session.closed
+
+    async def test_aclose_from_any_instance_closes_shared_session(self):
+        """Every HttpCheck instance shares the class-level session — closing
+        via one instance must close it for all of them, since the scheduler
+        may call aclose() on whichever check instance it happens to hold."""
+        settings = load_settings(collector_id="c")
+        check_a = HttpCheck(settings, meter=None, target="https://10.0.0.1/a")
+        check_b = HttpCheck(settings, meter=None, target="https://10.0.0.1/b")
+
+        session = await check_a._get_session()
+        await check_b.aclose()
+
+        assert session.closed
+
+    async def test_aclose_is_safe_when_no_session_was_ever_created(self):
+        settings = load_settings(collector_id="c")
+        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+        await check.aclose()  # must not raise
+
+    async def test_aclose_is_safe_to_call_twice(self):
+        settings = load_settings(collector_id="c")
+        check = HttpCheck(settings, meter=None, target="https://10.0.0.1/")
+        await check._get_session()
+
+        await check.aclose()
+        await check.aclose()  # must not raise on an already-closed session
+
 
 class TestHttpCheck:
     def test_interval_s_from_config(self):

@@ -22,7 +22,12 @@ HEARTBEAT_INTERVAL_S = 30.0
 
 
 class _HeartbeatCheck(BaseCheck):
-    """Internal check emitting `collector_heartbeat_total` on its own cycle."""
+    """Internal check emitting the collector heartbeat on its own cycle.
+
+    Emits both `sentinel_collector_heartbeat_total` (canonical, per
+    `docs/contracts/METRICS.md`) and `collector_heartbeat_total` (temporary
+    Phase 1 compatibility alias, retained until consumers migrate).
+    """
 
     name = "heartbeat"
     scan_level = 1
@@ -43,8 +48,17 @@ class _HeartbeatCheck(BaseCheck):
         self._log = log
         self._counter = (
             meter.create_counter(
-                "collector_heartbeat_total",
+                "sentinel_collector_heartbeat_total",
                 description="Collector scheduler heartbeat",
+                unit="1",
+            )
+            if meter is not None
+            else None
+        )
+        self._legacy_counter = (
+            meter.create_counter(
+                "collector_heartbeat_total",
+                description="Collector scheduler heartbeat (temporary compatibility alias)",
                 unit="1",
             )
             if meter is not None
@@ -54,6 +68,8 @@ class _HeartbeatCheck(BaseCheck):
     async def run(self) -> CheckResult:
         if self._counter is not None:
             self._counter.add(1)
+        if self._legacy_counter is not None:
+            self._legacy_counter.add(1)
         self._log.info("collector.heartbeat")
         return CheckResult(ok=True)
 
@@ -89,6 +105,20 @@ def _install_shutdown_signals(stop_event: asyncio.Event) -> None:
             loop.add_signal_handler(sig, stop_event.set)
         except NotImplementedError:
             return
+
+
+async def _close_checks(checks: list[BaseCheck], log: structlog.BoundLogger) -> None:
+    """Call `aclose()` on every check during shutdown.
+
+    `aclose()` itself must never raise (same contract as `run()`), but this
+    defends anyway: one check's broken close must not stop the others from
+    closing or block the rest of shutdown.
+    """
+    for check in checks:
+        try:
+            await check.aclose()
+        except Exception as exc:  # checks must never raise; defend anyway
+            log.warning("check.close_failed", check=check.name, error=str(exc))
 
 
 def _install_uvloop() -> None:
@@ -144,6 +174,7 @@ async def main(*, stop_event: asyncio.Event | None = None) -> None:
             tg.create_task(run_scheduler(checks, stop_event=stop_event), name="scheduler")
             tg.create_task(loop_latency_watchdog(stop_event=stop_event), name="loop_watchdog")
     finally:
+        await _close_checks(checks, log)
         shutdown_meter_provider(provider)
         log.info("collector.shutdown")
 

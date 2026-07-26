@@ -78,6 +78,18 @@ class HttpCheck(BaseCheck):
             cls._session = aiohttp.ClientSession(connector=connector)
         return cls._session
 
+    async def aclose(self) -> None:
+        """Close the shared class-level session.
+
+        Every `HttpCheck` instance (across every target) shares the one
+        session `_get_session` creates, so closing it from any single
+        instance is correct and sufficient — safe to call multiple times or
+        when no session was ever created.
+        """
+        session = type(self)._session
+        if session is not None and not session.closed:
+            await session.close()
+
     async def run(self) -> CheckResult:
         try:
             session = await self._get_session()

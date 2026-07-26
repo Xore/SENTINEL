@@ -69,6 +69,56 @@ class TestDefaults:
             load_settings(collector_id="c", tcp={"targets": [{"host": "h", "port": 70000}]})
 
 
+class TestIdentityDnsLabels:
+    """ADR 0009: collector_id/site_id are lower-case RFC 1123 DNS labels."""
+
+    @pytest.mark.parametrize(
+        "collector_id",
+        ["c", "a1", "node-1", "probe-site-a-01", "a" * 63],
+    )
+    def test_valid_collector_id_accepted(self, collector_id):
+        s = load_settings(collector_id=collector_id)
+        assert s.collector_id == collector_id
+
+    @pytest.mark.parametrize(
+        "site_id",
+        ["default", "site-a", "s", "a" * 63],
+    )
+    def test_valid_site_id_accepted(self, site_id):
+        s = load_settings(collector_id="c", site_id=site_id)
+        assert s.site_id == site_id
+
+    @pytest.mark.parametrize(
+        "collector_id",
+        [
+            "Node-1",  # uppercase not silently lowercased — must be rejected
+            "NODE1",
+            "node_1",  # underscore is not a valid DNS-label character
+            "-node1",  # cannot start with a hyphen
+            "node1-",  # cannot end with a hyphen
+            "node 1",  # no whitespace
+            "",  # empty
+            "a" * 64,  # over the 63-character limit
+            "node.1",  # dot is not a DNS-label character (that's a name, not a label)
+        ],
+    )
+    def test_invalid_collector_id_rejected(self, collector_id):
+        with pytest.raises(ConfigError) as exc:
+            load_settings(collector_id=collector_id)
+        assert "collector_id" in str(exc.value)
+
+    def test_invalid_site_id_rejected(self):
+        with pytest.raises(ConfigError) as exc:
+            load_settings(collector_id="c", site_id="Site-A")
+        assert "site_id" in str(exc.value)
+
+    def test_invalid_identity_env_override_rejected(self, monkeypatch):
+        monkeypatch.setenv("COLLECTOR_ID", "c")
+        monkeypatch.setenv("SITE_ID", "Bad_Site")
+        with pytest.raises(ConfigError):
+            load_settings()
+
+
 class TestEnvLayer:
     def test_scalar_env_override(self, monkeypatch):
         monkeypatch.setenv("COLLECTOR_ID", "from-env")

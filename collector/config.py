@@ -13,13 +13,14 @@ overrides all flow through one place. Schema mirrors
 from __future__ import annotations
 
 import os
+import re
 import signal
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -28,6 +29,23 @@ from pydantic_settings import (
 
 # Env var naming the YAML config file, if the caller doesn't pass one explicitly.
 CONFIG_ENV_VAR = "COLLECTOR_CONFIG"
+
+# ADR 0009 — site_id/collector_id are lower-case RFC 1123 DNS labels
+# (1-63 chars). Every database key, API authorization query, metric
+# validation path, and federation envelope relies on this same identity
+# rule, so it is rejected here rather than silently coerced (e.g. lower-
+# cased) — a silent transform would let an operator believe they configured
+# "Site-A" when the system actually identifies the node as "site-a".
+_DNS_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _validate_dns_label(value: str, field_name: str) -> str:
+    if not _DNS_LABEL_RE.match(value):
+        raise ValueError(
+            f"{field_name} must be a lowercase RFC 1123 DNS label 1-63 characters "
+            f"long, matching [a-z0-9]([a-z0-9-]*[a-z0-9])? (ADR 0009): got {value!r}"
+        )
+    return value
 
 
 class ConfigError(Exception):
@@ -168,6 +186,11 @@ class CollectorSettings(BaseSettings):
         env_nested_delimiter="__",
         extra="ignore",
     )
+
+    @field_validator("collector_id", "site_id")
+    @classmethod
+    def _validate_identity_fields(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_dns_label(value, info.field_name or "identity")
 
     # Signature is fixed by pydantic-settings' BaseSettings override contract;
     # it cannot be reduced without breaking the hook.

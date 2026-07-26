@@ -71,7 +71,7 @@ The revisions must match. The final command is the required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S1-01 | 1 | Collector contract and lifecycle hardening | SONNET5 | IN_PROGRESS | C0-02, S0-01 | `collector/**`; exclusions in assignment |
+| S1-01 | 1 | Collector contract and lifecycle hardening | SONNET5 | REVIEW | C0-02, S0-01 | `collector/**`; exclusions in assignment |
 | C1-01 | 1 | Hub skeleton, migrations, PKI and ingest contract foundation | CODEX | IN_PROGRESS | C0-02 | `backend/`, `contracts/`, `deploy/hub/`, migration tests |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 
@@ -135,6 +135,67 @@ the answer.
   compatibility behavior, and contract questions.
 - **Boundary:** Production ingest/mTLS failure scenarios remain in C1-01 and
   later cross-service integration.
+- **Handoff 2026-07-26T09:40:34Z — SONNET5, status REVIEW:**
+  - **Changed files (all within `collector/**`):** `config.py`,
+    `checks/__init__.py`, `checks/net_http.py`, `transport/otlp.py`,
+    `__main__.py`, and matching tests in `tests/test_config.py`,
+    `tests/checks/test_base.py`, `tests/checks/test_net_http.py`,
+    `tests/transport/test_otlp.py`, `tests/test_main.py`.
+  - **Behavior implemented:**
+    1. `CollectorSettings.collector_id`/`site_id` reject anything that is
+       not a lower-case RFC 1123 DNS label (1-63 chars,
+       `[a-z0-9]([a-z0-9-]*[a-z0-9])?`) — rejected, not silently lower-cased,
+       so "Site-A" cannot be misread as accepted identity "site-a".
+    2. `_HeartbeatCheck` now increments two counters every cycle:
+       `sentinel_collector_heartbeat_total` (canonical) and
+       `collector_heartbeat_total` (temporary alias) — same value, same
+       cadence.
+    3. `transport/otlp.py`'s resource now sets `service.name` to
+       `"sentinel-collector"` (was `"analyselaptop-collector"`) and adds
+       `service.version` from `collector.__version__`. `collector_id`/
+       `site_id` attributes unchanged (still underscored, per the Phase 1
+       dotted-attribute bug found in S0-01).
+    4. `BaseCheck.aclose()` is a new no-op-by-default lifecycle method,
+       called on every constructed check from `__main__.py`'s shutdown path
+       via a new `_close_checks()` helper (one check's close failure is
+       logged and does not block the others or the rest of shutdown).
+       `HttpCheck.aclose()` overrides it to close the shared class-level
+       `aiohttp.ClientSession`.
+  - **Commands run and results (clean-room venv rebuild, Python 3.12.3):**
+    `ruff check .` → all checks passed; `mypy .` → success, 35 files, 0
+    errors; `pylint collector tests` → 10.00/10; `pytest -q` → 155 passed,
+    1 skipped (same pre-existing non-POSIX SIGHUP skip as S0-01), 0
+    failures. Baseline at S0-01 was 126 collected; net +29 tests, 0 removed
+    or weakened.
+  - **Compatibility behavior:** `collector_heartbeat_total` keeps emitting
+    at the same cadence as before — existing dashboards/queries against it
+    do not break. Any already-running collector with an existing
+    non-DNS-label `collector_id`/`site_id` (there are none known in this
+    repo; no fixtures or deployed nodes use one) would now fail to start;
+    no migration path exists for that case because none was needed here.
+  - **Contract questions (not blocking, flagging for confirmation):**
+    1. `service.version` is currently `collector.__version__` =
+       `"2.0.0-dev"` — a development placeholder, not yet a "released
+       collector semantic version" as `METRICS.md` specifies, since no
+       release process exists before Phase 13. Using it is the best
+       available source of truth today; will need revisiting once
+       releases exist.
+    2. "Test expected Prometheus mapping to `service_name`" was implemented
+       as a specification-level unit test (asserting the documented
+       dots-to-underscores sanitization rule against the literal
+       `"service.name"` string we emit), not a live conversion check —
+       `deploy/**` is excluded from this assignment's scope, so no
+       otel-collector/VictoriaMetrics round-trip was run here. `S0-01`'s
+       prior hub integration test already demonstrated the live pipeline
+       accepts underscored attributes; this test pins the expectation for
+       `service_name` specifically without re-running that stack.
+  - **Assumptions:** DNS-label validation rejects rather than coerces
+    (see behavior 1) — treated as the correct reading of ADR 0009's
+    "lower-case ... identifiers" given every consumer (DB keys, API auth,
+    metrics, federation) relies on the same identity, and a silent
+    transform would let an operator misconfigure identity without
+    noticing.
+  - **Commit SHA:** pending push with this handoff.
 
 ### Pending C1-01 handoff
 
