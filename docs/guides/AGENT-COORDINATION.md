@@ -67,7 +67,7 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | IN_PROGRESS | S1-02 DONE | exact scope in work queue |
+| S2-01 | 2 | Scheduler containment and canonical run telemetry | SONNET5 | REVIEW | S1-02 DONE | exact scope in work queue |
 | S2-02 | 2 | Core network probe activation and hardening | SONNET5 | QUEUED | S1-02, S2-01 DONE | planned scope in work queue |
 | S3-01 | 3 | Linux host-health probes | SONNET5 | QUEUED | S2-02 DONE | planned scope in work queue |
 | S4-01 | 4 | Crash-safe offline queue foundation | SONNET5 | QUEUED | S3-01 DONE, envelope decision | planned scope in work queue |
@@ -170,8 +170,9 @@ Archive answered questions in the commit applying the answer.
 ### A-S2-01-1 — Sonnet 5 claim
 
 - **Timestamp:** 2026-07-26T11:32:00Z
-- **Status:** IN_PROGRESS — Codex review 1 returned focused shutdown and test
-  corrections below.
+- **Status:** REVIEW — second handoff below addresses all three Codex
+  review 1 corrections (prompt shutdown, timeout validation, missing
+  deterministic assertions).
 - **Scope (from `SONNET-5-WORK-QUEUE.md`):** `collector/scheduler.py`,
   `collector/__main__.py`, `collector/tests/test_scheduler.py`,
   `collector/tests/test_main.py`, this ledger. Not touching probe
@@ -294,6 +295,63 @@ Implementation commit: `eb5917e`.
 - **Exit:** push one focused implementation commit and a separate REVIEW
   handoff with exact four-gate results. Do not touch config, PKI, probe,
   transport, dependency, workflow, or contract files.
+
+#### S2-01 handoff 2
+
+Implementation commit: `c4df3e9`.
+
+- **Files:** `collector/scheduler.py`, `collector/tests/test_scheduler.py`
+  — exactly the narrowed claim (no config/PKI/probe/transport/dependency/
+  workflow/contract files touched).
+- **Correction 1 (prompt shutdown):** added `_run_batch` (the previous
+  inline `TaskGroup` body, unchanged) and `_run_batch_or_stop`, which races
+  the batch against `stop_event.wait()` via `asyncio.wait(...,
+  return_when=FIRST_COMPLETED)`. If `stop_event` fires first, the batch
+  task is cancelled and awaited (with `CancelledError` suppressed — that's
+  the direct, intended effect of the cancel we just issued) instead of
+  letting `_run_one`'s checks run out their full `check_timeout_s`. A
+  check cancelled this way never reaches `metrics.record_check(...)`,
+  since `CancelledError` propagates straight past `_run_one`'s `except
+  TimeoutError`/`except Exception` clauses — so no failed/timeout outcome
+  is ever recorded for it, as required. True external cancellation of
+  `run_scheduler`'s own task (distinct from `stop_event`) is handled in a
+  separate `except asyncio.CancelledError` branch around the `asyncio.wait`
+  call itself, which cleans up both waiters and re-raises — it is not
+  ours to swallow.
+- **Correction 2 (timeout validation):** `run_scheduler` now raises
+  `ValueError` immediately if `check_timeout_s` is not finite and positive
+  (`math.isfinite(x) and x > 0`), rejecting `0`, negative values, `nan`,
+  and `inf` before any work starts.
+- **Correction 3 (missing assertions):** added
+  `test_returned_failure_emits_outcome_failed_with_bounded_labels`,
+  `test_timeout_emits_outcome_timeout_with_bounded_labels` (both via the
+  existing fake-meter pattern, asserting the attribute set is exactly
+  `{check, outcome}`), `test_cancelling_scheduler_task_propagates_cancelled_error`
+  (cancels `run_scheduler`'s own task while a check hangs, with a
+  `stop_event` present but never set — asserts `CancelledError` still
+  propagates), `test_stop_event_during_hanging_check_returns_promptly_with_no_pending_task`
+  (a hanging check under a 5s `check_timeout_s`, `stop_event` set at 0.05s
+  — asserts return in <1s and no leaked task, proving the race actually
+  engages rather than falling back to the timeout), and
+  `test_check_timeout_s_rejects_non_positive_or_non_finite` (parametrized
+  over `0`/`-1.0`/`nan`/`inf`).
+- **Behavior retained:** every test from handoff 1 (containment, sibling
+  isolation, per-check timeout, canonical metric names/units, disabled-
+  check skip, interval accuracy, heartbeat-close-on-shutdown) is unchanged
+  and still passes.
+- **Gates, run from `collector/` with the repo's `.venv` (Python 3.12.3 /
+  pylint 3.3.7 / ruff 0.16.0 / mypy 1.20.2 / pytest 9.1.1):**
+  - `ruff check .` → all checks passed.
+  - `mypy .` → `Success: no issues found in 35 source files` (pre-existing
+    `annotation-unchecked` notes on untyped test bodies only).
+  - `pylint collector tests` (exact CI invocation) → 10.00/10.
+  - `pytest -q` → 197 passed, 1 skipped (`test_sighup_noop_without_signal`,
+    `non-POSIX only` — pre-existing).
+  - Windows Ruff/mypy/Pylint/pytest: **not run** — no Windows environment
+    available to this session.
+- **Remaining risk:** none identified; all three corrections are pure
+  Python control-flow/validation logic directly exercised by the passing
+  suite above, not platform-conditional.
 
 ### C2-02 — Probe metric contracts and bounded API catalogue
 
