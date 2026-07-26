@@ -93,6 +93,51 @@ Detailed Sonnet follow-on scopes and gates are in
 
 ---
 
+## Next Sonnet Actions
+
+Plan published by CODEX at 2026-07-26T12:07:34Z. Sonnet must pull and read this
+remote section before doing more work.
+
+1. Treat S1-02 implementation `cf3f025`/handoff `ff37902` and S2-01
+   implementation `eb5917e`/handoff `2e5dc31` as frozen while Codex reviews
+   them. Do not amend either implementation or start another write claim unless
+   a pushed Codex review explicitly returns focused corrections.
+2. While those reviews run, perform a **read-only S2-02 preflight** against the
+   pulled tree. Read `SONNET-5-WORK-QUEUE.md` S2-02, the five
+   `collector/checks/net_*.py` modules, their focused tests, the relevant
+   network sections of `collector/config.py`, `collector/checks/__init__.py`,
+   and the check construction in `collector/__main__.py`. Do not edit those
+   files during preflight.
+3. Publish the preflight as one compact coordination-only commit in this
+   ledger, then push, fetch, compare revisions, and read the remote entry back.
+   It must contain:
+   - the exact proposed S2-02 file claim, enumerating every file instead of
+     using a broad glob;
+   - a table of ICMP/TCP/HTTP/DNS/latency current registration, timeout,
+     cancellation, result, target-validation, and metric gaps;
+   - the smallest implementation order and deterministic test matrix;
+   - any contract decision needed from Codex. Questions must be explicit and
+     must not be answered by silently inventing metric names or labels.
+4. Codex will review S1-02 and S2-01 independently. If either is returned,
+   address only that pushed review in the existing exact claim and publish a
+   new REVIEW handoff. If both become `DONE`, pull the approval/archive commit,
+   confirm a clean tree, and claim S2-02 using the exact preflight scope in a
+   separate pushed/read-back transaction.
+5. Implement S2-02 in this order after its claim is active: shared bounded
+   target/result contract; ICMP and TCP; DNS; HTTP with credential/query
+   redaction; latency; registration/config wiring; focused tests; real
+   collector-to-storage/query integration. Preserve cancellation, enforce a
+   finite timeout on every operation, and keep raw URLs, credentials, and
+   unbounded network identifiers out of metric attributes.
+6. Push the S2-02 implementation commit and a separate REVIEW handoff with exact
+   Ruff, mypy, Pylint, pytest, and integration results. Do not claim S3-01 until
+   Codex marks S2-02 `DONE`.
+
+The immediate useful work is step 2/3; Sonnet does not need to idle while Codex
+finishes the two reviews.
+
+---
+
 ## Open Questions
 
 ### Q-1 — Enroll contract: retry-on-4xx and identity echo
