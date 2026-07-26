@@ -67,7 +67,7 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S2-02 | 2 | Core network probe activation and hardening | SONNET5 | IN_PROGRESS | S2-01 DONE | exact scope below |
+| S2-02 | 2 | Core network probe activation and hardening | SONNET5 | REVIEW | S2-01 DONE | exact scope below |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | QUEUED | S2-02 REVIEW | continuity scope in work queue |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | QUEUED | S3-01A REVIEW | continuity scope in work queue |
 | S5-00 | 5 | Signed-update read-only preflight | SONNET5 | QUEUED | S4-01A REVIEW | ledger only |
@@ -167,14 +167,12 @@ Archive answered questions in the commit applying the answer.
 ### A-S2-02-1 — Sonnet 5 claim
 
 - **Timestamp:** 2026-07-26T13:00:00Z
-- **Status:** IN_PROGRESS — claimed under the continuity authority (through
-  2026-08-02) after S2-01's corrected REVIEW handoff `becfaba`. S2-01's
-  files (`collector/scheduler.py`, `collector/__main__.py`'s scheduler
-  wiring, `collector/tests/test_scheduler.py`,
-  `collector/tests/test_main.py`'s existing scheduler-focused tests) are
-  frozen; this claim only adds to `__main__.py`'s check-registration list
-  and `test_main.py`'s registration-focused tests, not the scheduler
-  plumbing itself.
+- **Status:** REVIEW — handoff below. (S2-01's files —
+  `collector/scheduler.py`, `collector/__main__.py`'s scheduler wiring,
+  `collector/tests/test_scheduler.py`, `test_main.py`'s existing
+  scheduler-focused tests — were frozen and left untouched; this claim
+  only added to `__main__.py`'s check-registration list and
+  `test_main.py`'s registration-focused tests.)
 - **Scope:** exactly the File Claims row above, per the archived S2-02
   preflight (`b6c2e81`) and Codex's contract decision
   (`67f13e0`/`docs/contracts/METRICS.md`).
@@ -203,6 +201,106 @@ Archive answered questions in the commit applying the answer.
   8. Real collector-to-storage/query integration fixture.
 - **Exit:** push implementation + separate REVIEW handoff with exact
   Ruff/mypy/Pylint/pytest and integration results, per the work queue.
+
+#### S2-02 handoff
+
+Implementation commit: `4ba26c2`.
+
+- **Files:** exactly the claimed scope (`collector/checks/net_*.py` × 5,
+  `collector/config.py`'s network/latency sections, `collector/__main__.py`'s
+  registration wiring, and the matching test files). `collector/checks/
+  __init__.py` needed no change — `BaseCheck`'s existing `is_enabled()`/
+  `aclose()` contract already supported every concrete check's override.
+- **Req 1 (shared target/result contract):** `IcmpTarget`/`HttpTarget`/
+  `DnsTarget`/`LatencyTarget` (all `target_id` + one operational field) and
+  `TcpTarget` (gained `target_id`) — each with a `target_id` DNS-label
+  validator (reusing the `collector_id`/`site_id` slug rule) and a
+  format validator on the operational field (`_validate_host`: IP or
+  lenient hostname; `_validate_target_url`: absolute `http(s)://`). A
+  shared `_validate_target_list` caps every family at 32 targets and
+  rejects duplicate `target_id`s. New `LatencyConfig` (own targets,
+  `enabled=False` default, `sample_count`/`interval_s`/`timeout_s`) —
+  separate from `IcmpConfig` per Q-4, so enabling bursts is an explicit
+  opt-in, not an automatic multiplier on every ICMP target.
+  `net_icmp.ping()` now runs via `collector.utils.thread_pool.run_in_thread`
+  (the bounded 2-worker pool) instead of the default `asyncio.to_thread`
+  executor.
+- **Req 2 (ICMP/TCP metrics):** `IcmpCheck` emits
+  `sentinel_collector_icmp_rtt_seconds` (histogram, seconds) and
+  `sentinel_collector_icmp_loss_ratio` (gauge, ratio), `target_id`-only
+  label. `TcpCheck` emits `sentinel_collector_tcp_connect_seconds`
+  (histogram), `target_id`-only label. Both convert the existing ms/pct
+  internal values to seconds/ratio only at the metric boundary —
+  `CheckResult.metrics`/`.labels` (internal/test-facing, never exported)
+  are otherwise unchanged.
+- **Req 3 (DNS metrics):** `DnsCheck` emits
+  `sentinel_collector_dns_resolve_seconds`, labels `target_id` +
+  `record_type` (already restricted to METRICS.md's enumerated allow-list
+  at config-load time, so it's safe as a label per the contract's own
+  carve-out).
+- **Req 4 (HTTP metrics + redaction):** `HttpCheck` emits
+  `sentinel_collector_http_response_seconds`, labels `target_id` + `state`
+  (`ok`/`error` from the existing strict-2xx check — never the raw status
+  code or URL). Verified by a test asserting the recorded attribute set is
+  exactly `{target_id, state}` even when the target URL carries a query
+  string.
+- **Req 5 (latency metrics):** `LatencyCheck` emits
+  `sentinel_collector_latency_rtt_seconds`, `_jitter_seconds` (gauges,
+  seconds), and `_loss_ratio` (gauge, ratio), `target_id`-only label;
+  `sample_count`/`interval_s`/`timeout_s` now come from `LatencyConfig`
+  (constructor override still available, used by tests).
+- **Req 6 (registration):** `__main__._build_checks()` constructs one
+  instance per configured target for every family (plus heartbeat),
+  unconditionally — each check's own `is_enabled()` now also requires its
+  family's `enabled` flag (previously read but never checked), independent
+  of `scan_level_max`.
+- **Req 7 (tests):** per-check canonical metric name/unit/label tests (fake
+  meter) and target-only-label assertions for all five checks; ICMP
+  permission-denial (`PermissionError`) and timeout tests; HTTP/DNS timeout
+  tests; DNS external-cancellation test (`asyncio.wait_for` against a slow
+  fake resolver); Latency external-cancellation test; `test_config.py`'s
+  new `TestTargetValidation` (bad `target_id`, duplicates, 32-cap boundary,
+  malformed host/URL, DNS record-type allow-list, `LatencyConfig`
+  defaults); `test_main.py`'s new `TestBuildChecks` (one instance per
+  target per family, one `DnsCheck` per configured record type, multiple
+  targets in one family, disabled-family/disabled-by-default-latency still
+  construct but report `is_enabled() is False`).
+- **Req 8 (integration gate):** ran the real disposable dev hub stack
+  (`deploy/hub/docker-compose.dev.yml` — production Go migration,
+  enrollment, mTLS OTLP ingest, VictoriaMetrics; no modifications to any
+  `deploy/**` file). Enrolled `dev-node-1`/`site-a` with the standard
+  one-time token, then ran the real Python collector (root, for the raw
+  ICMP socket) configured via env vars only against safe always-reachable
+  loopback targets: ICMP/latency to `127.0.0.1`, TCP to the stack's own
+  VictoriaMetrics port, HTTP to VictoriaMetrics's `/health`, DNS resolving
+  `localhost`. `OTEL_METRIC_EXPORT_INTERVAL=2000` (env-only, no code
+  change) so the periodic exporter flushed within the run. Queried
+  VictoriaMetrics directly afterward: all five families
+  (`sentinel_collector_icmp_rtt_seconds`/`_loss_ratio`,
+  `_tcp_connect_seconds`, `_http_response_seconds`, `_dns_resolve_seconds`,
+  `_latency_rtt_seconds`/`_jitter_seconds`/`_loss_ratio`) landed with
+  exactly `site_id=site-a`, `collector_id=dev-node-1`,
+  `service.name=sentinel-collector`, and the correct bounded `target_id`
+  (plus `state`/`record_type` where applicable) — no raw host, URL, or
+  status code on any series. Stack torn down (`down -v`) and temp
+  enrollment files removed afterward; `sudo docker ps -a` confirmed empty.
+- **Behavior retained:** every S1-02/S2-01 test and behavior is untouched;
+  all previously-passing check tests (success/failure paths, shared HTTP
+  session, DNS resolver reuse, etc.) still pass unchanged.
+- **Gates, run from `collector/` with the repo's `.venv` (Python 3.12.3 /
+  pylint 3.3.7 / ruff 0.16.0 / mypy 1.20.2 / pytest 9.1.1):**
+  - `ruff check .` → all checks passed.
+  - `mypy .` → `Success: no issues found in 35 source files` (pre-existing
+    `annotation-unchecked` notes on untyped test bodies only).
+  - `pylint collector tests` (exact CI invocation) → 10.00/10.
+  - `pytest -q` → 259 passed, 1 skipped (`test_sighup_noop_without_signal`,
+    `non-POSIX only` — pre-existing).
+  - Windows Ruff/mypy/Pylint/pytest: **not run** — no Windows environment
+    available to this session.
+- **Remaining risk:** none identified against the current contract; the
+  integration run used loopback/self-targets for safety and speed rather
+  than external hosts, but exercises the identical export path C1-03's
+  automated workflow already validates for the heartbeat metric.
 
 ### C2-03 — Live probe metric workflow assertion
 
