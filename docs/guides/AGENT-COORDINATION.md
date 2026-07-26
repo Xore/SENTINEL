@@ -266,8 +266,20 @@ Implementation commit: `6745750`.
   `8417066`.
 - Backend run `30198152790` additionally passed the production ingest container
   build and dev Compose validation at `45f8e65`.
-- Still gated: multi-arch build, SBOM/scanning/signing, protected delivery,
-  canary rollout, rollback.
+- Commit `d9f07fc` added the ingest supply-chain workflow with immutable action
+  pins. Run `30198390017` passed the local image build, fixed high/critical
+  Grype gate, and SPDX JSON SBOM generation; the publish job correctly skipped
+  on a main-branch push.
+- Only an explicit `v*` tag authorizes GHCR publication. That path builds
+  `linux/amd64` and `linux/arm64`, emits version and commit tags (never
+  `latest`), signs the digest with Cosign/GitHub OIDC, and attaches GitHub
+  provenance and SBOM attestations. The tag-only path remains unexecuted until
+  the user intentionally creates a release tag.
+- Aqua Trivy actions were deliberately excluded after verifying the March 2026
+  credential-compromise advisory; Anchore actions are pinned to reviewed commit
+  SHAs instead of mutable tags.
+- Still gated: intentional tag-path verification, protected delivery, canary
+  rollout, and rollback.
 
 ---
 
