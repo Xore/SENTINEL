@@ -45,4 +45,4 @@ structlog==24.4.0
 
 # Event loop (Linux-only speedup; soft dependency — see
 # docs/guides/ASYNCIO-OPTIMIZATION.md §7, collector/__main__.py's import guard)
-uvloop==0.21.0; sys_platform == "linux"
+uvloop==0.22.1; sys_platform == "linux"
