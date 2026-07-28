@@ -38,6 +38,11 @@ jobs:
       BACKEND__ENROLL_URL: https://localhost:8443/api/pki/enroll
       BACKEND__BOOTSTRAP_TOKEN: dev-only-bootstrap-token
       SENTINEL_DEV_API_JWT_SECRET: dev-only-api-jwt-secret-0123456789
+      HTTP__TARGETS: >-
+        [{"target_id":"ci-http","url":"http://127.0.0.1:18080/health?token=c2-03-storage-secret"}]
+      HTTP__INTERVAL_S: "1"
+      HTTP__TIMEOUT_S: "2"
+      OTEL_METRIC_EXPORT_INTERVAL: "2000"
     steps:
       - uses: actions/checkout@v6
 
@@ -81,7 +86,7 @@ jobs:
           docker compose cp pki-init:/pki/ca.crt \
             "${RUNNER_TEMP}/sentinel-dev-ca.crt"
 
-      - name: Enroll collector and assert stored heartbeat
+      - name: Enroll collector and assert stored heartbeat and HTTP probe
         shell: bash
         env:
           SSL_CERT_FILE: ${{ runner.temp }}/sentinel-dev-ca.crt
@@ -90,23 +95,35 @@ jobs:
         run: |
           set -euo pipefail
           collector_log="${RUNNER_TEMP}/collector.log"
-          query_result="${RUNNER_TEMP}/vm-query.json"
+          heartbeat_result="${RUNNER_TEMP}/vm-heartbeat-query.json"
+          probe_result="${RUNNER_TEMP}/vm-http-query.json"
+          target_log="${RUNNER_TEMP}/http-target.log"
+          target_url='http://127.0.0.1:18080/health?token=c2-03-storage-secret'
+
+          printf 'ok\n' >"${RUNNER_TEMP}/health"
+          python -m http.server 18080 --bind 127.0.0.1 \
+            --directory "${RUNNER_TEMP}" >"${target_log}" 2>&1 &
+          target_pid=$!
 
           python -c "import collector; print(collector.__file__)"
           python -m collector >"${collector_log}" 2>&1 &
           collector_pid=$!
 
-          stop_collector() {
+          stop_processes() {
             if kill -0 "${collector_pid}" 2>/dev/null; then
               kill -TERM "${collector_pid}" 2>/dev/null || true
               wait "${collector_pid}" 2>/dev/null || true
             fi
+            if kill -0 "${target_pid}" 2>/dev/null; then
+              kill -TERM "${target_pid}" 2>/dev/null || true
+              wait "${target_pid}" 2>/dev/null || true
+            fi
           }
-          trap stop_collector EXIT
+          trap stop_processes EXIT
 
           for attempt in $(seq 1 90); do
             if ! kill -0 "${collector_pid}" 2>/dev/null; then
-              echo "collector exited before exporting a heartbeat"
+              echo "collector exited before exporting required metrics"
               cat "${collector_log}"
               exit 1
             fi
@@ -114,33 +131,66 @@ jobs:
             if curl --fail --silent --show-error --get \
                 --data-urlencode \
                 'query=sentinel_collector_heartbeat_total{collector_id="dev-node-1",site_id="site-a"}' \
-                --output "${query_result}" \
+                --output "${heartbeat_result}" \
                 http://localhost:8428/api/v1/query \
-              && python - "${query_result}" <<'PY'
+              && curl --fail --silent --show-error --get \
+                --data-urlencode \
+                'query=sentinel_collector_http_response_seconds{collector_id="dev-node-1",site_id="site-a",target_id="ci-http",state="ok"}' \
+                --output "${probe_result}" \
+                http://localhost:8428/api/v1/query \
+              && python - "${heartbeat_result}" "${probe_result}" "${target_url}" <<'PY'
           import json
           import sys
 
-          payload = json.load(open(sys.argv[1], encoding="utf-8"))
-          results = payload.get("data", {}).get("result", [])
-          if payload.get("status") != "success" or not results:
+          heartbeat = json.load(open(sys.argv[1], encoding="utf-8"))
+          heartbeat_results = heartbeat.get("data", {}).get("result", [])
+          if heartbeat.get("status") != "success" or not heartbeat_results:
               raise SystemExit(1)
-          metric = results[0].get("metric", {})
-          if metric.get("collector_id") != "dev-node-1":
+          heartbeat_metric = heartbeat_results[0].get("metric", {})
+          if heartbeat_metric.get("collector_id") != "dev-node-1":
               raise SystemExit(1)
-          if metric.get("site_id") != "site-a":
+          if heartbeat_metric.get("site_id") != "site-a":
               raise SystemExit(1)
+
+          probe = json.load(open(sys.argv[2], encoding="utf-8"))
+          probe_results = probe.get("data", {}).get("result", [])
+          if probe.get("status") != "success" or len(probe_results) != 1:
+              raise SystemExit(1)
+          metric = probe_results[0].get("metric", {})
+          expected = {
+              "collector_id": "dev-node-1",
+              "site_id": "site-a",
+              "target_id": "ci-http",
+              "state": "ok",
+          }
+          if any(metric.get(key) != value for key, value in expected.items()):
+              raise SystemExit(1)
+          if {"target", "url", "http.url"} & metric.keys():
+              raise SystemExit(f"raw target label reached storage: {metric}")
+          rendered = json.dumps(probe, sort_keys=True)
+          if "c2-03-storage-secret" in rendered or sys.argv[3] in rendered:
+              raise SystemExit("raw HTTP target reached storage")
           PY
             then
-              echo "canonical heartbeat reached VictoriaMetrics with expected identity"
-              cat "${query_result}"
+              if grep --fixed-strings --quiet 'c2-03-storage-secret' "${collector_log}" \
+                || grep --fixed-strings --quiet "${target_url}" "${collector_log}"; then
+                echo "raw HTTP target leaked into collector logs"
+                cat "${collector_log}"
+                exit 1
+              fi
+              echo "canonical heartbeat and HTTP probe reached VictoriaMetrics"
+              cat "${heartbeat_result}"
+              cat "${probe_result}"
               exit 0
             fi
             sleep 2
           done
 
-          echo "heartbeat query did not become ready before the deadline"
+          echo "required metric queries did not become ready before the deadline"
           cat "${collector_log}"
-          test ! -f "${query_result}" || cat "${query_result}"
+          cat "${target_log}"
+          test ! -f "${heartbeat_result}" || cat "${heartbeat_result}"
+          test ! -f "${probe_result}" || cat "${probe_result}"
           exit 1
 
       - name: Assert authenticated site-scoped last_seen API
@@ -231,6 +281,42 @@ jobs:
           ]
           if payload.get("data", {}).get("result_type") != "matrix" or len(matches) != 1:
               raise SystemExit(f"expected one site-scoped matrix, got: {payload}")
+          PY
+
+          curl --fail --silent --show-error --get \
+            -H "Authorization: Bearer ${authorized_token}" \
+            --data-urlencode "metric=sentinel_collector_http_response_seconds" \
+            --data-urlencode "site_id=site-a" \
+            --data-urlencode "collector_id=dev-node-1" \
+            --data-urlencode "start=${range_start}" \
+            --data-urlencode "end=${range_end}" \
+            --data-urlencode "step=30" \
+            -o "${RUNNER_TEMP}/api-http-metrics-range.json" \
+            http://localhost:8080/api/v1/metrics/range
+          python - "${RUNNER_TEMP}/api-http-metrics-range.json" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          results = payload.get("data", {}).get("result", [])
+          matches = []
+          for series in results:
+              metric = series.get("metric", {})
+              if (
+                  metric.get("site_id") == "site-a"
+                  and metric.get("collector_id") == "dev-node-1"
+                  and metric.get("target_id") == "ci-http"
+                  and metric.get("state") == "ok"
+                  and series.get("values")
+              ):
+                  if {"target", "url", "http.url"} & metric.keys():
+                      raise SystemExit(f"raw target label reached API: {metric}")
+                  matches.append(series)
+          rendered = json.dumps(payload, sort_keys=True)
+          if "c2-03-storage-secret" in rendered or "http://127.0.0.1:18080/" in rendered:
+              raise SystemExit("raw HTTP target reached API response")
+          if payload.get("data", {}).get("result_type") != "matrix" or len(matches) != 1:
+              raise SystemExit(f"expected one bounded HTTP metric matrix, got: {payload}")
           PY
 
           unauthorized_token="$(mint_token site-b)"
