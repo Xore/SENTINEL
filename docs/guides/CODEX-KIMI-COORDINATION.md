@@ -58,7 +58,7 @@ The Sonnet coordination ledger remains separate:
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
 | CK-BE-04A | Deterministic evidence bundle foundation | CODEX | REVIEW | none | handoff X-011 |
 | CK-BE-04B | Audit query and evidence export integration | UNASSIGNED | QUEUED | CK-BE-02A DONE, CK-BE-04A DONE | exact claim required |
-| CK-BE-05A | Notification outbox and retry foundation | KIMI | QUEUED | CK-BE-02A REVIEW | exact new-file claim below |
+| CK-BE-05A | Notification outbox and retry foundation | KIMI | IN_PROGRESS | CK-BE-02A REVIEW | exact new-file claim below |
 | CK-BE-05B | Webhook/SMTP transports and operations integration | UNASSIGNED | QUEUED | CK-BE-05A DONE | exact claim required |
 
 `UNASSIGNED` rows are not claims. Codex or Kimi may claim them only after their
@@ -68,6 +68,7 @@ prerequisites are satisfied and after publishing the exact file boundary.
 
 | Timestamp (UTC) | Agent | Work ID | Files |
 |---|---|---|---|
+| 2026-07-28T17:33:19Z | KIMI | CK-BE-05A | new `backend/ingest/migrations/000005_notification_delivery.sql`, new `backend/api/internal/notifyops/model.go`, new `backend/api/internal/notifyops/postgres.go`, new `backend/api/internal/notifyops/postgres_test.go`, new `backend/api/internal/notifyops/postgres_integration_test.go`, this ledger |
 | 2026-07-28T17:28:30Z | CODEX | CK-BE-02B | `docs/contracts/API.md`, `backend/api/internal/httpapi/router.go`, `backend/api/internal/httpapi/router_test.go`, `backend/api/cmd/api/main.go`, this ledger |
 | 2026-07-28T17:14:38Z | CODEX | CK-BE-04A | new `docs/contracts/EVIDENCE.md`, `docs/contracts/README.md`, new `backend/api/internal/evidence/model.go`, new `backend/api/internal/evidence/bundle.go`, new `backend/api/internal/evidence/bundle_test.go`, this ledger |
 
