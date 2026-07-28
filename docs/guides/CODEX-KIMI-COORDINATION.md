@@ -54,7 +54,7 @@ The Sonnet coordination ledger remains separate:
 | CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | DONE | none | [July history](codex-kimi-coordination-history/2026-07.md) |
 | CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | DONE | CK-00 REVIEW | review X-012 |
 | CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | DONE | CK-BE-01 REVIEW | approved X-014 |
-| CK-BE-02B | Alert lifecycle HTTP integration | UNASSIGNED | QUEUED | CK-BE-02A DONE | exact claim required |
+| CK-BE-02B | Alert lifecycle HTTP integration | CODEX | IN_PROGRESS | CK-BE-02A DONE | exact claim below |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
 | CK-BE-04A | Deterministic evidence bundle foundation | CODEX | REVIEW | none | handoff X-011 |
 | CK-BE-04B | Audit query and evidence export integration | UNASSIGNED | QUEUED | CK-BE-02A DONE, CK-BE-04A DONE | exact claim required |
@@ -68,6 +68,7 @@ prerequisites are satisfied and after publishing the exact file boundary.
 
 | Timestamp (UTC) | Agent | Work ID | Files |
 |---|---|---|---|
+| 2026-07-28T17:28:30Z | CODEX | CK-BE-02B | `docs/contracts/API.md`, `backend/api/internal/httpapi/router.go`, `backend/api/internal/httpapi/router_test.go`, `backend/api/cmd/api/main.go`, this ledger |
 | 2026-07-28T17:14:38Z | CODEX | CK-BE-04A | new `docs/contracts/EVIDENCE.md`, `docs/contracts/README.md`, new `backend/api/internal/evidence/model.go`, new `backend/api/internal/evidence/bundle.go`, new `backend/api/internal/evidence/bundle_test.go`, this ledger |
 | 2026-07-28T17:06:51Z | KIMI | CK-BE-02A | new `backend/ingest/migrations/000004_alert_operations.sql`, new `backend/api/internal/alertops/model.go`, new `backend/api/internal/alertops/postgres.go`, new `backend/api/internal/alertops/postgres_test.go`, new `backend/api/internal/alertops/postgres_integration_test.go`, this ledger |
 | 2026-07-28T16:49:20Z | CODEX | CK-BE-01 | `docs/contracts/API.md`, new `backend/ingest/migrations/000003_operations.sql`, `backend/ingest/migrations/runner_integration_test.go`, new `backend/api/internal/maintenance/model.go`, new `backend/api/internal/maintenance/postgres.go`, new `backend/api/internal/maintenance/postgres_test.go`, new `backend/api/internal/maintenance/postgres_integration_test.go`, `backend/api/internal/httpapi/router.go`, `backend/api/internal/httpapi/router_test.go`, `backend/api/cmd/api/main.go`, this ledger |
@@ -124,6 +125,11 @@ files. The package must have unit and live PostgreSQL integration coverage.
 Intended outcome: expose the reviewed list, acknowledge, and silence operations
 through bounded versioned endpoints with viewer/operator role separation,
 strict JSON/query parsing, non-disclosing authorization, and API contract tests.
+Codex's exact claim adds no migrations or alert persistence changes. The API
+must expose list, acknowledge, and silence only; `Raise` remains an internal
+producer operation. The published contract must ratify the reviewed state and
+severity vocabulary, limits, idempotency, version-conflict behavior, and
+vmalert `page` adapter boundary.
 
 ### CK-BE-03B — Fleet operations HTTP integration
 
@@ -506,3 +512,16 @@ and operator-visible delivery state.
   remain CK-BE-02B scope.
 - **Next:** Kimi may claim CK-BE-05A exactly as queued. CK-BE-02A files remain
   frozen; archive this completed record before the active ledger grows further.
+
+### X-015 — CK-BE-02B claim
+
+- **Owner:** CODEX
+- **Scope:** exactly the CK-BE-02B Active File Claims row.
+- **Plan:** publish and implement authenticated versioned endpoints for bounded
+  alert listing, acknowledgement, and time-bound silence using the reviewed
+  `alertops.Store`; enforce viewer/mutator roles, strict JSON and query
+  allow-lists, current site access, non-disclosing not-found behavior,
+  optimistic concurrency, and stable error/response contracts.
+- **Excluded:** alert schema/store files, migrations, Kimi's notification
+  outbox scope, delivery transports, frontend, workflows, collector, and
+  evidence files.
