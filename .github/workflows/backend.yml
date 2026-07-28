@@ -241,6 +241,10 @@ jobs:
         working-directory: backend/api
         run: go test -race -tags=integration -count=1 ./internal/maintenance
 
+      - name: Test alert lifecycle authorization and audit
+        working-directory: backend/api
+        run: go test -race -tags=integration -count=1 ./internal/alertops
+
       - name: Test fleet operations authorization and projections
         working-directory: backend/api
         run: go test -race -tags=integration -count=1 ./internal/fleetops

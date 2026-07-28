@@ -92,7 +92,7 @@ WHERE version = 1`); err != nil {
 func resetDatabase(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 	const reset = `
-DROP TABLE IF EXISTS operational_audit_log, maintenance_windows,
+DROP TABLE IF EXISTS operational_audit_log, alert_instances, maintenance_windows,
     user_site_access, users, federation_outbox, durable_events,
     enrollment_tokens, collectors, sites, sentinel_schema_migrations CASCADE;
 DROP FUNCTION IF EXISTS reject_operational_audit_mutation()`
