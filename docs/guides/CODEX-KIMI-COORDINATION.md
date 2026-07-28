@@ -52,7 +52,7 @@ The Sonnet coordination ledger remains separate:
 |---|---|---|---|---|---|
 | CK-00 | Remove WireGuard and establish direct-routing invariant | CODEX | REVIEW | none | handoff X-002 |
 | CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | IN_PROGRESS | none | new-file-only claim described below |
-| CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | QUEUED | CK-00 REVIEW | exact claim required |
+| CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | IN_PROGRESS | CK-00 REVIEW | claimed below |
 | CK-BE-02 | Alert instance lifecycle: list, acknowledge, silence | KIMI | QUEUED | CK-BE-01 REVIEW | exact claim required |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
 | CK-BE-04 | Append-only operational audit query and evidence export | UNASSIGNED | QUEUED | CK-BE-02 DONE | exact claim required |
@@ -65,6 +65,7 @@ prerequisites are satisfied and after publishing the exact file boundary.
 
 | Timestamp (UTC) | Agent | Work ID | Files |
 |---|---|---|---|
+| 2026-07-28T16:49:20Z | CODEX | CK-BE-01 | `docs/contracts/API.md`, new `backend/ingest/migrations/000003_operations.sql`, `backend/ingest/migrations/runner_integration_test.go`, new `backend/api/internal/maintenance/model.go`, new `backend/api/internal/maintenance/postgres.go`, new `backend/api/internal/maintenance/postgres_test.go`, new `backend/api/internal/maintenance/postgres_integration_test.go`, `backend/api/internal/httpapi/router.go`, `backend/api/internal/httpapi/router_test.go`, `backend/api/cmd/api/main.go`, this ledger |
 | 2026-07-28T16:45:26Z | KIMI | CK-BE-03A | `backend/api/internal/fleetops/model.go`, `backend/api/internal/fleetops/postgres.go`, `backend/api/internal/fleetops/postgres_test.go`, `backend/api/internal/fleetops/postgres_integration_test.go`, this ledger |
 | 2026-07-28T17:25:00Z | CODEX | CK-00 | `docs/architecture/ARCHITECTURE-V2-EXTENDED.md`, `docs/architecture/REQUIREMENTS-TRACEABILITY.md`, new `docs/architecture/decisions/0011-direct-probe-backend-routing.md`, `docs/architecture/decisions/README.md`, `docs/collector/COLLECTOR-V2-REFACTOR.md`, `docs/collector/ROADMAP.md`, `docs/collector/SUGGESTIONS.md`, `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`, `docs/gap-analysis/research-notes/07-arp-rate.md`, `docs/guides/OPUS-AGENT-GUIDE-V2.md`, `docs/guides/SONNET-5-IMPLEMENTATION-GUIDE.md`, `docs/ml/ML_BASELINE_LEARNING.md`, `docs/README.md`, `docs/theory/anomaly/rca-causal-inference.md`, `docs/theory/probes/fault-tree-multihop-paths.md`, `docs/theory/probes/gorilla-compression-go-theory.md`, `docs/theory/probes/passive-vs-active-measurement.md`, `docs/theory/probes/probe-to-backend-transport-theory.md`, delete `docs/theory/probes/wireguard-health-monitoring.md`, this ledger |
 
@@ -178,3 +179,17 @@ operator-visible delivery state.
 - **Concurrency decision:** CK-BE-01 may be claimed at this `REVIEW` handoff
   because its backend/migration/API scope is disjoint from the frozen CK-00
   documentation files.
+
+### X-003 — CK-BE-01 claim
+
+- **Owner:** CODEX
+- **Scope:** exactly the CK-BE-01 Active File Claims row.
+- **Plan:** define the versioned maintenance-window REST contract; add
+  forward-only PostgreSQL tables for maintenance windows and append-only
+  operational audit records; implement site-scoped create/list/end operations
+  with bounded inputs, role enforcement, optimistic concurrency, deterministic
+  ordering, current-access revalidation, and non-disclosing authorization;
+  wire the store into the API and cover unit plus PostgreSQL integration paths.
+- **Excluded:** Kimi's `internal/fleetops/**`, alert lifecycle/delivery,
+  analysis-service contamination-mask consumption, frontend, workflows,
+  collector files, and frozen CK-00 documentation.
