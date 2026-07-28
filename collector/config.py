@@ -10,9 +10,11 @@ configuration through :func:`load_settings` so validation, defaults, and test
 overrides all flow through one place. Schema mirrors
 ``docs/collector/COLLECTOR-V2-REFACTOR.md`` §9.
 """
+
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 import re
 import signal
@@ -81,6 +83,23 @@ def _validate_host(value: str) -> str:
             raise ValueError(
                 f"host must be a valid IP address or hostname: got {value!r}"
             ) from None
+    return value
+
+
+def _validate_icmp_host(value: str) -> str:
+    value = _validate_host(value)
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return value
+    if address.version != 4:
+        raise ValueError("ICMP and latency probes currently support IPv4 only")
+    return value
+
+
+def _validate_finite_timeout(value: float) -> float:
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("timeout_s must be a positive finite number")
     return value
 
 
@@ -162,7 +181,7 @@ class IcmpTarget(BaseModel):
     @field_validator("host")
     @classmethod
     def _validate_host_field(cls, value: str) -> str:
-        return _validate_host(value)
+        return _validate_icmp_host(value)
 
 
 class IcmpConfig(BaseModel):
@@ -175,6 +194,11 @@ class IcmpConfig(BaseModel):
     @classmethod
     def _validate_targets_field(cls, value: list[IcmpTarget]) -> list[IcmpTarget]:
         return _validate_target_list(value, "icmp")
+
+    @field_validator("timeout_s")
+    @classmethod
+    def _validate_timeout(cls, value: float) -> float:
+        return _validate_finite_timeout(value)
 
 
 class TcpTarget(BaseModel):
@@ -204,6 +228,11 @@ class TcpConfig(BaseModel):
     def _validate_targets_field(cls, value: list[TcpTarget]) -> list[TcpTarget]:
         return _validate_target_list(value, "tcp")
 
+    @field_validator("timeout_s")
+    @classmethod
+    def _validate_timeout(cls, value: float) -> float:
+        return _validate_finite_timeout(value)
+
 
 class HttpTarget(BaseModel):
     target_id: str
@@ -231,6 +260,11 @@ class HttpConfig(BaseModel):
     @classmethod
     def _validate_targets_field(cls, value: list[HttpTarget]) -> list[HttpTarget]:
         return _validate_target_list(value, "http")
+
+    @field_validator("timeout_s")
+    @classmethod
+    def _validate_timeout(cls, value: float) -> float:
+        return _validate_finite_timeout(value)
 
 
 class DnsTarget(BaseModel):
@@ -272,6 +306,11 @@ class DnsConfig(BaseModel):
                 )
         return value
 
+    @field_validator("timeout_s")
+    @classmethod
+    def _validate_timeout(cls, value: float) -> float:
+        return _validate_finite_timeout(value)
+
 
 class LatencyTarget(BaseModel):
     target_id: str
@@ -285,7 +324,7 @@ class LatencyTarget(BaseModel):
     @field_validator("host")
     @classmethod
     def _validate_host_field(cls, value: str) -> str:
-        return _validate_host(value)
+        return _validate_icmp_host(value)
 
 
 class LatencyConfig(BaseModel):
@@ -304,6 +343,11 @@ class LatencyConfig(BaseModel):
     @classmethod
     def _validate_targets_field(cls, value: list[LatencyTarget]) -> list[LatencyTarget]:
         return _validate_target_list(value, "latency")
+
+    @field_validator("timeout_s")
+    @classmethod
+    def _validate_timeout(cls, value: float) -> float:
+        return _validate_finite_timeout(value)
 
 
 # --------------------------------------------------------------------------- #

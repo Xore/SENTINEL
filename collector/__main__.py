@@ -1,6 +1,7 @@
 """Collector entry point — wires config, PKI enrollment, OTLP/gRPC transport,
 and the scheduler together; emits `collector_heartbeat_total` on each cycle.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -133,29 +134,31 @@ def _build_checks(
     *,
     semaphore: asyncio.Semaphore | None,
 ) -> list[BaseCheck]:
-    """One check instance per configured target for every probe family, plus
-    the heartbeat. Construction is unconditional — each check's own
-    `is_enabled()` (scan level and its family's `enabled` flag) decides at
-    scheduler time whether it actually runs (docs/contracts/METRICS.md,
-    S2-02 preflight Q-5).
-    """
+    """One check per target in each enabled probe family, plus heartbeat."""
     checks: list[BaseCheck] = [_HeartbeatCheck(settings, meter, log, semaphore=semaphore)]
 
-    for icmp_target in settings.icmp.targets:
-        checks.append(IcmpCheck(settings, meter, icmp_target, semaphore=semaphore))
+    if settings.icmp.enabled:
+        for icmp_target in settings.icmp.targets:
+            checks.append(IcmpCheck(settings, meter, icmp_target, semaphore=semaphore))
 
-    for tcp_target in settings.tcp.targets:
-        checks.append(TcpCheck(settings, meter, tcp_target, semaphore=semaphore))
+    if settings.tcp.enabled:
+        for tcp_target in settings.tcp.targets:
+            checks.append(TcpCheck(settings, meter, tcp_target, semaphore=semaphore))
 
-    for http_target in settings.http.targets:
-        checks.append(HttpCheck(settings, meter, http_target, semaphore=semaphore))
+    if settings.http.enabled:
+        for http_target in settings.http.targets:
+            checks.append(HttpCheck(settings, meter, http_target, semaphore=semaphore))
 
-    for dns_target in settings.dns.targets:
-        for record_type in settings.dns.record_types:
-            checks.append(DnsCheck(settings, meter, dns_target, record_type, semaphore=semaphore))
+    if settings.dns.enabled:
+        for dns_target in settings.dns.targets:
+            for record_type in settings.dns.record_types:
+                checks.append(
+                    DnsCheck(settings, meter, dns_target, record_type, semaphore=semaphore)
+                )
 
-    for latency_target in settings.latency.targets:
-        checks.append(LatencyCheck(settings, meter, latency_target, semaphore=semaphore))
+    if settings.latency.enabled:
+        for latency_target in settings.latency.targets:
+            checks.append(LatencyCheck(settings, meter, latency_target, semaphore=semaphore))
 
     return checks
 
@@ -186,13 +189,9 @@ async def main(*, stop_event: asyncio.Event | None = None) -> None:
         sys.exit(1)
 
     _configure_logging(settings.log_level)
-    log = structlog.get_logger().bind(
-        collector_id=settings.collector_id, site_id=settings.site_id
-    )
+    log = structlog.get_logger().bind(collector_id=settings.collector_id, site_id=settings.site_id)
 
-    install_sighup_reload(
-        lambda s: log.info("config.reloaded", scan_level_max=s.scan_level_max)
-    )
+    install_sighup_reload(lambda s: log.info("config.reloaded", scan_level_max=s.scan_level_max))
 
     log.info("pki.enroll.starting")
     await ensure_enrolled(settings)

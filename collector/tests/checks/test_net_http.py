@@ -1,4 +1,5 @@
 """Tests for collector.checks.net_http — HTTP/HTTPS probe."""
+
 from __future__ import annotations
 
 import asyncio
@@ -215,7 +216,7 @@ class TestHttpCheck:
 
         assert result.ok is True
         assert result.metrics == {"http_response_ms": 8.0}
-        assert result.labels == {"target": "https://10.0.0.1/health", "status_code": "200"}
+        assert result.labels == {"target_id": "health", "status_code": "200"}
 
     async def test_run_not_ok_on_404(self, monkeypatch):
         settings = load_settings(collector_id="c")
@@ -264,7 +265,7 @@ class TestHttpCheck:
         result = await check.run()
 
         assert result.ok is False
-        assert "timed out" in result.error
+        assert result.error == "HTTP probe failed: TimeoutError"
 
     async def test_run_never_raises_on_connection_error(self, monkeypatch):
         settings = load_settings(collector_id="c")
@@ -279,7 +280,50 @@ class TestHttpCheck:
         result = await check.run()
 
         assert result.ok is False
-        assert "refused" in result.error
+        assert result.error == "HTTP probe failed: ClientConnectionError"
+
+    async def test_result_and_logs_never_expose_url_credentials_or_query(self, monkeypatch, capsys):
+        secret = "do-not-leak"
+        url = f"https://user:{secret}@10.0.0.1/private?token={secret}"
+        settings = load_settings(collector_id="c")
+        check = HttpCheck(
+            settings,
+            meter=None,
+            target=HttpTarget(target_id="private-api", url=url),
+        )
+
+        async def failing_probe(url, *, timeout_s, verify_tls, session=None):
+            raise aiohttp.ClientConnectionError(f"request to {url} failed")
+
+        monkeypatch.setattr("collector.checks.net_http.http_probe", failing_probe)
+        result = await check.run()
+        captured = capsys.readouterr()
+
+        assert result.labels == {"target_id": "private-api"}
+        assert result.error == "HTTP probe failed: ClientConnectionError"
+        rendered = f"{result.labels} {result.error} {captured.out} {captured.err}"
+        assert secret not in rendered
+        assert url not in rendered
+
+    async def test_external_cancellation_is_not_swallowed(self, monkeypatch):
+        settings = load_settings(collector_id="c")
+        check = HttpCheck(
+            settings,
+            meter=None,
+            target=HttpTarget(target_id="root", url="https://10.0.0.1/"),
+        )
+        cleaned_up = asyncio.Event()
+
+        async def slow_probe(url, *, timeout_s, verify_tls, session=None):
+            try:
+                await asyncio.sleep(10.0)
+            finally:
+                cleaned_up.set()
+
+        monkeypatch.setattr("collector.checks.net_http.http_probe", slow_probe)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(check.run(), timeout=0.05)
+        assert cleaned_up.is_set()
 
     async def test_run_passes_shared_session_to_http_probe(self, monkeypatch):
         settings = load_settings(collector_id="c")

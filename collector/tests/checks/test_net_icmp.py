@@ -1,8 +1,10 @@
 """Tests for collector.checks.net_icmp — packet framing and the ICMP check."""
+
 from __future__ import annotations
 
 import asyncio
 import struct
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -59,6 +61,10 @@ class TestParseEchoReply:
     def test_short_packet_does_not_match(self):
         assert _parse_echo_reply(b"\x45\x00", identifier=1, sequence=1) is False
 
+    def test_invalid_ipv4_header_length_does_not_match(self):
+        packet = bytes([0x41]) + b"\x00" * 19 + struct.pack("!BBHHH", 0, 0, 0, 1, 1)
+        assert _parse_echo_reply(packet, identifier=1, sequence=1) is False
+
 
 def testtarget_identifier_in_range_and_differs_by_target():
     a = target_identifier("10.0.0.1")
@@ -82,6 +88,17 @@ class TestPingOnceBlocking:
         fake_sock = MagicMock()
         fake_sock.recvfrom.side_effect = [
             (_reply_packet(999, 999), ("10.0.0.1", 0)),  # someone else's reply
+            (_reply_packet(5, 1), ("10.0.0.1", 0)),
+        ]
+        with patch("collector.checks.net_icmp.socket.socket", return_value=fake_sock):
+            rtt_ms = _ping_once_blocking("10.0.0.1", identifier=5, sequence=1, timeout_s=1.0)
+        assert rtt_ms >= 0
+        assert fake_sock.recvfrom.call_count == 2
+
+    def test_skips_matching_packet_from_wrong_source(self):
+        fake_sock = MagicMock()
+        fake_sock.recvfrom.side_effect = [
+            (_reply_packet(5, 1), ("10.0.0.2", 0)),
             (_reply_packet(5, 1), ("10.0.0.1", 0)),
         ]
         with patch("collector.checks.net_icmp.socket.socket", return_value=fake_sock):
@@ -116,6 +133,36 @@ async def test_ping_delegates_to_blocking_helper_via_run_in_thread():
     with patch("collector.checks.net_icmp.socket.socket", return_value=fake_sock):
         rtt_ms = await ping("10.0.0.1", identifier=5, sequence=1, timeout_s=1.0)
     assert rtt_ms >= 0
+
+
+async def test_cancelled_icmp_workers_recover_within_finite_probe_timeout(monkeypatch):
+    calls = 0
+
+    def bounded_ping(target_ip, identifier, sequence, timeout_s):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            time.sleep(0.1)
+        return 1.0
+
+    monkeypatch.setattr("collector.checks.net_icmp._ping_once_blocking", bounded_ping)
+    cancelled = [
+        asyncio.create_task(ping("10.0.0.1", identifier=index, sequence=1, timeout_s=0.1))
+        for index in (1, 2)
+    ]
+    for task in cancelled:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(task, timeout=0.01)
+
+    await asyncio.sleep(0.12)
+    recovered = await asyncio.wait_for(
+        asyncio.gather(
+            ping("10.0.0.1", identifier=3, sequence=1, timeout_s=0.1),
+            ping("10.0.0.1", identifier=4, sequence=1, timeout_s=0.1),
+        ),
+        timeout=0.2,
+    )
+    assert recovered == [1.0, 1.0]
 
 
 class _FakeHistogram:

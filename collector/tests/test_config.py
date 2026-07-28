@@ -1,4 +1,5 @@
 """Tests for collector.config — pydantic schema, layered loader, SIGHUP."""
+
 from __future__ import annotations
 
 import signal
@@ -154,18 +155,37 @@ class TestTargetValidation:
                 icmp={"targets": [{"target_id": "t", "host": bad_host}]},
             )
 
-    def test_valid_hostname_and_ip_accepted(self):
+    def test_valid_hostname_and_ipv4_accepted(self):
         s = load_settings(
             collector_id="c",
             icmp={
                 "targets": [
                     {"target_id": "by-ip", "host": "10.0.0.1"},
                     {"target_id": "by-name", "host": "core.example.com"},
-                    {"target_id": "by-ipv6", "host": "::1"},
                 ]
             },
         )
-        assert [t.host for t in s.icmp.targets] == ["10.0.0.1", "core.example.com", "::1"]
+        assert [t.host for t in s.icmp.targets] == ["10.0.0.1", "core.example.com"]
+
+    @pytest.mark.parametrize("family", ["icmp", "latency"])
+    @pytest.mark.parametrize("ipv6", ["::1", "2001:db8::1"])
+    def test_ipv6_rejected_for_ipv4_only_probe_families(self, family, ipv6):
+        with pytest.raises(ConfigError, match="IPv4 only"):
+            load_settings(
+                collector_id="c",
+                **{family: {"targets": [{"target_id": "v6", "host": ipv6}]}},
+            )
+
+    @pytest.mark.parametrize("family", ["icmp", "tcp", "http", "dns", "latency"])
+    @pytest.mark.parametrize("bad_timeout", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+    def test_probe_timeout_must_be_positive_and_finite(self, family, bad_timeout):
+        with pytest.raises(ConfigError):
+            load_settings(collector_id="c", **{family: {"timeout_s": bad_timeout}})
+
+    @pytest.mark.parametrize("family", ["icmp", "tcp", "http", "dns", "latency"])
+    def test_probe_timeout_accepts_positive_finite_value(self, family):
+        settings = load_settings(collector_id="c", **{family: {"timeout_s": 0.001}})
+        assert getattr(settings, family).timeout_s == 0.001
 
     @pytest.mark.parametrize("bad_url", ["not-a-url", "ftp://host/path", "http://"])
     def test_invalid_http_url_rejected(self, bad_url):
@@ -194,9 +214,7 @@ class TestTargetValidation:
         with pytest.raises(ConfigError):
             load_settings(collector_id="c", dns={"record_types": [bad_record_type]})
 
-    @pytest.mark.parametrize(
-        "record_type", ["A", "AAAA", "CNAME", "MX", "NS", "PTR", "SRV", "TXT"]
-    )
+    @pytest.mark.parametrize("record_type", ["A", "AAAA", "CNAME", "MX", "NS", "PTR", "SRV", "TXT"])
     def test_allowed_dns_record_types_accepted(self, record_type):
         s = load_settings(collector_id="c", dns={"record_types": [record_type]})
         assert s.dns.record_types == [record_type]
@@ -302,14 +320,17 @@ class TestYamlLayer:
         return p
 
     def test_yaml_file_loaded(self, tmp_path):
-        p = self._write(tmp_path, """
+        p = self._write(
+            tmp_path,
+            """
 collector_id: yaml-node
 site_id: floor-2
 scan_level_max: 3
 wifi:
   enabled: false
   interface: wlan1
-""")
+""",
+        )
         s = load_settings(p)
         assert s.collector_id == "yaml-node"
         assert s.site_id == "floor-2"
@@ -327,8 +348,8 @@ wifi:
         p = self._write(tmp_path, "collector_id: yaml-node\nsite_id: from-yaml\n")
         monkeypatch.setenv("SITE_ID", "from-env")
         s = load_settings(p)
-        assert s.collector_id == "yaml-node"   # only in YAML
-        assert s.site_id == "from-env"          # env wins over YAML
+        assert s.collector_id == "yaml-node"  # only in YAML
+        assert s.site_id == "from-env"  # env wins over YAML
 
     def test_init_override_wins_over_all(self, tmp_path, monkeypatch):
         p = self._write(tmp_path, "collector_id: yaml-node\n")

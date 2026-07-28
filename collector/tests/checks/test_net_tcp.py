@@ -1,4 +1,5 @@
 """Tests for collector.checks.net_tcp — TCP connect probe."""
+
 from __future__ import annotations
 
 import asyncio
@@ -67,6 +68,22 @@ class TestTcpConnect:
             pytest.raises(TimeoutError),
         ):
             await tcp_connect("10.0.0.1", 443, timeout_s=0.01)
+
+    async def test_external_cancellation_stops_pending_connection(self):
+        cleaned_up = asyncio.Event()
+
+        async def _slow(host, port):
+            try:
+                await asyncio.sleep(10)
+            finally:
+                cleaned_up.set()
+
+        with (
+            patch("collector.checks.net_tcp.asyncio.open_connection", _slow),
+            pytest.raises(TimeoutError),
+        ):
+            await asyncio.wait_for(tcp_connect("10.0.0.1", 443, timeout_s=10.0), timeout=0.05)
+        assert cleaned_up.is_set()
 
 
 class TestTcpCheck:

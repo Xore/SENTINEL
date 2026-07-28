@@ -1,4 +1,5 @@
 """Tests for collector.__main__ — config -> PKI check -> OTLP -> scheduler wiring."""
+
 from __future__ import annotations
 
 import asyncio
@@ -282,22 +283,29 @@ class TestBuildChecks:
         assert len(icmp_checks) == 2
         assert {c.target.target_id for c in icmp_checks} == {"icmp-1", "icmp-2"}
 
-    def test_disabled_family_still_constructs_but_check_is_not_enabled(self):
-        # Construction is unconditional; is_enabled() is where the family's
-        # `enabled` flag actually takes effect (checked at scheduler time).
+    @pytest.mark.parametrize(
+        ("family", "target"),
+        [
+            ("icmp", {"target_id": "icmp-1", "host": "10.0.0.1"}),
+            ("tcp", {"target_id": "tcp-1", "host": "10.0.0.1", "port": 443}),
+            ("http", {"target_id": "http-1", "url": "https://10.0.0.1/"}),
+            ("dns", {"target_id": "dns-1", "hostname": "example.com"}),
+            ("latency", {"target_id": "lat-1", "host": "10.0.0.1"}),
+        ],
+    )
+    def test_disabled_family_does_not_construct_checks(self, family, target):
         settings = load_settings(
             collector_id="c",
-            icmp={"enabled": False, "targets": [{"target_id": "icmp-1", "host": "10.0.0.1"}]},
+            **{family: {"enabled": False, "targets": [target]}},
         )
         checks = main_module._build_checks(  # pylint: disable=protected-access
             settings, meter=None, log=main_module.structlog.get_logger(), semaphore=None
         )
 
-        icmp_checks = [c for c in checks if isinstance(c, IcmpCheck)]
-        assert len(icmp_checks) == 1
-        assert icmp_checks[0].is_enabled() is False
+        assert len(checks) == 1
+        assert isinstance(checks[0], main_module._HeartbeatCheck)  # pylint: disable=protected-access
 
-    def test_latency_disabled_by_default_still_constructs_but_not_enabled(self):
+    def test_latency_disabled_by_default_does_not_construct_checks(self):
         settings = load_settings(
             collector_id="c",
             latency={"targets": [{"target_id": "lat-1", "host": "10.0.0.1"}]},
@@ -306,6 +314,4 @@ class TestBuildChecks:
             settings, meter=None, log=main_module.structlog.get_logger(), semaphore=None
         )
 
-        latency_checks = [c for c in checks if isinstance(c, LatencyCheck)]
-        assert len(latency_checks) == 1
-        assert latency_checks[0].is_enabled() is False
+        assert not any(isinstance(check, LatencyCheck) for check in checks)

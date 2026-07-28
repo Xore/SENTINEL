@@ -2,6 +2,7 @@
 this check instance's target. Requires `CAP_NET_RAW` (or root) to open an
 `AF_INET`/`SOCK_RAW`/`IPPROTO_ICMP` socket.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -45,6 +46,8 @@ def _parse_echo_reply(packet: bytes, identifier: int, sequence: int) -> bool:
     if len(packet) < 20 + 8:
         return False
     ihl = (packet[0] & 0x0F) * 4
+    if ihl < 20 or len(packet) < ihl + 8:
+        return False
     icmp = packet[ihl : ihl + 8]
     if len(icmp) < 8:
         return False
@@ -63,9 +66,7 @@ def target_identifier(target: str) -> int:
     return (os.getpid() ^ hash(target)) & 0xFFFF
 
 
-def _ping_once_blocking(
-    target_ip: str, identifier: int, sequence: int, timeout_s: float
-) -> float:
+def _ping_once_blocking(target_ip: str, identifier: int, sequence: int, timeout_s: float) -> float:
     """Send one echo request and block for the matching reply.
 
     Returns RTT in milliseconds. Raises `TimeoutError`/`OSError` on failure.
@@ -77,10 +78,11 @@ def _ping_once_blocking(
     payload = struct.pack("!d", time.monotonic())
     packet = _build_echo_request(identifier, sequence, payload)
 
+    destination_ip = socket.gethostbyname(target_ip)
     sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
     try:
         start = time.monotonic()
-        sock.sendto(packet, (target_ip, 0))
+        sock.sendto(packet, (destination_ip, 0))
         deadline = start + timeout_s
         while True:
             remaining = deadline - time.monotonic()
@@ -88,10 +90,10 @@ def _ping_once_blocking(
                 raise TimeoutError(f"no reply from {target_ip} within {timeout_s}s")
             sock.settimeout(remaining)
             try:
-                reply, _addr = sock.recvfrom(1024)
+                reply, addr = sock.recvfrom(1024)
             except TimeoutError:
                 raise TimeoutError(f"no reply from {target_ip} within {timeout_s}s") from None
-            if _parse_echo_reply(reply, identifier, sequence):
+            if addr[0] == destination_ip and _parse_echo_reply(reply, identifier, sequence):
                 return (time.monotonic() - start) * 1000.0
             # Not our reply (e.g. one meant for a concurrent ping) — keep waiting.
     finally:
@@ -174,9 +176,7 @@ class IcmpCheck(BaseCheck):
                 labels={"target": self.target.host},
             )
         except Exception as exc:  # BaseCheck.run() must never raise
-            log.warning(
-                "check.degraded", check=self.name, target=self.target.host, error=str(exc)
-            )
+            log.warning("check.degraded", check=self.name, target=self.target.host, error=str(exc))
             self._record(rtt_ms=None, loss_pct=100.0)
             return CheckResult(
                 ok=False,

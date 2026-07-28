@@ -2,6 +2,7 @@
 certificate verification is configurable via `HttpConfig.verify_tls` (useful
 for self-signed OT/internal endpoints).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -127,14 +128,22 @@ class HttpCheck(BaseCheck):
                         "state": "ok" if ok else "error",
                     },
                 )
-            labels = {"target": self.target.url, "status_code": str(status)}
+            labels = {"target_id": self.target.target_id, "status_code": str(status)}
             return CheckResult(
                 ok=ok,
                 metrics={"http_response_ms": response_ms},
                 labels=labels,
             )
         except Exception as exc:
+            error = f"HTTP probe failed: {type(exc).__name__}"
             log.warning(
-                "check.degraded", check=self.name, target=self.target.url, error=str(exc)
+                "check.degraded",
+                check=self.name,
+                target_id=self.target.target_id,
+                error_type=type(exc).__name__,
             )
-            return CheckResult(ok=False, labels={"target": self.target.url}, error=str(exc))
+            return CheckResult(
+                ok=False,
+                labels={"target_id": self.target.target_id},
+                error=error,
+            )
