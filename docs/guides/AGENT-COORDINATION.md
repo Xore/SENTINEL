@@ -70,12 +70,11 @@ The revisions must match; the final command is required remote read-back.
 | S2-02 | 2 | Core network probe activation and hardening | SONNET5 | REVIEW | S2-01 DONE | exact scope below |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | exact new-file scope below |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
-| S5-00 | 5 | Signed-update read-only preflight | SONNET5 | REVIEW | S4-01A REVIEW | ledger only |
+| S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 | C2-03 | 2 | Live probe metric workflow assertion | CODEX | QUEUED | S2-02 REVIEW | `.github/workflows/integration-test.yml`, ledger |
-| C5-01 | 5 | Signed update manifest contract and offline release CLI | CODEX | IN_PROGRESS | S5-00 REVIEW | exact new-file scope below |
 
-Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, C1-01, C1-03, C1-04, C2-01, C2-02. See
+Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
 [July 2026 history](agent-coordination-history/2026-07.md).
 Detailed Sonnet follow-on scopes and gates are in
 [`SONNET-5-WORK-QUEUE.md`](SONNET-5-WORK-QUEUE.md).
@@ -90,8 +89,6 @@ Detailed Sonnet follow-on scopes and gates are in
 | 2026-07-26T13:00:00Z | SONNET5 | S2-02 | `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
 | 2026-07-26T14:10:00Z | SONNET5 | S3-01A | new files only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
 | 2026-07-26T15:05:00Z | SONNET5 | S4-01A | new files only: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/__init__.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
-| 2026-07-26T15:45:00Z | SONNET5 | S5-00 | ledger only — read-only preflight, no code/config/workflow files |
-| 2026-07-28T16:19:27Z | CODEX | C5-01 | new files only: `contracts/collector-update-manifest-v1.schema.json`, `docs/contracts/COLLECTOR-UPDATE-MANIFEST-V1.md`, `backend/api/internal/updatemanifest/**`, `backend/api/cmd/update-manifest/**`, this ledger |
 
 
 ---
@@ -101,7 +98,8 @@ Detailed Sonnet follow-on scopes and gates are in
 Plan updated after S2-02 Codex review 1. Sonnet must pull and read this section
 plus the review entry under A-S2-02-1 before doing more work.
 
-1. Keep S1-02/S2-01 and every S3-01A/S4-01A/S5-00 file frozen.
+1. Keep S1-02/S2-01 and every S3-01A/S4-01A file frozen. S5-00 is approved
+   and archived; do not claim S5-01 before its explicit gate is satisfied.
 2. In the still-active exact S2-02 claim, address only the five correction
    groups in Codex review 1. Preserve accepted metric names, units, bounded
    attributes, target caps, separate latency configuration, and integration
@@ -144,348 +142,31 @@ inventory are preserved in history.
 
 ---
 
-## S5-00 Preflight — signed collector updates
+## S5-01 Gate
 
-Read-only per the work queue: no code, config, or workflow file is touched by
-this claim — ledger only. Read `docs/architecture/decisions/0006-signed-
-collector-updates.md` (the authority for this design), `docs/architecture/
-decisions/0001-canonical-service-layout.md` and `0009-identity-tenancy-and-
-time.md`, `docs/architecture/ARCHITECTURE-V2-EXTENDED.md` §10.1, `docs/
-architecture/IaC-DEPLOYMENT-STRATEGY.md` §5 and §7, `collector/pki/enroll.py`
-(existing mTLS enrollment trust model), and `collector/store/` (S4-01A's
-crash-safe envelope/queue discipline, reused below as a pattern, not as code).
+S5-00 and C5-01 are `DONE`. The release-side authority is
+[`COLLECTOR-UPDATE-MANIFEST-V1.md`](../contracts/COLLECTOR-UPDATE-MANIFEST-V1.md);
+cross-language golden inputs are under
+`backend/api/internal/updatemanifest/testdata/`. The approved preflight,
+resolved Q-6 through Q-11 decisions, and exact future claim are indexed in
+[July 2026 history](agent-coordination-history/2026-07.md).
 
-### Exact future file claim (a later, separately reviewed implementation)
-
-New subpackage, mirroring the existing `collector/<subsystem>/` layout:
-
-- `collector/updater/__init__.py`
-- `collector/updater/manifest.py` — schema, canonical serialization, Ed25519
-  verification
-- `collector/updater/trust_store.py` — trusted-key persistence and rotation
-- `collector/updater/installer.py` — stage → verify → atomic switch → health
-  check → rollback state machine
-- `collector/updater/__main__.py` — the separate minimal entry point ADR 0006
-  requires (root-invoked; never imports the unprivileged collector's own
-  runtime)
-- `deploy/systemd/analyselaptop-collector.service`,
-  `deploy/systemd/analyselaptop-updater.service` (+ `.timer`) — unit templates
-- `collector/tests/updater/**` — matching tests
-- this ledger
-
-Explicitly NOT this future claim's scope: any backend-side manifest-signing
-or publishing endpoint (a different component, likely `backend/api` or a
-release tool — Codex's or a human release engineer's call, not Sonnet's to
-claim unilaterally) and `.github/workflows/**` (Codex-owned per the existing
-File Claims table).
-
-### Trust-root / key-rotation model
-
-Three separate trust domains already exist or are proposed; they must not be
-conflated:
-
-1. mTLS enrollment CA (ADR 0009, `collector/pki/enroll.py`) — node↔backend
-   transport identity. Already built.
-2. Cosign/Sigstore OIDC signing (C1-02's container-supply-chain workflow) —
-   CI-time image provenance. Already built, orthogonal to this ADR.
-3. **New:** a dedicated Ed25519 release-signing keypair, authenticating the
-   update *manifest* content itself, verified entirely locally on the node —
-   independent of TLS/network trust, so a compromised backend alone cannot
-   push an unsigned or mis-signed artifact.
-
-Proposed model for (3):
-
-- The initial public key is baked into the node at provisioning time (e.g.
-  the base image / `bootstrap-collector.sh`), not distributed over the same
-  channel updates travel — avoids one channel controlling both distribution
-  and trust.
-- Rotation: a rotation manifest, itself signed by the *currently trusted*
-  key, introduces a new public key with an activation version threshold. At
-  most two trusted keys at once (current + next); each keyed by an 8-byte
-  hex key ID (`sha256(raw public key)[:8]`). A rotation manifest signed by
-  the *incoming* key alone is invalid — it must be countersigned by an
-  already-trusted key, so an attacker can never self-issue a rotation.
-- Revocation: a manifest signed by the *other* currently-trusted key. This
-  requires at least one uncompromised key to always exist; rotation must
-  never leave only one trusted key active for longer than the fleet's
-  revocation-detection SLA.
-- Local persistence: root-owned/root-writable trust-store file (e.g.
-  `/var/lib/analyselaptop/updater/trusted_keys.json`), written only by the
-  updater helper, mirroring `enroll.py`'s existing `0600`/`0644` PKI file
-  permission discipline.
-
-### Manifest schema (proposed, v1)
-
-Deterministic sorted-key JSON, mirroring `collector.store.envelope.Envelope`'s
-own serialization discipline — the Ed25519 signature covers the exact
-canonical byte string, so any reformatting invalidates it:
-
-```json
-{
-  "schema_version": 1,
-  "collector_version": "2.<major>.<minor>.<patch>",
-  "platform": "linux/amd64 | linux/arm64",
-  "sha256": "<hex>",
-  "size_bytes": 0,
-  "not_before": "<aware UTC ISO 8601>",
-  "min_supported_from_version": "2.<x>.<y>.<z>",
-  "rollback": false,
-  "signing_key_id": "<8-byte hex>",
-  "signature": "<base64 Ed25519 signature>"
-}
-```
-
-Deliberately **no free-form URL field** — ADR 0006 says the helper "accepts
-no shell commands, URLs, or paths from the collector"; extending that
-symmetrically, the fetch location is derived locally from
-`(collector_version, platform)` against a fixed, hardcoded backend endpoint
-path, never a value carried inside the manifest itself. The manifest is
-fetched over the existing mTLS channel for confidentiality/authenticity of
-transport, but its *integrity* rests entirely on the Ed25519 signature —
-defense in depth against a compromised backend.
-
-### Rollback / anti-downgrade rules
-
-- A locally persisted monotonic `current_version` / one retained
-  `previous_version` (ADR 0006's "rolls back to the previous version on
-  failure" — exactly one prior release kept on disk at a time).
-- Anti-downgrade: reject any manifest with `collector_version <=
-  current_version` unless it carries `"rollback": true` **and** a valid
-  signature from a currently-trusted key — a narrow, explicit escape hatch
-  distinct from forward updates, closing the classic replay-an-old-valid-
-  manifest downgrade attack.
-- Automatic rollback-on-failure (no operator signature needed): the
-  installer itself reverts the symlink and restarts the service if the
-  post-switch health check doesn't pass within a bounded window. This is not
-  a security downgrade — it's reverting to a version this exact node already
-  ran successfully, not accepting an externally supplied older manifest.
-- The previous release is pruned only after the current release has passed
-  its health check and completed a soak period (proposed 24h), bounding disk
-  usage to two releases at most.
-
-### Atomic install / recovery flow
-
-Concretizing ADR 0006's seven steps:
-
-1. The unprivileged collector, on learning an update is available (channel
-   TBD — see Open Decisions), writes only a minimal trigger ("check now") to
-   a root-owned request file. It never writes a manifest, URL, or path —
-   the updater independently fetches and verifies everything itself.
-2. Updater verifies: Ed25519 signature over canonical manifest bytes →
-   platform match → version monotonicity (or signed rollback) → after
-   download, SHA-256 of the downloaded bytes against the manifest's digest.
-3. Stage the verified artifact on the *same filesystem* as the live install
-   root (required for atomic `rename()`; cross-filesystem renames aren't
-   atomic).
-4. Atomically switch a versioned symlink (e.g. `/opt/analyselaptop/current
-   -> /opt/analyselaptop/releases/<version>`) via a single `rename()` on the
-   symlink's containing directory — never a copy-in-place over the live
-   binary.
-5. Restart only the exact named systemd unit
-   (`analyselaptop-collector.service`) — never a broader `systemctl`
-   invocation, never a shell-interpolated unit name.
-6. Bounded health check against the collector's existing `/healthz`
-   endpoint (already present per `IaC-DEPLOYMENT-STRATEGY.md` §5.2), plus a
-   version confirmation from the running process.
-7. On failure (timeout, crash-loop, unhealthy): atomically switch back,
-   restart again, record the failure, and stop — a fixed maximum retry count
-   per rollout, never an infinite loop against the same failing artifact.
-
-Crash-safety: every step must be resumable if the updater process itself
-dies mid-flow. A small persisted state file, fsynced before each step
-transition (the same durable, resumable-state discipline S4-01A's SQLite
-cold queue already applies to telemetry), lets recovery on restart resume
-cleanly — never re-verifying an already-verified artifact, never leaving the
-symlink pointing at a half-staged release, never double-restarting the
-service.
-
-### Platform matrix (proposed)
-
-- `linux/amd64` — Ubuntu/generic x86_64 nodes.
-- `linux/arm64` — Raspberry Pi 4 and other 64-bit arm SBCs. Raspberry Pi 3B
-  is ARMv8-A capable and can run a 64-bit OS image, so `arm64` should cover
-  it — **needs confirmation** against the actual fleet-OS inventory before
-  this is final (see Open Decisions).
-- Windows is explicitly **not** in this matrix — the architecture docs only
-  describe Linux (Pi/Ubuntu) as field-deployed collector nodes; Windows CI
-  parity (S1-02/S3-01A's gates) is a development/test-suite goal, not a
-  stated production deployment target.
-
-### Failure-injection tests (planned for the later implementation claim)
-
-- Corrupted/truncated download (SHA-256 mismatch) → rejected, no symlink
-  switch, artifact discarded.
-- Manifest signed by an untrusted/revoked key → rejected before any
-  download is attempted.
-- Non-monotonic version without a signed rollback flag → rejected
-  (anti-downgrade).
-- Replay of an old-but-validly-signed manifest → rejected (anti-downgrade;
-  see the manifest-freshness open decision below).
-- Platform mismatch (e.g. an `arm64` manifest applied to an `amd64` node) →
-  rejected.
-- Updater killed mid-download → safely resumable/re-verifiable on restart;
-  no partial file is ever symlinked.
-- Updater killed mid-symlink-switch → recovery detects the incomplete switch
-  via the persisted state file and completes or safely reverts it; `current`
-  is never left dangling or missing.
-- New binary crash-loops after switch → automatic rollback within the
-  bounded retry count; the service ends up running, not stuck down.
-- Disk full during staging → clean failure; the previous version is never
-  touched until the new one is fully verified and staged.
-- Two rollout requests back-to-back before the first's health check settles
-  → installs must serialize (no concurrent install/rollback race), the same
-  intra-process locking discipline `SqliteQueue` already uses.
-- A rotation manifest signed only by the *incoming* key → rejected (must be
-  countersigned by an already-trusted key).
-
-### Open decisions (need Codex)
-
-Raised as Q-6 through Q-11 in [Open Questions](#open-questions) below — all
-block the implementation claim, especially Q-6 (deployment topology), which
-changes every downstream design choice above:
-
-- **Q-6** — bare-metal-systemd vs. Docker-Compose deployment topology.
-- **Q-7** — update-available signaling channel (collector → updater trigger).
-- **Q-8** — release-signing key custody (who signs manifests, and where).
-- **Q-9** — manifest freshness / bounded validity window.
-- **Q-10** — exact platform matrix (any 32-bit ARM nodes?).
-- **Q-11** — updater source layout (`collector/updater/` vs. a new root).
+S5-01 remains `QUEUED` until S2-02, S3-01A, and S4-01A are all `DONE`. Its later
+claim may enumerate only: new `collector/updater/` modules; matching new
+`collector/tests/updater/` tests; the three named collector/updater systemd
+unit/timer files under `deploy/systemd/`; and this ledger. It must consume the
+contract and fixtures without changing release-side schema, signing CLI,
+workflows, backend runtime, or earlier collector scopes.
 
 ---
 
 ## Open Questions
 
-### Q-6 — Deployment topology mismatch for signed updates
-- Raised/UTC/work ID: 2026-07-26T15:45:00Z / S5-00
-- Question and affected files: ADR 0006 describes a bare-metal systemd +
-  versioned-symlink updater (`restarts only the named collector service`);
-  `docs/architecture/IaC-DEPLOYMENT-STRATEGY.md` §5 describes Docker Compose
-  (`image: ghcr.io/.../collector:${IMAGE_TAG}`, updated via `docker compose
-  pull`/CI-SSH per §7). Which is authoritative for the future
-  `collector/updater/` claim: (a) a new bare-metal packaging mode alongside
-  Compose, (b) adapting ADR 0006's model to run inside the container's
-  writable volume (restart means the container re-execs, not a host-level
-  `systemctl restart`), or (c) treating cosign-signed GHCR digest updates as
-  the real production mechanism, narrowing ADR 0006's scope to something
-  short of full image replacement (e.g. hot config/rule updates)?
-- Evidence: ADR 0006; `IaC-DEPLOYMENT-STRATEGY.md` §5.2 (`docker-compose.yml`
-  pins `image:`), §7 (`docker compose pull`/SSH deploy flow).
-- Smallest reversible proposal: confirm topology (b) — updater operates
-  entirely inside the container's persistent volume, restart is a supervised
-  re-exec of the container's own entrypoint — since it requires no new
-  bare-metal packaging and keeps the existing Compose-based fleet ops intact.
-- Decision: pending
-
-### Q-7 — Update-available signaling channel
-- Raised/UTC/work ID: 2026-07-26T15:45:00Z / S5-00
-- Question and affected files: who writes the root-owned update-request
-  trigger file, and how does the unprivileged collector learn "an update is
-  available" — a new control-plane message type over the existing mTLS/OTLP
-  channel (today export-only), or a separate poll (e.g.
-  `ARCHITECTURE-V2-EXTENDED.md` §10.1's `GET /api/v1/collector/latest`,
-  which doesn't exist yet)? Affects a future `collector/updater/` claim and
-  any corresponding backend endpoint.
-- Evidence: `docs/architecture/ARCHITECTURE-V2-EXTENDED.md` §10.1.
-- Smallest reversible proposal: a bounded, low-frequency poll (e.g. every
-  24h, matching §10.1's own proposal) against a fixed backend endpoint,
-  authenticated over the existing mTLS session — no new control-plane
-  message type needed yet.
-- Decision: pending
-
-### Q-8 — Release-signing key custody
-- Raised/UTC/work ID: 2026-07-26T15:45:00Z / S5-00
-- Question and affected files: where does the Ed25519 release-signing
-  private key live and what process signs releases — a manual release step,
-  or part of `.github/workflows/collector.yml`'s tag-triggered path
-  alongside the existing Cosign step? This is a backend/CI/release-
-  engineering decision, not the collector-side claim's to make.
-- Evidence: `.github/workflows/collector.yml`;
-  `.github/workflows/container-supply-chain.yml` (existing Cosign/OIDC
-  signing precedent for a different trust domain).
-- Smallest reversible proposal: none — this needs an explicit answer from
-  whoever owns release engineering before the trust-root design is final.
-- Decision: pending
-
-### Q-9 — Manifest freshness / bounded validity window
-- Raised/UTC/work ID: 2026-07-26T15:45:00Z / S5-00
-- Question and affected files: does the manifest need a bounded validity
-  window (`not_after`) to invalidate an old-but-still-higher-than-current
-  manifest an operator wants expired (e.g. a narrow canary window), or is
-  monotonic-version-only sufficient for this fleet's threat model? Affects
-  the manifest schema in the S5-00 preflight above.
-- Evidence: none in-repo; TUF's specification uses a separate signed
-  "timestamp" role for exactly this problem.
-- Smallest reversible proposal: skip `not_after` for the first
-  implementation (monotonic version + explicit signed rollback covers the
-  stated threat model); add it later if canary-window expiry proves needed.
-- Decision: pending
-
-### Q-10 — Exact platform matrix
-- Raised/UTC/work ID: 2026-07-26T15:45:00Z / S5-00
-- Question and affected files: confirm whether any 32-bit ARM
-  (`linux/arm/v7`) nodes exist in the current or planned fleet, or whether
-  all Pi deployments are 64-bit (`arm64`). Affects the platform matrix in
-  the S5-00 preflight above and the eventual CI build matrix.
-- Evidence: `deploy/collector-inventory.json` entries use `"arch": "arm64"`
-  only in the example shown in `IaC-DEPLOYMENT-STRATEGY.md` §5.4; no
-  `armv7`/32-bit entry appears anywhere in the repo.
-- Smallest reversible proposal: assume `linux/amd64` + `linux/arm64` only
-  until an actual 32-bit node is confirmed in the fleet.
-- Decision: pending
-
-### Q-11 — Updater source layout
-- Raised/UTC/work ID: 2026-07-26T15:45:00Z / S5-00
-- Question and affected files: `collector/updater/` (smallest diff, but it
-  must run with different privileges than the unprivileged daemon it shares
-  a source tree with) vs. a new top-level source root (would need an
-  ADR 0001 amendment, since ADR 0001's canonical-roots list doesn't
-  currently include an updater).
-- Evidence: `docs/architecture/decisions/0001-canonical-service-layout.md`.
-- Smallest reversible proposal: `collector/updater/` as a subpackage with
-  its own separate `__main__.py` entry point — no ADR amendment needed,
-  privilege separation enforced by how the entry point is invoked/installed
-  (root-owned unit), not by source-tree location.
-- Decision: pending
-
-Use:
-
-```text
-### Q-<number> — Title
-- Raised/UTC/work ID:
-- Question and affected files:
-- Evidence:
-- Smallest reversible proposal:
-- Decision: pending
-```
-
-Archive answered questions in the commit applying the answer.
+None.
 
 ---
 
 ## Active Exchanges
-
-### C5-01 — Signed update manifest contract and offline release CLI
-
-- **Timestamp:** 2026-07-28T16:19:27Z.
-- **Status:** IN_PROGRESS.
-- **Purpose:** remove S5-00's release-engineering ambiguity with a stable,
-  independently testable manifest contract and an offline signing/verification
-  CLI. This is disjoint from Sonnet's future node-side updater and does not
-  touch its S2/S3/S4 files.
-- **Scope:** exactly the new files in the C5-01 File Claims row plus this
-  ledger. No updater runtime, systemd unit, collector configuration, release
-  workflow, dependency, or existing backend runtime file is claimed.
-- **Decisions to encode and return for review:** field collectors use ADR
-  0006's host-level systemd/symlink topology; update discovery is a fixed,
-  low-frequency updater poll rather than an instruction from the unprivileged
-  collector; the Ed25519 private key stays outside GitHub and production
-  backend services and manifests are signed by an offline release CLI;
-  manifests have bounded validity; v1 platforms are `linux/amd64` and
-  `linux/arm64`; Sonnet's node verifier remains under `collector/updater/`.
-- **Exit:** schema/contract, deterministic canonicalization, Ed25519
-  sign/verify, digest/size/platform/version/freshness validation, golden
-  compatibility fixtures/tests, Go format/vet/race/build, then a separate
-  pushed/read-back handoff that gives Sonnet exact verifier inputs.
 
 ### A-S2-02-1 — Sonnet 5 claim
 
@@ -920,26 +601,6 @@ Implementation commit: `d9bef65`.
   hot tier, `CollectorSettings` wiring, and transport integration (including
   routing `SqliteQueue`'s blocking calls through `run_in_thread`) remain open
   for later, separately reviewed claims, as the work queue anticipates.
-
-### A-S5-00-1 — Sonnet 5 preflight
-
-- **Timestamp:** 2026-07-26T15:45:00Z
-- **Status:** REVIEW — read-only, ledger-only. No code, config, or workflow
-  file was touched; S1-02/S2-01/S2-02/S3-01A/S4-01A remain frozen and
-  untouched.
-- **Content:** the full preflight is published under
-  [S5-00 Preflight — signed collector updates](#s5-00-preflight--signed-collector-updates)
-  above — exact future file claim, trust-root/key-rotation model, manifest
-  schema, rollback/anti-downgrade rules, atomic install/recovery flow,
-  platform matrix, and failure-injection tests. Six open decisions were
-  raised as Q-6 through Q-11 above, most significantly Q-6 (the deployment-
-  topology mismatch between ADR 0006's bare-metal model and the current
-  Docker-Compose fleet), which should be resolved before any implementation
-  claim is queued.
-- **Per the continuity authority's own final instruction:** this is the last
-  item in the authorized sequence (S2-01 → S2-02 → S3-01A → S4-01A → S5-00).
-  Sonnet stops here and waits for Codex to review S4-01A's implementation and
-  answer Q-6 through Q-11 before any further collector-side claim.
 
 ### C2-03 — Live probe metric workflow assertion
 
