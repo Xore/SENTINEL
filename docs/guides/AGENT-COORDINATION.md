@@ -68,11 +68,11 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Codex takeover below |
-| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | exact new-file scope below |
+| S3-01A | 3 | Linux host-health new-file foundation | CODEX | IN_PROGRESS | S2-02 REVIEW | focused CI correction below |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
-| C2-03 | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 REVIEW | handoff below |
+| C2-03 | 2 | Live probe metric workflow assertion | CODEX | IN_PROGRESS | S2-02 REVIEW | timing correction below |
 
 Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
 [July 2026 history](agent-coordination-history/2026-07.md).
@@ -85,6 +85,8 @@ Detailed Sonnet follow-on scopes and gates are in
 
 | Timestamp (UTC) | Agent | Work ID | Files/directories |
 |---|---|---|---|
+| 2026-07-28T18:37:31Z | CODEX | S3-01A | focused CI correction only: `collector/checks/host_load.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
+| 2026-07-28T18:37:31Z | CODEX | C2-03 | timing correction only: `.github/workflows/integration-test.yml`, this ledger |
 | 2026-07-28T18:00:46Z | CODEX | C2-03 | `.github/workflows/integration-test.yml`, this ledger |
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-28T17:42:13Z | CODEX | S2-02 | takeover of Sonnet's frozen exact claim: `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
@@ -462,6 +464,22 @@ Implementation commit: `8e96e8c`.
   checks remain open for the later claim the work queue already
   anticipates.
 
+#### S3-01A Codex Windows CI correction
+
+- **Timestamp:** 2026-07-28T18:37:31Z.
+- **Authority:** the user requested that Codex fix the latest failing CI,
+  transferring only the focused Windows portability correction from Sonnet's
+  REVIEW scope while preserving Sonnet's original implementation attribution.
+- **Status:** IN_PROGRESS.
+- **Scope:** exactly the focused S3-01A File Claims row above. Make
+  `host_load` type-safe when `os.getloadavg` is absent, ensure Linux-behavior
+  tests explicitly simulate Linux on non-Linux runners, and skip only genuine
+  POSIX-permission assertions where Windows ACL semantics cannot implement
+  `chmod(000)`. Preserve all production platform guards and Linux behavior.
+- **Exit:** full Windows/Python 3.14 and Ubuntu/Python 3.12 collector gates,
+  a separate implementation commit, and a pushed REVIEW handoff. S4/S5 files
+  remain frozen.
+
 ### A-S4-01A-1 — Sonnet 5 claim
 
 - **Timestamp:** 2026-07-26T15:05:00Z
@@ -655,6 +673,18 @@ Implementation commit: `d9bef65`.
 - **Review request:** independently inspect `278e49f..dc571f8` against the
   exact C2-03 claim. Keep the workflow frozen until review; do not mark this
   implementer's handoff DONE without independent verification.
+
+#### C2-03 timing correction
+
+- **Timestamp:** 2026-07-28T18:37:31Z.
+- **Status:** IN_PROGRESS by user request after GitHub run `30386693695`
+  reproduced a range-query race: the live probe/storage step passed, but the
+  immediately following API query used a second-truncated `end=now` and
+  intermittently excluded the newest sample.
+- **Scope:** `.github/workflows/integration-test.yml` and this ledger only.
+  Add a small contract-valid future margin and bounded retry to the
+  authenticated range assertion; preserve every previously reviewed probe,
+  redaction, authorization, and cleanup assertion.
 
 ### C1-02 — CI/CD checkpoint
 
