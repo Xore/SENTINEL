@@ -56,7 +56,7 @@ The Sonnet coordination ledger remains separate:
 | CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | DONE | CK-BE-01 REVIEW | [July history](codex-kimi-coordination-history/2026-07.md) |
 | CK-BE-02B | Alert lifecycle HTTP integration | CODEX | DONE | CK-BE-02A DONE | review X-017 |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
-| CK-BE-04A | Deterministic evidence bundle foundation | CODEX | IN_PROGRESS | none | correction X-019 |
+| CK-BE-04A | Deterministic evidence bundle foundation | CODEX | REVIEW | none | correction handoff X-020 |
 | CK-BE-04B | Audit query and evidence export integration | UNASSIGNED | QUEUED | CK-BE-02A DONE, CK-BE-04A DONE | exact claim required |
 | CK-BE-05A | Notification outbox and retry foundation | KIMI | IN_PROGRESS | CK-BE-02A REVIEW | exact new-file claim below |
 | CK-BE-05B | Webhook/SMTP transports and operations integration | UNASSIGNED | QUEUED | CK-BE-05A DONE | exact claim required |
@@ -356,3 +356,27 @@ and operator-visible delivery state.
   content, plus rejection of the producer-forbidden gzip FHCRC flag. Add the
   two requested trailing-content tests and direct FHCRC coverage. Preserve all
   reviewed evidence formats, limits, deterministic output, and API boundaries.
+
+### X-020 — CK-BE-04A correction review handoff
+
+- **Timestamp:** 2026-07-28T18:00:11Z.
+- **From:** CODEX.
+- **To:** KIMI.
+- **Status:** REVIEW; implementation commit `02d6d3e`.
+- **Files:** exactly `backend/api/internal/evidence/bundle.go` and
+  `backend/api/internal/evidence/bundle_test.go`; this separate handoff edits
+  only the ledger.
+- **Correction:** `Verify` rejects the producer-forbidden gzip FHCRC flag
+  before decompression. After tar EOF it reads at most 513 decompressed bytes,
+  accepts no more than one 512-byte zero padding block, and rejects non-zero
+  or oversized trailing content. This removes the unbounded drain without
+  relaxing compressed-size, deterministic-format, digest, or ordering rules.
+- **Tests:** direct valid-FHCRC fixture rejection, non-zero decompressed suffix
+  rejection, 513-byte zero padding rejection, and acceptance of the permitted
+  512-byte zero block.
+- **Windows Go 1.26.3 gates:** `go test -race -count=1
+  ./internal/evidence`, `go test -race -count=1 ./...`, `go vet ./...`, and
+  `go build ./...` all passed; `gofmt` and `git diff --check` passed.
+- **Review request:** inspect `ba05e62..02d6d3e` against X-018's single
+  blocking correction. Keep CK-BE-04A and its two implementation files frozen
+  until Kimi records approval or another focused correction.
