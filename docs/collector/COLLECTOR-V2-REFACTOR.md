@@ -93,7 +93,6 @@ collector/
 │   ├── net_wifi_linux.py        # iw link + iw scan; AP change detection — Linux only
 │   ├── net_wifi_windows.py      # netsh wlan show interfaces — Windows only
 │   ├── net_bcast.py             # Broadcast/multicast top-talker: scapy.AsyncSniffer; CAP_NET_RAW
-│   ├── net_wireguard.py         # WireGuard: subprocess wg show + parse
 │   └── ebpf/
 │       ├── __init__.py
 │       ├── flow_tracker.py      # eBPF flow tracking via bcc Python bindings — Linux only
@@ -217,7 +216,6 @@ async def run_scheduler(tasks: list[CheckTask]) -> None:
 | C9 | `net_arp_watch.py` | none | ✅ | — | 1 |
 | C10 | `net_modbus.py` | none | ✅ | — | 2 |
 | C11 | `net_bcast.py` | CAP_NET_RAW | ✅ | — | 2 |
-| C12 | `net_wireguard.py` | none (subprocess) | ✅ | — | 2 |
 | C13 | `ebpf/flow_tracker.py` | CAP_BPF + CAP_PERFMON | ✅ | — | 3 |
 | C14 | `os_health/linux.py` | none | ✅ | — | 1 |
 | C14w | `os_health/windows.py` | none | — | ✅ | 1 |
@@ -276,7 +274,6 @@ collector/
 │   ├── net_wifi_linux.py
 │   ├── net_wifi_windows.py
 │   ├── net_bcast.py
-│   ├── net_wireguard.py
 │   └── ebpf/
 │       ├── flow_tracker.py
 │       └── programs/
@@ -385,8 +382,6 @@ wifi_ap_changes_total{collector_id, site_id, interface}        counter
 bcast_top_talker_bytes_total{collector_id, site_id, iface, src_mac, src_ip, proto}  counter
 bcast_top_talker_pkts_total{collector_id, site_id, iface, src_mac, src_ip, proto}   counter
 bcast_segment_rate_pps{collector_id, site_id, iface}           gauge
-wg_peer_handshake_age_s{collector_id, site_id, peer}           gauge
-wg_peer_rx_bytes_total{collector_id, site_id, peer}            counter
 ebpf_flow_bytes_total{collector_id, site_id, src_ip, dst_ip, proto, port}  counter
 ```
 
@@ -515,7 +510,6 @@ build-collector:
 | C9 | ARP watch: `net_arp_watch.py` | 10 | |
 | C10 | Modbus passive: `net_modbus.py` (pymodbus) | 11 | |
 | C11 | Broadcast/multicast top-talker: `net_bcast.py` (scapy) | 12 | Research: RESEARCH-BCAST-MCAST.md |
-| C12 | WireGuard monitoring: `net_wireguard.py` | 12 | |
 | C13 | eBPF flow tracking: `ebpf/flow_tracker.py` (bcc) | 13–14 | Linux only; bcc via apt |
 | B1 | PyInstaller build pipeline + Dockerfile.collector-arm64 | 14 | |
 | B2 | CI: pytest + mypy + ruff + pyinstaller artifact upload | 14 | |

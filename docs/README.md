@@ -32,7 +32,6 @@ This index organizes `docs/` by purpose and tracks the status of every research 
 |---|---|
 | [`theory/probes/icmp-probe-design.md`](./theory/probes/icmp-probe-design.md) | Active ICMP probing design |
 | [`theory/probes/passive-vs-active-measurement.md`](./theory/probes/passive-vs-active-measurement.md) | Passive vs. active measurement trade-offs |
-| [`theory/probes/wireguard-health-monitoring.md`](./theory/probes/wireguard-health-monitoring.md) | WireGuard tunnel health checks |
 | [`theory/probes/snmp-sysuptime-regression-theory.md`](./theory/probes/snmp-sysuptime-regression-theory.md) | SNMP `sysUpTime` regression/reboot detection |
 | [`theory/probes/fault-tree-multihop-paths.md`](./theory/probes/fault-tree-multihop-paths.md) | Fault-tree modeling for multi-hop path failures |
 | [`theory/anomaly/rca-causal-inference.md`](./theory/anomaly/rca-causal-inference.md) | Root-cause analysis via causal inference |

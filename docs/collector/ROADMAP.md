@@ -170,13 +170,6 @@ bcast_top_talker_bytes_total, bcast_top_talker_pkts_total, bcast_segment_rate_pp
 
 ---
 
-## Phase C12 — WireGuard Monitoring (Week 12)
-
-### Deliverables
-- `checks/net_wireguard.py` — `subprocess(['wg', 'show', '--json'])` parse; handshake age + RX bytes
-
----
-
 ## Phase C13 — eBPF Flow Tracking (Weeks 13–14)
 
 ### Deliverables

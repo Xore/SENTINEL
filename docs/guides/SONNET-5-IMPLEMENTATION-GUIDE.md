@@ -78,7 +78,6 @@ Read the relevant files completely before changing code.
 | OT | both OT theory docs and SNMP uptime regression theory |
 | Transport | OTLP batch sizing and probe-to-backend transport theory |
 | Storage | embedded TSDB selection and high-cardinality storage theory |
-| WireGuard | WireGuard health monitoring theory |
 | Test/release | `08-testing-and-installation.md` |
 
 Do not blindly copy example code from design documents. Convert it into production code with validation, cancellation, timeouts, observability, migrations, and tests.
@@ -353,14 +352,13 @@ Apply a global configurable network semaphore (20 on Pi 3B), reuse HTTP sessions
 
 ## Phase 7 — Advanced Network and OT-Safe Checks
 
-**Goal:** Add MTR, ARP/DHCP segment health, broadcast/multicast, WireGuard, SNMP, and Modbus safely.
+**Goal:** Add MTR, ARP/DHCP segment health, broadcast/multicast, SNMP, and Modbus safely.
 
 1. Implement each check independently with an enable flag and explicit target allow-list.
 2. Follow the theory documents:
    - ARP: combine per-segment rate baseline with IP–MAC binding consistency.
    - DHCP: use message-type distribution and DECLINE/ACK ratio, not only lease percentage.
    - SNMP reboot: distinguish true reboot, TimeTicks rollover, and agent restart using multiple uptime sources where available.
-   - WireGuard: use handshake age, transfer deltas, routing/endpoint context, and tunnel state.
    - broadcast/multicast: use kernel filters, short bounded windows, and cardinality caps.
    - Modbus: passive discovery first; active reads only for designated OT-owner collectors; categorically refuse write function codes.
 3. Add ownership/lease coordination so only one collector actively polls a given OT device.
@@ -554,7 +552,6 @@ Implement deterministic rules for:
 - STP topology-change bursts;
 - new MAC on an OT VLAN;
 - confirmed PLC reboot;
-- WireGuard OT tunnel degradation.
 
 These bypass ML readiness but still require deduplication, maintenance suppression policy, evidence, and operator-visible rationale.
 

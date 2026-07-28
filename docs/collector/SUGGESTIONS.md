@@ -100,7 +100,6 @@ site-server/
 | Broadcast/multicast top-talker | ❌ | ✅ Planned | ✅ v2 new | C11 | `net_bcast.py` |
 | eBPF flow tracking | ❌ | ✅ Planned | ✅ v2 new | C13 | `ebpf/flow_tracker.py` |
 | Modbus passive monitoring | ❌ | ✅ Planned | ✅ v2 new | C10 | `net_modbus.py` |
-| WireGuard peer monitoring | ❌ | ✅ Planned | ✅ v2 new | C12 | `net_wireguard.py` |
 | ARP watch | ✅ | ✅ Planned | Covered | C9 | `net_arp_watch.py` |
 | Collector health score | ❌ | ✅ Planned | ✅ v2 new | P5 | `health/score.py` |
 

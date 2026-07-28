@@ -81,8 +81,9 @@ diagnostic telemetry: it prevents silent loss without the duplicate-suppression 
 of QoS 2. QoS 0 (fire-and-forget) is not acceptable for security-relevant event records.
 
 However, MQTT requires an intermediary broker (e.g., Mosquitto or EMQX), which adds an
-operational component. For this project's architecture — where the backend is co-located
-or reachable over a stable WireGuard tunnel — OTLP/gRPC is simpler end-to-end.
+operational component. For this project's architecture — where every probe has
+an ordinary IP route to its configured site backend — OTLP/gRPC is simpler
+end-to-end.
 
 **Design requirement (R-T3):** If OTLP/gRPC cannot traverse the network path, use
 MQTT 5.0 + TLS 1.3 with QoS 1, client certificates, and a locally pinned CA. Do not

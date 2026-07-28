@@ -87,7 +87,7 @@ This threshold value is what gets hard-coded into `collector/net_arp_watch.go` �
 |---|---|---|
 | Home LAN (primary) | Low (5–15 hosts, 10–30 ARP/min) | Game server start, backup jobs |
 | Raspberry Pi cluster | Very low (static IPs, 3–5 ARP/min) | None expected |
-| VPS (WireGuard overlay) | Near zero (tunnel, not broadcast domain) | N/A — WireGuard doesn't use ARP |
+| Routed VPS segment | Near zero (not a shared broadcast domain) | N/A — observe the local L2 segment instead |
 | OT segment (if present) | Very low (static addressing, < 5 ARP/min) | DHCP lease renewal only |
 
 Document actual measured baselines per segment after 7-day collection.

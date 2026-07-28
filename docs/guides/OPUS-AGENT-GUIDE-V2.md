@@ -111,7 +111,6 @@ collector/
 │   ├── net_wifi_linux.py     [CREATE]  iw link + iw scan (Linux)
 │   ├── net_wifi_windows.py   [CREATE]  netsh wlan show (Windows)
 │   ├── net_bcast.py          [CREATE]  Broadcast/multicast top-talker (scapy)
-│   ├── net_wireguard.py      [CREATE]  wg show + parse
 │   └── ebpf/
 │       ├── __init__.py       [CREATE]
 │       ├── flow_tracker.py   [CREATE]  bcc eBPF flow tracking
@@ -317,7 +316,6 @@ Implement collector checks and their corresponding hub API endpoints together, i
 | 10 | `net_arp_watch.py` — `/proc/net/arp` change detection | `GET /api/v1/nodes/{id}/arp-changes` |
 | 11 | `net_modbus.py` — pymodbus TCP passive | `GET /api/v1/nodes/{id}/modbus` |
 | 12 | `net_bcast.py` — scapy AsyncSniffer broadcast/multicast | `GET /api/v1/nodes/{id}/broadcast-talkers` |
-| 12 | `net_wireguard.py` — `wg show` + parse | `GET /api/v1/nodes/{id}/wireguard` |
 
 **Integration test per check:** Metric visible in VictoriaMetrics **and** corresponding API endpoint returns non-empty JSON before moving to the next check.
 

@@ -124,7 +124,7 @@ A **confounder** is a variable that causally affects both the observed symptom a
 |---|---|---|
 | High RTT → high loss | Congestion (common cause of both) | Both symptoms are effects, not cause-effect pair |
 | SNMP timeout → device down | CPU overload on the collector itself | Collector is slow, not the target |
-| WireGuard drop → WAN failure | Clock skew (NTP failure causes WG handshake rejection) | NTP is the true root cause |
+| DNS failures → DNS server outage | Clock skew (DNSSEC validation rejects signatures) | NTP is the true root cause |
 | Multiple collectors report loss → network attack | Shared upstream link failure | Infrastructure, not attack |
 | DNS latency → app slowdown | Target DNS server under load from unrelated cause | Not the monitored network |
 
@@ -184,12 +184,11 @@ G.add_edge("WAN_CONGESTION", "SYM_WAN_UNREACHABLE", {"p": 0.40})
 ### 5b. Add NTP_FAILURE as a cause node
 
 ```python
-# NTP failure causes WireGuard handshake rejection (clock skew > 180s)
+# NTP failure can cause DNSSEC validation failures
 G.add_node("NTP_FAILURE", node_type="cause",
-           label="NTP clock skew — WireGuard handshake rejected",
+           label="NTP clock skew — DNSSEC validation rejected",
            prior=0.03,
            remediation="Check NTP sync: 'timedatectl status'. Restart systemd-timesyncd.")
-G.add_edge("NTP_FAILURE", "SYM_WG_STALE",  {"p": 0.70})
 G.add_edge("NTP_FAILURE", "SYM_DNS_LATENCY", {"p": 0.20})  # DNSSEC validation fails under clock skew
 ```
 

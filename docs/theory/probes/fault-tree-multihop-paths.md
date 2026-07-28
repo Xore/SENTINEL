@@ -26,14 +26,14 @@ The standard quantitative FTA procedure (Ahmed et al., 2016, §3.1.2) is: (1) co
 P(\text{top event}) = P\left(\bigcup_{i \in I} A_i\right)
 \]
 
-where \(A_i\) are the minimal cut set events. For a simple series path (every hop must be up for end-to-end success), each hop failure is itself a minimal cut set of size 1 (single point of failure). For a path with a redundant segment (e.g., a WireGuard tunnel with a fallback route), the cut set for that segment requires *both* the primary and fallback to fail simultaneously — directly mirroring the project's WireGuard health-monitoring design already documented in `docs/wireguard-health-monitoring.md`.
+where \(A_i\) are the minimal cut set events. For a simple series path (every hop must be up for end-to-end success), each hop failure is itself a minimal cut set of size 1 (single point of failure). For a path with redundant routed uplinks, the cut set for that segment requires *both* the primary and fallback to fail simultaneously.
 
 ### 2.2 Mapping the Project's Actual Path Segments to Fault-Tree Gates
 
 | Path segment | Gate type | Rationale |
 |---|---|---|
 | Client NIC → access point/switch → router → WAN uplink | AND (series) | Each is a genuine single point of failure per the current topology; any one hop down fails the whole path |
-| WireGuard tunnel primary vs. fallback route (if configured) | OR (parallel/redundant) | Path only fails if both fail |
+| Primary vs. fallback routed uplink (if configured) | OR (parallel/redundant) | Path only fails if both fail |
 | DNS resolution vs. direct-IP fallback (if the collector supports both) | OR | Analogous redundancy |
 | Target-side reachability (final hop to the monitored device/service) | AND (series, terminal) | No redundancy modeled at the target end |
 
@@ -41,7 +41,7 @@ This table should be treated as a starting taxonomy, not a final answer — it n
 
 ### 2.3 Dynamic Fault Trees for Sequence-Dependent Failures
 
-Static FTA (AND/OR gates only) cannot express failures where the *order* of events matters — e.g., "the fallback route only fails if the primary already failed AND THEN the fallback subsequently also fails," as opposed to both failing independently. This requires **Dynamic Fault Trees (DFTs)**, which add gates such as Priority-AND (PAND) and Sequence-Enforcing gates specifically to capture such ordered dependencies (Ahmed et al., 2016, §3; MDPI 2024, "Dynamic Fault Tree Generation and Quantitative Analysis... for Embedded Systems"). Given that a VPN tunnel failover is inherently sequence-dependent (primary must fail before fallback engages), the project's WireGuard/fallback-route fault tree should be modeled as a **dynamic**, not static, fault tree from the outset, using a PAND gate for the primary-then-fallback relationship, rather than approximating it with a plain OR gate that would understate the actual failure probability.
+Static FTA (AND/OR gates only) cannot express failures where the *order* of events matters — e.g., "the fallback route only fails if the primary already failed AND THEN the fallback subsequently also fails," as opposed to both failing independently. This requires **Dynamic Fault Trees (DFTs)**, which add gates such as Priority-AND (PAND) and Sequence-Enforcing gates specifically to capture such ordered dependencies (Ahmed et al., 2016, §3; MDPI 2024, "Dynamic Fault Tree Generation and Quantitative Analysis... for Embedded Systems"). When routed-uplink failover is sequence-dependent (primary must fail before fallback engages), model it as a **dynamic**, not static, fault tree using a PAND gate for the primary-then-fallback relationship rather than approximating it with a plain OR gate.
 
 ### 2.4 Quantification Methods
 
@@ -50,13 +50,13 @@ Once minimal cut sets are identified, three standard computation approaches exis
 2. **Markov-chain-based** — needed once repair/recovery is modeled (a hop that fails and later self-heals, e.g. DHCP lease renewal or BGP reconvergence), which is directly relevant since most of this project's failures are transient rather than permanent.
 3. **Monte Carlo simulation** — generates random failure/repair times per the assigned distributions and simulates the system, recording empirical availability; recommended when gate logic is too complex (e.g. many DFT gates) for closed-form or Markov solutions to remain tractable (Durga Rao et al., cited in the Twente survey).
 
-Given the presence of self-healing/transient failures (DHCP, BGP, WireGuard handshake retry) throughout this project's actual failure modes, **Markov-chain-based quantification is the more appropriate starting method** over pure combinatorial FTA, consistent with how `docs/segment-health-arp-dhcp-theory.md` already treats DHCP/ARP health as time-varying rather than a fixed pass/fail state.
+Given the presence of self-healing/transient failures (DHCP renewal, BGP convergence, and routed-uplink failover) throughout this project's actual failure modes, **Markov-chain-based quantification is the more appropriate starting method** over pure combinatorial FTA, consistent with how `docs/segment-health-arp-dhcp-theory.md` already treats DHCP/ARP health as time-varying rather than a fixed pass/fail state.
 
 ---
 
 ## Part 3 — Integration With the Existing RCA Pipeline
 
-The fault tree's minimal cut sets are directly usable as **candidate hypotheses** for the causal-inference/RCA pipeline (`docs/rca-causal-inference.md`): when an end-to-end check fails, the RCA engine should evaluate each minimal cut set against the currently observed per-hop telemetry (mtr hop RTT/loss, WireGuard handshake age, DHCP lease state) and rank candidate root causes by which cut set is most consistent with the observed per-hop evidence, rather than the RCA pipeline needing to independently rediscover the path's failure structure from scratch on every incident.
+The fault tree's minimal cut sets are directly usable as **candidate hypotheses** for the causal-inference/RCA pipeline (`docs/rca-causal-inference.md`): when an end-to-end check fails, the RCA engine should evaluate each minimal cut set against the currently observed per-hop telemetry (MTR hop RTT/loss, interface/link state, and DHCP lease state) and rank candidate root causes by which cut set is most consistent with the observed per-hop evidence, rather than the RCA pipeline needing to independently rediscover the path's failure structure from scratch on every incident.
 
 ---
 
@@ -65,7 +65,7 @@ The fault tree's minimal cut sets are directly usable as **candidate hypotheses*
 | Item | File | Status |
 |---|---|---|
 | Enumerate the project's actual path topology and map segments to AND/OR/PAND gates (§2.2) | new design doc, cross-referencing `docs/07-network-map-and-monitoring-roadmap.md` | Add when building |
-| Model the WireGuard primary/fallback relationship as a dynamic (PAND) fault tree, not static OR | `docs/wireguard-health-monitoring.md` cross-reference | Add when building |
+| Model sequence-dependent routed-uplink failover as a dynamic (PAND) fault tree, not static OR | network-path topology contract | Add when building |
 | Choose Markov-chain quantification over pure combinatorial FTA given transient/self-healing failure modes | RCA pipeline design | Add when building |
 | Feed minimal cut sets into the RCA pipeline as ranked candidate hypotheses | `docs/rca-causal-inference.md` pipeline | Cross-check on implementation |
 

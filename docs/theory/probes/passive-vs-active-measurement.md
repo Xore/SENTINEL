@@ -55,7 +55,7 @@ From Sundberg et al. 2023 (ePPing paper): "Active monitoring is unable to direct
 | Target Type | Use Active ICMP | Use Passive eBPF | Reason |
 |---|---|---|---|
 | Default gateway | **Yes** | **Yes** | Cross-validate; detect ICMP rate limiting |
-| WireGuard peer | **Yes** (ICMP through tunnel) | **Yes** (if WG traffic seen) | Tunnel RTT = ICMP; eBPF sees post-decrypt |
+| Site backend | **Yes** | **Yes** (when on-path) | Validate the required direct route and compare active RTT with passive flow telemetry |
 | DNS server | **Yes** | Optional | DNS is UDP, eBPF sees TCP fallback only |
 | Remote WAN target | **Yes** | No | Collector rarely on WAN path |
 | LAN devices (IoT) | **Yes** | No | No meaningful TCP flows |

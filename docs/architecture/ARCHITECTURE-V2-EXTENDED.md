@@ -53,6 +53,12 @@ This document designs the architecture extensions that address each scenario. Ea
 
 **Design principle:** Each site is a fully autonomous, fully functional SENTINEL v2 instance. The global tier is **optional** and **additive** — a site works completely without it. The global tier adds correlation and a unified dashboard; it does not add a dependency that breaks local operation if it goes offline.
 
+**Probe routing invariant:** Every deployed probe/collector has an ordinary IP
+route to its configured site backend. SENTINEL does not provision, operate,
+inspect, or depend on an overlay tunnel. Backend or network outages are still
+handled by bounded local buffering and idempotent replay; routability is a
+deployment-topology requirement, not an availability guarantee. See ADR 0011.
+
 Academic basis: This mirrors the **hierarchical federation** pattern from the B5G Federated Network Intelligence Orchestration paper (Sciopen 2024) [web:83], which proved that a hierarchy of local → global intelligence orchestrators enables real-time anomaly detection without centralising raw data, and maintains local autonomy when the global tier is unreachable.
 
 ### 2.2 Federation Agent
@@ -399,7 +405,6 @@ Beyond the standard anomaly scoring, OT sites get additional rule-based detectio
 | STP topology change burst | `dot1dStpTopChanges` rate > 3/min (Phase 1 SNMP) | SR 7.1: DoS protection |
 | New MAC address on OT VLAN | ARP cache entry for unregistered OUI | SR 1.1: Human user identification |
 | PLC reboot (sysUpTime regression) | Phase 1 SNMP sysUpTime drops | SR 7.6: Network and security configuration settings |
-| WireGuard tunnel drop on OT VPN | Handshake age > 3 min for OT-segment tunnel | SR 3.3: Security functionality verification |
 
 These rules fire with confidence=1.0 (certain) and bypass the confidence gating — they always alert via all channels, regardless of the ML model state (`ACCUMULATING`, `ACTIVE`, etc.).
 

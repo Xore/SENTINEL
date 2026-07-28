@@ -27,8 +27,9 @@ For the probe's expected rate of ≤ 100 metrics/s, this means:
 - Gorilla-compressed: ~154 B/s
 - Over a 30-second OTLP batch: 4.6 KB → ~450 B on the wire
 
-This is directly relevant to the wireless transport scenario (probe on Wi-Fi, sending to
-backend over WireGuard tunnel where every byte increases jitter).
+This is directly relevant to the wireless transport scenario (a probe on
+Wi-Fi sending to its directly routed site backend, where every byte can
+increase contention and jitter).
 
 ---
 

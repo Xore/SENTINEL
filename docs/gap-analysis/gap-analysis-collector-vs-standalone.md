@@ -39,7 +39,6 @@ no Go binary, and no SQLite on the collector node.
 | **C9** | ARP watch: `/proc/net/arp` polling, new-entry detection | 🔲 Pending |
 | **C10** | Modbus TCP passive monitoring (`pymodbus`, Linux only) | 🔲 Pending |
 | **C11** | Broadcast/multicast top-talker: `scapy.AsyncSniffer`, 30 s window, top-N=10 | 🔲 Pending — research gate (see below) |
-| **C12** | WireGuard peer health: `wg show --json`, handshake age + RX bytes | 🔲 Pending |
 | **C13** | eBPF flow tracking: `bcc` Python bindings, `CAP_BPF + CAP_PERFMON` (Linux 5.8+) | 🔲 Pending — research gate (see below) |
 | **B1/B2** | PyInstaller build pipeline + GitHub Actions CI | 🔲 Pending |
 
@@ -63,7 +62,6 @@ no Go binary, and no SQLite on the collector node.
 | ARP | `arp_new_entries_total`, `arp_table_size` |
 | Modbus | `modbus_coil_value{address}`, `modbus_register_value{address}` |
 | Bcast/mcast | `bcast_top_talker_bytes_total`, `bcast_top_talker_pkts_total`, `bcast_segment_rate_pps` |
-| WireGuard | `wg_peer_last_handshake_seconds{peer}`, `wg_peer_rx_bytes_total{peer}` |
 | eBPF flows | `ebpf_flow_bytes_total{src,dst,proto}`, `ebpf_flow_rtt_ms{src,dst}` |
 | Health | `collector_health_score` (0.0–1.0) |
 

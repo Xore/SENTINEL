@@ -60,7 +60,6 @@ The current source layout also proves that old `[CREATE]` annotations in
 | ADV-02 | ARP rate/binding anomaly detection | collector/analyse | 7 | Theory only | NOT STARTED | Segment-baseline/spoof fixtures |
 | ADV-03 | DHCP distribution/starvation detection | collector/analyse | 7 | Theory only | NOT STARTED | Packet fixtures and baselines |
 | ADV-04 | Broadcast/multicast top talkers | collector | 7 | Config only | NOT STARTED | Filter/cardinality/resource tests |
-| ADV-05 | WireGuard health | collector/analyse | 7 | Theory only | NOT STARTED | Tunnel failure scenarios |
 | OT-01 | SNMP identity, health, and reboot classification | collector/analyse | 7 | Theory only | NOT STARTED | Rollover/agent-restart/reboot fixtures |
 | OT-02 | Passive-first Modbus and read-only owned polling | collector | 7 | Theory only | NOT STARTED | Simulator proves writes impossible |
 | OT-03 | Single OT-owner lease per device | hub/collector | 7 | Design only | NOT STARTED | Multi-collector contention test |

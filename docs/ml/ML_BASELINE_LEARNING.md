@@ -10,7 +10,7 @@
 
 ## 1. Problem Statement
 
-The analyseLaptop v2 system collects multivariate time-series data from collectors via OTLP/gRPC: RTT, packet loss %, interface counters, WireGuard handshake ages, SNMP OIDs, Modbus register values, OS health metrics, and WiFi frame counters. These are stored in **VictoriaMetrics** (time-series) and **PostgreSQL** (events, anomalies, RCA results). The `backend/analyse/` service applies **static thresholds** (CUSUM + EWMA, Phase 3) and a **finite-state MDP** (Phase 5) to detect anomalies.
+The analyseLaptop v2 system collects multivariate time-series data from collectors via OTLP/gRPC: RTT, packet loss %, interface counters, SNMP OIDs, Modbus register values, OS health metrics, and WiFi frame counters. These are stored in **VictoriaMetrics** (time-series) and **PostgreSQL** (events, anomalies, RCA results). The `backend/analyse/` service applies **static thresholds** (CUSUM + EWMA, Phase 3) and a **finite-state MDP** (Phase 5) to detect anomalies.
 
 **The gap:** Static thresholds and fixed control limits do not adapt to:
 - Diurnal and weekly traffic cycles (office hours vs. nights)
@@ -153,7 +153,7 @@ Raw metrics are queried from VictoriaMetrics via MetricsQL HTTP API inside `back
 
 3. **Cyclical time features:** Append `sin(2π·h/24)`, `cos(2π·h/24)`, `sin(2π·d/7)`, `cos(2π·d/7)` as additional input dimensions. This allows the model to learn that RTT at 3:00 AM is legitimately different from RTT at 14:00 on a Tuesday. Standard cyclical time encoding (Brownlee, 2017; used across network ML literature).
 
-4. **Windowing:** Sliding windows of length W=128 (default), stride S=1 for training (stride=W for inference). At 30s resolution, W=128 is 64 minutes — sufficient to capture temporal dependencies like a WireGuard tunnel slowly losing keepalive before dropping.
+4. **Windowing:** Sliding windows of length W=128 (default), stride S=1 for training (stride=W for inference). At 30s resolution, W=128 is 64 minutes — sufficient to capture temporal dependencies such as latency and loss gradually degrading before an outage.
 
 5. **Data contamination filter:** Before training, filter out windows where Tier 1 (CUSUM/EWMA) had already flagged an anomaly in the PostgreSQL `anomalies` table. This addresses the **data contamination problem** (Khoury et al., 2024, arXiv:2407.08838): if attack-period data accidentally enters the training set, the model learns anomalies as normal. By using Tier 1 flags from PostgreSQL as a contamination mask, training data is kept clean without requiring labels.
 
@@ -163,7 +163,6 @@ Raw metrics are queried from VictoriaMetrics via MetricsQL HTTP API inside `back
 |---|---|---|
 | `network_latency` | RTT p50, p95, p99; loss % per target | 4–8 |
 | `network_throughput` | RX bytes/s, TX bytes/s, errors/s, drops/s per interface | 4–12 |
-| `wireguard` | Handshake age, RX/TX delta per tunnel | 2–6 |
 | `os_health` | CPU %, memory %, disk % per path, load1 | 4–8 |
 | `wan` | Public IP change flag, WAN latency CF, WAN latency Google | 3 |
 | `wifi_rf` | Retransmission rate %, beacon count/s, client count, channel utilisation | 4 |
