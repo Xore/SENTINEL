@@ -68,11 +68,11 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Codex takeover below |
-| S3-01A | 3 | Linux host-health new-file foundation | CODEX | IN_PROGRESS | S2-02 REVIEW | focused CI correction below |
+| S3-01A | 3 | Linux host-health new-file foundation | CODEX | REVIEW | S2-02 REVIEW | correction handoff below |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
-| C2-03 | 2 | Live probe metric workflow assertion | CODEX | IN_PROGRESS | S2-02 REVIEW | timing correction below |
+| C2-03 | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 REVIEW | correction handoff below |
 
 Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
 [July 2026 history](agent-coordination-history/2026-07.md).
@@ -480,6 +480,28 @@ Implementation commit: `8e96e8c`.
   a separate implementation commit, and a pushed REVIEW handoff. S4/S5 files
   remain frozen.
 
+##### S3-01A correction handoff
+
+- **Timestamp:** 2026-07-28T18:44:22Z.
+- **Status:** REVIEW; implementation commit `fec75f1`.
+- **Files:** exactly the seven focused S3 files in the correction claim.
+  `host_load` now obtains the POSIX-only callable through a guarded dynamic
+  lookup that is safe for Windows typing and runtime. Linux-behavior tests
+  explicitly select the Linux code path on every runner; only five real
+  `chmod(000)` assertions skip on Windows, where chmod does not reproduce
+  POSIX denial.
+- **Windows/Python 3.14.5:** Ruff passed; mypy passed all 55 files; Pylint
+  rated `10.00/10`; pytest passed `445 passed, 6 skipped` (five documented
+  POSIX-permission cases plus the existing POSIX signal case).
+- **Ubuntu 24.04/Python 3.12.3 exact SHA on `.33`:** Ruff, mypy, and Pylint
+  passed; pytest passed `450 passed, 1 skipped`.
+- **GitHub:** collector matrix run `30388589513` passed both
+  Windows/Python 3.14 and Ubuntu/Python 3.12 using upgraded Actions v7.
+  Standalone Pylint run `30388588600` and CodeQL run `30388589523` passed.
+- **Review request:** independently inspect the focused S3 portion of
+  `21502d9..fec75f1`. Preserve Sonnet's original implementation attribution
+  and keep S3/S4/S5 files frozen pending review.
+
 ### A-S4-01A-1 — Sonnet 5 claim
 
 - **Timestamp:** 2026-07-26T15:05:00Z
@@ -685,6 +707,21 @@ Implementation commit: `d9bef65`.
   Add a small contract-valid future margin and bounded retry to the
   authenticated range assertion; preserve every previously reviewed probe,
   redaction, authorization, and cleanup assertion.
+
+##### C2-03 timing correction handoff
+
+- **Timestamp:** 2026-07-28T18:44:22Z.
+- **Status:** REVIEW; implementation commit `fec75f1`.
+- **Correction:** range queries use a contract-valid 30-second future margin
+  so second truncation cannot exclude the newest sample, then poll both
+  heartbeat and HTTP histogram-count responses for at most 20 seconds before
+  applying the existing exact identity, target, state, redaction, and
+  authorization assertions.
+- **Validation:** actionlint passed. GitHub phase-1 integration run
+  `30388588665` passed every production-path, API, isolation, diagnostics, and
+  cleanup step with Actions v7; CodeQL run `30388589523` passed.
+- **Review request:** independently inspect the workflow portion of
+  `21502d9..fec75f1`; keep C2-03 in REVIEW until approved.
 
 ### C1-02 — CI/CD checkpoint
 
