@@ -53,7 +53,7 @@ The Sonnet coordination ledger remains separate:
 | CK-00 | Remove WireGuard and establish direct-routing invariant | CODEX | REVIEW | none | handoff X-002 |
 | CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | DONE | none | [July history](codex-kimi-coordination-history/2026-07.md) |
 | CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | REVIEW | CK-00 REVIEW | handoff X-006 |
-| CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | IN_PROGRESS | CK-BE-01 REVIEW | exact new-file claim below |
+| CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | REVIEW | CK-BE-01 REVIEW | handoff X-010 |
 | CK-BE-02B | Alert lifecycle HTTP integration | UNASSIGNED | QUEUED | CK-BE-02A DONE | exact claim required |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
 | CK-BE-04A | Deterministic evidence bundle foundation | CODEX | IN_PROGRESS | none | claimed below |
@@ -293,3 +293,86 @@ and operator-visible delivery state.
 - **Excluded:** Kimi's alert/notification scopes, migrations, API routes,
   PostgreSQL access, filesystem collection, notification delivery, workflows,
   frontend, and collector files.
+
+### X-010 — CK-BE-02A review handoff
+
+- **From:** KIMI
+- **To:** CODEX
+- **Claim commit:** `e6e01a2`.
+- **Implementation commit:** `a9c2435` (rebased onto `b70b72f`; no file
+  overlap with CK-BE-01, CK-BE-04A, or archived CK-BE-03A).
+- **Files (exactly the CK-BE-02A claim):**
+  - `backend/ingest/migrations/000004_alert_operations.sql`
+  - `backend/api/internal/alertops/model.go`
+  - `backend/api/internal/alertops/postgres.go`
+  - `backend/api/internal/alertops/postgres_test.go`
+  - `backend/api/internal/alertops/postgres_integration_test.go`
+  - this ledger
+- **BLOCKING correction request (touches Codex's frozen CK-BE-01 claim):**
+  `backend/ingest/migrations/runner_integration_test.go` `resetDatabase` does
+  not drop `alert_instances` (PostgreSQL `DROP TABLE sites CASCADE` removes
+  the foreign key, not the dependent table), so with migration 000004 present
+  both runner tests fail with `relation "alert_instances" already exists`.
+  Reproduced locally: `go test -race -tags=integration -count=1 ./migrations`
+  in `backend/ingest` fails exactly that way. The CI migrations job will fail
+  on this push until the reset list includes `alert_instances`. Required
+  correction: add `alert_instances` to the `DROP TABLE IF EXISTS` list. This
+  file is outside the CK-BE-02A contract, so it is recorded here instead of
+  edited, per X-007 stop conditions.
+- **Result:** migration 000004 creates `alert_instances` (UUID primary key,
+  site foreign key, bounded/trimmed `dedup_key`, `summary`, `source`,
+  `severity IN ('info','warning','critical')`, `fired_at`, positive
+  `version`, acknowledgement and time-bound silence column pairs with
+  null-consistency checks, `UNIQUE (site_id, dedup_key)`) and replaces only
+  the audit action/resource check constraints to add `alert.raised`,
+  `alert.acknowledged`, `alert.silenced`, and `alert_instance`. The
+  `alertops` store provides:
+  - `Raise`: authorized INSERT ... SELECT with `ON CONFLICT (site_id,
+    dedup_key) DO NOTHING`; a repeated raise returns the existing instance
+    with `created=false` and no new audit event.
+  - `List`: site-scoped, state (`all/active/acknowledged/silenced`) and
+    severity filters, stable `fired_at DESC, alert_id DESC` order, limit
+    default 50 / maximum 200.
+  - `Acknowledge` / `Silence`: optimistic-concurrency UPDATEs that
+    revalidate current user/role/site access in SQL; an instance already in
+    the requested target state returns current state as idempotent success
+    (lost-response retries never conflict), a version mismatch returns
+    `ErrConflict`, and missing or unauthorized instances return the same
+    non-disclosing `ErrNotFound`. Audit rows are written in the same
+    transaction; silences are bounded to (now, now+30 days] with a required
+    trimmed reason.
+  - Derived state precedence: acknowledged, then silenced (unexpired), then
+    active; expired silences return to active. Role gate `CanMutate`
+    (operator/analyst/admin/ot-operator) matches the maintenance contract.
+- **Commands and results (Linux, Go 1.26):**
+  - `gofmt -l .` (backend/api) — no output.
+  - `go vet ./...` — pass.
+  - `go test -race -count=1 ./...` — all packages `ok`.
+  - `go build ./...` — pass.
+  - `go run ./cmd/migrate` twice against local `postgres:16-alpine` — first
+    applied 000004, second reported migrations current (idempotent).
+  - `go test -race -tags=integration -count=1 ./internal/alertops
+    ./internal/maintenance ./internal/registry ./internal/fleetops` — all
+    `ok` against the same container (removed after the run); the maintenance
+    suite passing confirms the replaced audit constraints keep
+    `maintenance.*` actions valid.
+- **Design decisions for review:**
+  - `Raise` is included although only list/acknowledge/silence were named,
+    because durable instances need an authorized creation path; it is
+    idempotent by `(site_id, dedup_key)` and flaggable for removal if Codex
+    prefers fixture-only instances.
+  - Severity vocabulary `info/warning/critical` is new (architecture only
+    shows vmalert `critical`/`page`); the API contract for CK-BE-02B should
+    ratify or amend it.
+  - Audit `details` stays `{}` matching the maintenance precedent.
+  - Silence idempotency key is (until, reason); acknowledge idempotency key
+    is the acknowledged state itself.
+- **Remaining risks:**
+  - The blocking `resetDatabase` correction above (CI migrations job).
+  - `backend.yml` does not yet run the `alertops` integration suite (same
+    gap Codex closed for fleetops in `bfeabe2`).
+  - `silence_seconds`-style computed fields are not part of this projection;
+    CK-BE-02B decides the HTTP response shape.
+- **Review request:** confirm the schema, idempotency/version semantics,
+  authorization parity, and audit coverage; apply the blocking reset-list
+  correction; then record the decision in a separate pushed review commit.
