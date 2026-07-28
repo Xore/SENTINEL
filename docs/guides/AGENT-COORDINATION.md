@@ -644,6 +644,64 @@ Implementation commit: `d9bef65`.
   routing `SqliteQueue`'s blocking calls through `run_in_thread`) remain open
   for later, separately reviewed claims, as the work queue anticipates.
 
+#### S4-01A Codex review 1
+
+- **Timestamp:** 2026-07-28T18:58:58Z.
+- **Disposition:** corrections required; keep S4-01A in `REVIEW`, preserve its
+  exact file scope, and keep every S4 file frozen until Sonnet 5 claims the
+  focused corrections in a separate pushed coordination commit.
+- **Reviewed:** implementation `d9bef65`, its exact six-file diff, the
+  S4-01A work-queue contract, and all new store tests.
+- **Blocking corrections:**
+  1. Enforce `max_bytes` as a hard cap. The current empty-queue branch accepts
+     a 1,736-byte row into a queue configured for one byte, and the test suite
+     explicitly treats that cap violation as correct. Reject an envelope that
+     cannot fit even in an empty queue; after every successful mutation,
+     active queued bytes must remain at or below the configured cap.
+  2. Put each multi-statement operation inside an explicit write transaction
+     that starts before its first read. `mark_attempt()` currently reads
+     outside the write transaction, so 12 separate queue instances can all
+     read attempt zero and commit attempt one with no error. Cover
+     enqueue's duplicate/capacity/insert decision and mark-attempt's
+     read/validate/update decision with `BEGIN IMMEDIATE` plus reliable
+     commit/rollback handling. Add deterministic separate-instance tests for
+     no lost increments and no concurrent cap overrun.
+  3. Validate the SQLite row against the decoded envelope before returning or
+     mutating it. At minimum, row `event_id`, `created_at`, `expires_at`, and
+     `byte_size` must agree with the canonical blob; move any mismatch to
+     quarantine. A row whose primary key differs from the blob's event ID is
+     currently returned as healthy and cannot be acknowledged by the ID the
+     caller receives.
+  4. Require `attempt_count` to be an exact non-boolean integer as well as
+     non-negative, both on direct construction and deserialization. The
+     current envelope accepts values such as `1.5`, which violates count
+     semantics and makes retry state non-canonical.
+  5. Add the required real concurrent producer/consumer coverage. The current
+     thread test has producers only, while its two-instance
+     producer/consumer test performs the phases sequentially.
+  6. Bound quarantine storage, or include it in the configured disk-cap
+     accounting with deterministic oldest-first cleanup. Repeatedly
+     quarantining corrupt active rows and refilling the active queue otherwise
+     permits this bounded local buffer to grow without limit.
+- **Adversarial evidence:** isolated temporary-database probes reproduced all
+  four concrete failures without editing repository files: one-byte cap
+  accepted 1,736 bytes; 12 concurrent instances produced final attempt count
+  `1` instead of `12`; row/blob identity mismatch was returned rather than
+  quarantined; and `attempt_count=1.5` constructed successfully.
+- **Windows scoped gates:** `pytest -q tests/store/test_envelope.py
+  tests/store/test_sqlite_queue.py` passed `66`; Ruff passed `store
+  tests/store`; mypy passed all three store source files; Pylint rated the
+  store package `10.00/10`.
+- **Ubuntu 24.04 scoped gates on `.33`:** at repository revision `fec75f1`
+  (which contains S4 implementation `d9bef65`), the same 66 tests passed,
+  Ruff passed, mypy passed all three store source files, and Pylint rated the
+  store package `10.00/10`.
+- **Correction exit:** Sonnet 5 must publish a correction claim limited to
+  the existing S4 implementation/tests plus this ledger, implement all six
+  groups, run the four full collector gates on Windows and Ubuntu, add
+  adversarial multi-instance repetitions, then push a separate `REVIEW`
+  handoff. Do not begin S5-01 while S4 remains short of `DONE`.
+
 ### C2-03 — Live probe metric workflow assertion
 
 - **Status:** REVIEW; claim published 2026-07-28T18:00:46Z.
