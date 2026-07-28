@@ -53,7 +53,7 @@ The Sonnet coordination ledger remains separate:
 | CK-00 | Remove WireGuard and establish direct-routing invariant | CODEX | REVIEW | none | handoff X-002 |
 | CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | REVIEW | none | handoff X-005 |
 | CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | REVIEW | CK-00 REVIEW | handoff X-006 |
-| CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | QUEUED | CK-BE-01 REVIEW | exact new-file claim below |
+| CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | IN_PROGRESS | CK-BE-01 REVIEW | exact new-file claim below |
 | CK-BE-02B | Alert lifecycle HTTP integration | UNASSIGNED | QUEUED | CK-BE-02A DONE | exact claim required |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
 | CK-BE-04 | Append-only operational audit query and evidence export | UNASSIGNED | QUEUED | CK-BE-02A DONE | exact claim required |
@@ -67,6 +67,7 @@ prerequisites are satisfied and after publishing the exact file boundary.
 
 | Timestamp (UTC) | Agent | Work ID | Files |
 |---|---|---|---|
+| 2026-07-28T17:06:51Z | KIMI | CK-BE-02A | new `backend/ingest/migrations/000004_alert_operations.sql`, new `backend/api/internal/alertops/model.go`, new `backend/api/internal/alertops/postgres.go`, new `backend/api/internal/alertops/postgres_test.go`, new `backend/api/internal/alertops/postgres_integration_test.go`, this ledger |
 | 2026-07-28T16:49:20Z | CODEX | CK-BE-01 | `docs/contracts/API.md`, new `backend/ingest/migrations/000003_operations.sql`, `backend/ingest/migrations/runner_integration_test.go`, new `backend/api/internal/maintenance/model.go`, new `backend/api/internal/maintenance/postgres.go`, new `backend/api/internal/maintenance/postgres_test.go`, new `backend/api/internal/maintenance/postgres_integration_test.go`, `backend/api/internal/httpapi/router.go`, `backend/api/internal/httpapi/router_test.go`, `backend/api/cmd/api/main.go`, this ledger |
 | 2026-07-28T16:45:26Z | KIMI | CK-BE-03A | `backend/api/internal/fleetops/model.go`, `backend/api/internal/fleetops/postgres.go`, `backend/api/internal/fleetops/postgres_test.go`, `backend/api/internal/fleetops/postgres_integration_test.go`, this ledger |
 | 2026-07-28T17:25:00Z | CODEX | CK-00 | `docs/architecture/ARCHITECTURE-V2-EXTENDED.md`, `docs/architecture/REQUIREMENTS-TRACEABILITY.md`, new `docs/architecture/decisions/0011-direct-probe-backend-routing.md`, `docs/architecture/decisions/README.md`, `docs/collector/COLLECTOR-V2-REFACTOR.md`, `docs/collector/ROADMAP.md`, `docs/collector/SUGGESTIONS.md`, `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`, `docs/gap-analysis/research-notes/07-arp-rate.md`, `docs/guides/OPUS-AGENT-GUIDE-V2.md`, `docs/guides/SONNET-5-IMPLEMENTATION-GUIDE.md`, `docs/ml/ML_BASELINE_LEARNING.md`, `docs/README.md`, `docs/theory/anomaly/rca-causal-inference.md`, `docs/theory/probes/fault-tree-multihop-paths.md`, `docs/theory/probes/gorilla-compression-go-theory.md`, `docs/theory/probes/passive-vs-active-measurement.md`, `docs/theory/probes/probe-to-backend-transport-theory.md`, delete `docs/theory/probes/wireguard-health-monitoring.md`, this ledger |
