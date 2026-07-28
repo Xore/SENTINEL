@@ -73,6 +73,7 @@ The revisions must match; the final command is required remote read-back.
 | S5-00 | 5 | Signed-update read-only preflight | SONNET5 | REVIEW | S4-01A REVIEW | ledger only |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 | C2-03 | 2 | Live probe metric workflow assertion | CODEX | QUEUED | S2-02 REVIEW | `.github/workflows/integration-test.yml`, ledger |
+| C5-01 | 5 | Signed update manifest contract and offline release CLI | CODEX | IN_PROGRESS | S5-00 REVIEW | exact new-file scope below |
 
 Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, C1-01, C1-03, C1-04, C2-01, C2-02. See
 [July 2026 history](agent-coordination-history/2026-07.md).
@@ -90,6 +91,7 @@ Detailed Sonnet follow-on scopes and gates are in
 | 2026-07-26T14:10:00Z | SONNET5 | S3-01A | new files only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
 | 2026-07-26T15:05:00Z | SONNET5 | S4-01A | new files only: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/__init__.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
 | 2026-07-26T15:45:00Z | SONNET5 | S5-00 | ledger only — read-only preflight, no code/config/workflow files |
+| 2026-07-28T16:19:27Z | CODEX | C5-01 | new files only: `contracts/collector-update-manifest-v1.schema.json`, `docs/contracts/COLLECTOR-UPDATE-MANIFEST-V1.md`, `backend/api/internal/updatemanifest/**`, `backend/api/cmd/update-manifest/**`, this ledger |
 
 
 ---
@@ -461,6 +463,29 @@ Archive answered questions in the commit applying the answer.
 ---
 
 ## Active Exchanges
+
+### C5-01 — Signed update manifest contract and offline release CLI
+
+- **Timestamp:** 2026-07-28T16:19:27Z.
+- **Status:** IN_PROGRESS.
+- **Purpose:** remove S5-00's release-engineering ambiguity with a stable,
+  independently testable manifest contract and an offline signing/verification
+  CLI. This is disjoint from Sonnet's future node-side updater and does not
+  touch its S2/S3/S4 files.
+- **Scope:** exactly the new files in the C5-01 File Claims row plus this
+  ledger. No updater runtime, systemd unit, collector configuration, release
+  workflow, dependency, or existing backend runtime file is claimed.
+- **Decisions to encode and return for review:** field collectors use ADR
+  0006's host-level systemd/symlink topology; update discovery is a fixed,
+  low-frequency updater poll rather than an instruction from the unprivileged
+  collector; the Ed25519 private key stays outside GitHub and production
+  backend services and manifests are signed by an offline release CLI;
+  manifests have bounded validity; v1 platforms are `linux/amd64` and
+  `linux/arm64`; Sonnet's node verifier remains under `collector/updater/`.
+- **Exit:** schema/contract, deterministic canonicalization, Ed25519
+  sign/verify, digest/size/platform/version/freshness validation, golden
+  compatibility fixtures/tests, Go format/vet/race/build, then a separate
+  pushed/read-back handoff that gives Sonnet exact verifier inputs.
 
 ### A-S2-02-1 — Sonnet 5 claim
 
