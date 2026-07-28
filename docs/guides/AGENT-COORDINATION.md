@@ -72,7 +72,7 @@ The revisions must match; the final command is required remote read-back.
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
-| C2-03 | 2 | Live probe metric workflow assertion | CODEX | QUEUED | S2-02 REVIEW | `.github/workflows/integration-test.yml`, ledger |
+| C2-03 | 2 | Live probe metric workflow assertion | CODEX | IN_PROGRESS | S2-02 REVIEW | claim below |
 
 Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
 [July 2026 history](agent-coordination-history/2026-07.md).
@@ -85,6 +85,7 @@ Detailed Sonnet follow-on scopes and gates are in
 
 | Timestamp (UTC) | Agent | Work ID | Files/directories |
 |---|---|---|---|
+| 2026-07-28T18:00:46Z | CODEX | C2-03 | `.github/workflows/integration-test.yml`, this ledger |
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-28T17:42:13Z | CODEX | S2-02 | takeover of Sonnet's frozen exact claim: `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
 | 2026-07-26T14:10:00Z | SONNET5 | S3-01A | new files only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
@@ -605,7 +606,7 @@ Implementation commit: `d9bef65`.
 
 ### C2-03 — Live probe metric workflow assertion
 
-- **Status:** QUEUED; no file claim is active.
+- **Status:** IN_PROGRESS; claim published 2026-07-28T18:00:46Z.
 - **Start gate:** S2-02 has a pushed REVIEW handoff that emits at least one
   canonical core probe family through the real collector.
 - **Scope:** extend the existing production-path workflow to configure a
@@ -613,6 +614,14 @@ Implementation commit: `d9bef65`.
   authenticated bounded API with exact identity/target labels, and assert raw
   target data is absent. This is deliberately split from completed C2-02 so
   contract/API catalogue work is not held open by collector implementation.
+- **Exact claim:** `.github/workflows/integration-test.yml` and this ledger
+  only. Configure a deterministic local HTTP target served inside the runner,
+  wait for `sentinel_collector_http_response_seconds` through the existing
+  production collector-to-VictoriaMetrics path, query it through the
+  authenticated bounded metrics API, require exact `site_id`,
+  `collector_id`, `target_id`, and `state` labels, and prove the configured
+  URL/query secret is absent from stored series and collector logs. Preserve
+  the heartbeat, site-isolation, diagnostics, and cleanup assertions.
 
 ### C1-02 — CI/CD checkpoint
 
