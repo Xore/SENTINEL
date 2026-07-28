@@ -51,7 +51,7 @@ The Sonnet coordination ledger remains separate:
 | ID | Work item | Owner | Status | Prerequisites | Scope |
 |---|---|---|---|---|---|
 | CK-00 | Remove WireGuard and establish direct-routing invariant | CODEX | REVIEW | none | handoff X-002 |
-| CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | IN_PROGRESS | none | new-file-only claim described below |
+| CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | REVIEW | none | handoff X-005 |
 | CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | IN_PROGRESS | CK-00 REVIEW | claimed below |
 | CK-BE-02 | Alert instance lifecycle: list, acknowledge, silence | KIMI | QUEUED | CK-BE-01 REVIEW | exact claim required |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
@@ -207,3 +207,66 @@ operator-visible delivery state.
   integration-test invocation to `backend.yml`. This is a CI validation change,
   not an expansion of CK-BE-01, and it cannot overlap Kimi's new
   `internal/fleetops/**` files.
+
+### X-005 — CK-BE-03A review handoff
+
+- **From:** KIMI
+- **To:** CODEX
+- **Claim commit:** `79137ec` (status flip plus exact file claim).
+- **Implementation commit:** `5997b93` (rebased onto `1820b88` after the
+  CK-BE-01 push; no file overlap with CK-00 or CK-BE-01).
+- **Files (exactly the CK-BE-03A claim):**
+  - `backend/api/internal/fleetops/model.go`
+  - `backend/api/internal/fleetops/postgres.go`
+  - `backend/api/internal/fleetops/postgres_test.go`
+  - `backend/api/internal/fleetops/postgres_integration_test.go`
+  - this ledger
+- **Result:** new query-only `internal/fleetops` package. `Summary` returns
+  fleet totals and per-site counts for `active`, `stale`, `disabled`,
+  `never_seen`, and `certificate_expiring` in one grouped query ordered by
+  `site_id`; totals are the exact sum of the per-site rows.
+  `ListCollectors` returns a bounded detail projection (default 50, maximum
+  200, state filter validated against `ErrInvalidFilter`) in stable
+  `(site_id, collector_id)` order. Both methods mirror the registry
+  authorization predicate (token site scope intersected with current
+  `user_site_access`, matching role, `disabled_at IS NULL`,
+  `token_not_before <= issued_at`) without importing `internal/registry`,
+  run under the constructor-injected context timeout, and return empty
+  non-nil results for empty or non-intersecting scopes so inaccessible sites
+  are indistinguishable from empty ones. No routes, migrations, registry,
+  module, workflow, or contract files were touched.
+- **Commands and results (Linux, Go 1.26):**
+  - `gofmt -l .` (backend/api) — no output.
+  - `go vet ./...` — pass.
+  - `go test -race -count=1 ./...` — all packages `ok`.
+  - `go build ./...` — pass.
+  - `SENTINEL_TEST_DATABASE_URL=postgres://sentinel_ci:sentinel_ci@localhost:5432/sentinel_ci?sslmode=disable go run ./cmd/migrate` (backend/ingest, `SENTINEL_DATABASE_URL` set) — migrations current.
+  - `go test -race -tags=integration -count=1 ./internal/fleetops ./internal/registry` — both `ok` against a local `postgres:16-alpine`
+    container (removed after the run).
+- **Design decisions for review:**
+  - `certificate_expiring` counts non-disabled collectors with
+    `certificate_not_after <= now() + 14 days` (already-expired certificates
+    included); the 14-day window is pinned from the fleet-monitoring
+    documentation, which had no code constant.
+  - The 5-minute stale threshold duplicates the registry's inline literal
+    because `internal/registry` exports no constant and importing it was
+    excluded; both must stay aligned until a contract pins the value.
+  - Thresholds are passed as bigint seconds multiplied by
+    `interval '1 second'` so classification always uses the database clock.
+  - `silence_seconds` and `cert_expires_in_days` stay NULL for
+    `last_seen`/`certificate_not_after` NULL, matching the registry JSON
+    contract.
+  - The 50/200 detail bounds are new; they are not yet ratified in
+    `docs/contracts/API.md` (Codex-owned under CK-BE-01).
+- **Remaining risks:**
+  - `.github/workflows/backend.yml` runs integration tests only for
+    `./internal/registry`; the new `./internal/fleetops` integration test is
+    not exercised in CI. Workflow edits are outside the CK-BE-03A claim;
+    Codex's X-004 `backend.yml` change could add `./internal/fleetops`
+    alongside maintenance, or CK-BE-03B can pick it up.
+  - The maintenance tables from CK-BE-01 do not intersect this projection;
+    no join or coupling was introduced.
+- **Review request:** confirm the authorization predicate parity with the
+  registry, the state/count semantics above, and the bounded-filter shape
+  before CK-BE-03B wires HTTP routes. Record the decision in a separate
+  pushed review commit.
