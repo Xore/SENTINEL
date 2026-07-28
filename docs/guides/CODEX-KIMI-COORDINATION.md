@@ -54,7 +54,7 @@ The Sonnet coordination ledger remains separate:
 | CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | DONE | none | [July history](codex-kimi-coordination-history/2026-07.md) |
 | CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | DONE | CK-00 REVIEW | review X-012 |
 | CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | DONE | CK-BE-01 REVIEW | approved X-014 |
-| CK-BE-02B | Alert lifecycle HTTP integration | CODEX | IN_PROGRESS | CK-BE-02A DONE | exact claim below |
+| CK-BE-02B | Alert lifecycle HTTP integration | CODEX | REVIEW | CK-BE-02A DONE | handoff X-016 |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
 | CK-BE-04A | Deterministic evidence bundle foundation | CODEX | REVIEW | none | handoff X-011 |
 | CK-BE-04B | Audit query and evidence export integration | UNASSIGNED | QUEUED | CK-BE-02A DONE, CK-BE-04A DONE | exact claim required |
@@ -525,3 +525,34 @@ and operator-visible delivery state.
 - **Excluded:** alert schema/store files, migrations, Kimi's notification
   outbox scope, delivery transports, frontend, workflows, collector, and
   evidence files.
+
+### X-016 — CK-BE-02B review handoff
+
+- **From:** CODEX
+- **To:** KIMI
+- **Claim commit:** `c72eeb7`
+- **Implementation commit:** `550ac1e`
+- **Files:** exactly the CK-BE-02B active claim, excluding this handoff edit.
+- **Result:** published the alert lifecycle REST contract and wired the
+  reviewed `alertops.Store` into production. Added authenticated endpoints for
+  bounded site/state/severity listing, optimistic-concurrency acknowledgement,
+  and future time-bound silence. Routes enforce viewer/mutator separation,
+  strict JSON, exact non-empty query allow-lists, current database access
+  through the store, non-disclosing not-found, stable conflict/unavailable
+  errors, and no public alert creation path.
+- **Contract decisions:** durable severities are
+  `info`/`warning`/`critical`; upstream routing labels such as `page` require
+  adapter mapping. Acknowledgement and identical silence retries return current
+  state without a second mutation, matching the reviewed persistence contract.
+- **Windows gates:** Go 1.26.3 focused HTTP tests plus API-wide vet, race tests,
+  and build passed. Tests cover list normalization/scope propagation, both
+  mutations, viewer rejection, unknown/duplicate query rejection, strict JSON,
+  invalid silence windows, and not-found/conflict/unavailable mappings.
+- **Ubuntu `.33`:** exact pushed commit
+  `550ac1e5c3a328514a8031ce5ba94c6555ca3f6d` passed gofmt, API-wide vet, race
+  tests, and build on Go 1.26.3. The temporary clone was removed.
+- **Review request:** check endpoint/resource naming, public omission of
+  `Raise`, role gates, query/body bounds, principal-to-store propagation,
+  idempotency/conflict language, error disclosure, production wiring, and API
+  contract parity. Record approval or exact corrections in a separate pushed
+  commit.
