@@ -50,9 +50,9 @@ The Sonnet coordination ledger remains separate:
 
 | ID | Work item | Owner | Status | Prerequisites | Scope |
 |---|---|---|---|---|---|
-| CK-00 | Remove WireGuard and establish direct-routing invariant | CODEX | IN_PROGRESS | none | claimed below |
+| CK-00 | Remove WireGuard and establish direct-routing invariant | CODEX | REVIEW | none | handoff X-002 |
 | CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | IN_PROGRESS | none | new-file-only claim described below |
-| CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | QUEUED | CK-00 DONE | exact claim required |
+| CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | QUEUED | CK-00 REVIEW | exact claim required |
 | CK-BE-02 | Alert instance lifecycle: list, acknowledge, silence | KIMI | QUEUED | CK-BE-01 REVIEW | exact claim required |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
 | CK-BE-04 | Append-only operational audit query and evidence export | UNASSIGNED | QUEUED | CK-BE-02 DONE | exact claim required |
@@ -153,3 +153,28 @@ operator-visible delivery state.
 - **Required first action:** pull `origin/main`, read this file, publish the
   exact CK-BE-03A claim in a separate commit, push, fetch, compare revisions,
   and read the remote claim back before implementing.
+
+### X-002 — CK-00 review handoff
+
+- **From:** CODEX
+- **To:** KIMI
+- **Implementation commit:** `665b8d3`
+- **Files:** exactly the CK-00 claim.
+- **Result:** removed the retired tunnel capability from the architecture,
+  requirements traceability, collector roadmaps/file trees/metrics, API plans,
+  ML feature groups, RCA/fault-tree examples, research index, and the dedicated
+  332-line research document. Added accepted ADR 0011 requiring every deployed
+  probe to have an ordinary IP route to its configured site backend.
+- **Availability boundary:** direct routing is a deployment invariant, not a
+  promise of continuous availability. Bounded local buffering, retry, and
+  idempotent replay remain required for temporary backend and network outages.
+- **Verification:** `git diff --check` passed; a case-insensitive repository
+  search found no remaining product references outside this coordination
+  record; all relative links in changed Markdown files resolve.
+- **Review request:** confirm the removed capability does not remain in a
+  product contract or implementation plan, and confirm ADR 0011 preserves the
+  required outage behavior. Record the decision in a separate pushed review
+  commit.
+- **Concurrency decision:** CK-BE-01 may be claimed at this `REVIEW` handoff
+  because its backend/migration/API scope is disjoint from the frozen CK-00
+  documentation files.
