@@ -67,7 +67,7 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S2-02 | 2 | Core network probe activation and hardening | SONNET5 | REVIEW | S2-01 DONE | exact scope below |
+| S2-02 | 2 | Core network probe activation and hardening | CODEX | IN_PROGRESS | S2-01 DONE | Codex takeover below |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | exact new-file scope below |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
@@ -86,7 +86,7 @@ Detailed Sonnet follow-on scopes and gates are in
 | Timestamp (UTC) | Agent | Work ID | Files/directories |
 |---|---|---|---|
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
-| 2026-07-26T13:00:00Z | SONNET5 | S2-02 | `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
+| 2026-07-28T17:42:13Z | CODEX | S2-02 | takeover of Sonnet's frozen exact claim: `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
 | 2026-07-26T14:10:00Z | SONNET5 | S3-01A | new files only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
 | 2026-07-26T15:05:00Z | SONNET5 | S4-01A | new files only: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/__init__.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
 
@@ -95,18 +95,19 @@ Detailed Sonnet follow-on scopes and gates are in
 
 ## Next Sonnet Actions
 
-Plan updated after S2-02 Codex review 1. Sonnet must pull and read this section
-plus the review entry under A-S2-02-1 before doing more work.
+Plan updated after the user assigned S2-02 corrections to Codex while Sonnet is
+unavailable. Sonnet must keep every S2-02 file frozen until Codex publishes a
+new REVIEW handoff.
 
 1. Keep S1-02/S2-01 and every S3-01A/S4-01A file frozen. S5-00 is approved
    and archived; do not claim S5-01 before its explicit gate is satisfied.
-2. In the still-active exact S2-02 claim, address only the five correction
-   groups in Codex review 1. Preserve accepted metric names, units, bounded
-   attributes, target caps, separate latency configuration, and integration
-   behavior.
-3. Push one focused S2-02 correction commit and a separate REVIEW handoff with
-   exact Ruff, mypy, Pylint, pytest, Windows, and integration results. Then
-   stop; do not amend later REVIEW scopes until Codex reviews them.
+2. Codex owns the still-active exact S2-02 claim and will address only the five
+   correction groups in Codex review 1. Preserve accepted metric names, units,
+   bounded attributes, target caps, separate latency configuration, and
+   integration behavior.
+3. Codex will push one focused S2-02 correction commit and a separate REVIEW
+   handoff with exact Ruff, mypy, Pylint, pytest, Windows, and integration
+   results. Sonnet must not amend S2-02 or later REVIEW scopes meanwhile.
 
 ### Continuity authority through 2026-08-02
 
@@ -647,6 +648,21 @@ Implementation commit: `d9bef65`.
   VictoriaMetrics identity query, diagnostics, and volume cleanup.
 - Still gated: intentional tag-path verification, protected delivery, canary
   rollout, and rollback.
+
+### A-S2-02-2 — Codex takeover
+
+- **Timestamp:** 2026-07-28T17:42:13Z.
+- **Authority:** the user assigned Sonnet's S2-02 correction work to Codex
+  while Sonnet is unavailable until Friday.
+- **Scope:** exactly the replacement File Claims row above. The takeover
+  preserves Sonnet's original implementation and handoff attribution; Codex
+  owns only the five focused correction groups from review 1.
+- **Frozen:** S1/S2-01 and every S3-01A/S4-01A/S5 file, contracts,
+  dependencies, workflows, and architecture documents.
+- **Exit:** one correction implementation commit, full Windows and Ubuntu
+  collector gates, production-path integration verification, and a separate
+  pushed REVIEW handoff. Sonnet must not edit the active scope before that
+  handoff.
 
 ---
 
