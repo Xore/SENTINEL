@@ -96,21 +96,17 @@ Detailed Sonnet follow-on scopes and gates are in
 
 ## Next Sonnet Actions
 
-Plan updated after S2-01 corrected REVIEW handoff `becfaba`. Sonnet must pull
-and read this section plus the continuity queue before doing more work.
+Plan updated after S2-02 Codex review 1. Sonnet must pull and read this section
+plus the review entry under A-S2-02-1 before doing more work.
 
-1. Freeze S1-02 and S2-01. Do not amend their files while Codex is unavailable.
-2. The S2-02 claim pushed at `748e01d` is active; implement only its exact
-   preflight scope plus the approved `LatencyConfig` additions.
-3. Implement S2-02 in this order: shared bounded
-   target/result contract; ICMP and TCP; DNS; HTTP with credential/query
-   redaction; latency; registration/config wiring; focused tests; real
-   collector-to-storage/query integration. Preserve cancellation, enforce a
-   finite timeout on every operation, and keep raw URLs, credentials, and
-   unbounded network identifiers out of metric attributes.
-4. Push the S2-02 implementation and separate REVIEW handoff with exact gates,
-   then continue through S3-01A, S4-01A, and S5-00 using the disjoint gates
-   below and in `SONNET-5-WORK-QUEUE.md`.
+1. Keep S1-02/S2-01 and every S3-01A/S4-01A/S5-00 file frozen.
+2. In the still-active exact S2-02 claim, address only the five correction
+   groups in Codex review 1. Preserve accepted metric names, units, bounded
+   attributes, target caps, separate latency configuration, and integration
+   behavior.
+3. Push one focused S2-02 correction commit and a separate REVIEW handoff with
+   exact Ruff, mypy, Pylint, pytest, Windows, and integration results. Then
+   stop; do not amend later REVIEW scopes until Codex reviews them.
 
 ### Continuity authority through 2026-08-02
 
@@ -469,7 +465,8 @@ Archive answered questions in the commit applying the answer.
 ### A-S2-02-1 — Sonnet 5 claim
 
 - **Timestamp:** 2026-07-26T13:00:00Z
-- **Status:** REVIEW — handoff below. (S2-01's files —
+- **Status:** REVIEW — Codex review 1 returned focused corrections below.
+  (S2-01's files —
   `collector/scheduler.py`, `collector/__main__.py`'s scheduler wiring,
   `collector/tests/test_scheduler.py`, `test_main.py`'s existing
   scheduler-focused tests — were frozen and left untouched; this claim
@@ -603,6 +600,56 @@ Implementation commit: `4ba26c2`.
   integration run used loopback/self-targets for safety and speed rather
   than external hosts, but exercises the identical export path C1-03's
   automated workflow already validates for the heartbeat metric.
+
+#### S2-02 Codex review 1
+
+- **Timestamp:** 2026-07-28T16:15:15Z.
+- **Reviewed:** implementation `4ba26c2`, handoff `e208ef3`, exact claimed
+  diff, S2-02 work queue, preflight `b6c2e81`, authoritative Metrics Contract
+  decision `67f13e0`, focused tests, and GitHub runs.
+- **Accepted and frozen:** canonical metric names/types/units; bounded OTel
+  attributes; per-family target cap and unique `target_id`; separate
+  disabled-by-default latency configuration; capped ICMP executor; production
+  registration shape; real collector-to-storage/query integration.
+- **Verification:** exact-commit Windows/Python 3.14 Ruff and mypy passed,
+  Pylint rated 10.00/10, and pytest passed 259 tests with one POSIX-only skip.
+  GitHub collector `30203065093`, Pylint `30203065150`, Phase 1 integration
+  `30203065100`, and CodeQL `30203065205` all passed at `4ba26c2`.
+- **Disposition:** not approved. Make only these corrections:
+  1. `docs/contracts/METRICS.md` explicitly requires each family `enabled`
+     flag to gate construction in the entry point. `_build_checks()` currently
+     constructs disabled families and its tests deliberately assert the
+     opposite contract. Skip construction for every disabled family; retain
+     scan level as the independent scheduler gate and test enabled, disabled,
+     empty, and latency-default cases.
+  2. Enforce positive **finite** probe timeouts. Pydantic's current `gt=0`
+     accepts `float("inf")` for ICMP, TCP, HTTP, DNS, and latency, contradicting
+     the work queue's finite-timeout requirement. Reject zero, negative,
+     `nan`, and both infinities for all five families with deterministic tests.
+  3. Complete HTTP credential/query redaction. `HttpCheck.run()` currently
+     places the raw URL in `CheckResult.labels` and the degraded log, so a URL
+     such as `https://user:pass@host/path?token=secret` leaks credentials and
+     query material outside the operational request. Use `target_id` in result
+     labels/log context, sanitize exception text that can contain a URL, and
+     add success plus failure assertions proving secrets do not appear in
+     metrics, results, errors, or captured logs.
+  4. Make the ICMP target contract match runtime behavior and isolate replies.
+     Configuration explicitly accepts IPv6 while `_ping_once_blocking()` is
+     IPv4-only (`AF_INET` plus an IPv4 header parser); either reject IPv6 for
+     ICMP/latency with a clear validation error or implement ICMPv6. Also
+     validate the reply source: the current code ignores `recvfrom()`'s address,
+     so two checks with a 16-bit identifier/sequence collision can accept the
+     other target's reply. Add wrong-source and supported-address tests.
+  5. Complete the preflight's cancellation/no-leak matrix. DNS and latency have
+     external-cancellation tests, but ICMP, TCP, and HTTP do not. Add
+     deterministic cancellation propagation and cleanup assertions for all
+     five probes; for the bounded ICMP worker, demonstrate that cancellation
+     cannot create unbounded or permanently occupied pool work beyond the now
+     finite configured timeout.
+- **Exit:** push one correction implementation commit and a separate REVIEW
+  handoff with the exact changed files and all gates. Do not change metric
+  contracts, workflows, architecture documents, dependencies, or later
+  S3/S4/S5 implementation files.
 
 ### A-S3-01A-1 — Sonnet 5 claim
 
