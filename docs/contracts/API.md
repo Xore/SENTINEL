@@ -219,3 +219,69 @@ Request:
 Returns the ended resource with an incremented version. Repeating the mutation
 or supplying a stale version returns `409 conflict`; malformed identifiers and
 versions return `400 invalid_request`.
+
+## Alert lifecycle
+
+Alert instances are durable, site-scoped operational records produced by
+trusted backend detection and alert adapters. This public API does not expose
+alert creation. `viewer` may list alerts. Acknowledgement and silence require
+`operator`, `analyst`, `admin`, or `ot-operator`, matching the maintenance
+operations policy. Every query revalidates the current user, role,
+token-not-before boundary, JWT site scope, and database site access.
+
+An alert has a server-generated UUID `id`, site-scoped deduplication key,
+severity (`info`, `warning`, or `critical`), bounded summary and source,
+firing/creation metadata, positive optimistic-concurrency `version`, and
+derived state:
+
+- `active` when neither acknowledged nor currently silenced;
+- `silenced` while an unacknowledged time-bound silence remains active;
+- `acknowledged` after acknowledgement, which takes state precedence.
+
+Expired silences derive as `active`. The durable severity vocabulary is
+independent of upstream routing labels. An adapter must map routing-only labels
+such as vmalert `page` to a durable severity before calling the internal
+producer operation.
+
+### `GET /api/v1/alerts`
+
+Required `site_id`; optional `state` (`all`, `active`, `acknowledged`, or
+`silenced`), `severity` (`info`, `warning`, or `critical`), and `limit`
+(1â€“200, default 50). Unknown, duplicate, empty, or malformed parameters are
+rejected. Results use stable `(fired_at DESC, id DESC)` order.
+
+### `POST /api/v1/alerts/{id}/acknowledge`
+
+Request:
+
+```json
+{"expected_version": 1}
+```
+
+Returns the acknowledged resource with an incremented version. Repeating an
+already-successful acknowledgement returns the current resource without a
+second mutation or audit event, including a lost-response retry carrying the
+old version. A stale version against an unacknowledged resource returns
+`409 conflict`.
+
+### `POST /api/v1/alerts/{id}/silence`
+
+Request:
+
+```json
+{
+  "expected_version": 1,
+  "until": "2026-07-28T20:00:00Z",
+  "reason": "planned upstream maintenance"
+}
+```
+
+`until` must be in the future and no more than 30 days from request validation;
+`reason` is trimmed, non-empty, and at most 500 UTF-8 bytes. Repeating the same
+`until` and reason returns the current resource without another mutation or
+audit event. A stale version for a different silence returns `409 conflict`.
+
+Malformed requests return `400 invalid_request`; unauthorized mutation roles
+return `403 forbidden`; missing and unauthorized IDs both return
+`404 not_found`; version mismatches return `409 conflict`; and durable-store
+failures return `503 unavailable`.

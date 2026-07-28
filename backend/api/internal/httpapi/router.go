@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Xore/analyseLaptop/backend/api/internal/alertops"
 	"github.com/Xore/analyseLaptop/backend/api/internal/auth"
 	"github.com/Xore/analyseLaptop/backend/api/internal/maintenance"
 	"github.com/Xore/analyseLaptop/backend/api/internal/metricquery"
@@ -46,13 +47,35 @@ type MaintenanceStore interface {
 	) (maintenance.Window, error)
 }
 
+// AlertStore is the durable alert lifecycle boundary used by the HTTP API.
+type AlertStore interface {
+	List(context.Context, alertops.Access, alertops.ListFilter) ([]alertops.Instance, error)
+	Acknowledge(
+		context.Context,
+		alertops.Access,
+		string,
+		alertops.AcknowledgeInput,
+	) (alertops.Instance, error)
+	Silence(
+		context.Context,
+		alertops.Access,
+		string,
+		alertops.SilenceInput,
+	) (alertops.Instance, error)
+}
+
 // NewRouter constructs the site API handler.
 func NewRouter(
 	store Registry,
 	validator *auth.Validator,
 	metrics MetricsQuery,
 	maintenanceStore MaintenanceStore,
+	alertStores ...AlertStore,
 ) http.Handler {
+	var alertStore AlertStore
+	if len(alertStores) > 0 {
+		alertStore = alertStores[0]
+	}
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery(), requestID(), securityHeaders())
@@ -234,6 +257,103 @@ func NewRouter(
 		}
 		ctx.JSON(http.StatusOK, gin.H{"data": window})
 	})
+	api.GET("/alerts", func(ctx *gin.Context) {
+		principal, ok := currentPrincipal(ctx)
+		if !ok {
+			return
+		}
+		limit := 0
+		if rawLimit := ctx.Query("limit"); rawLimit != "" {
+			parsed, err := strconv.Atoi(rawLimit)
+			if err != nil {
+				writeError(ctx, http.StatusBadRequest, "invalid_request", "invalid query parameters")
+				return
+			}
+			limit = parsed
+		}
+		filter, err := alertops.ValidateList(alertops.ListFilter{
+			SiteID:   ctx.Query("site_id"),
+			State:    ctx.Query("state"),
+			Severity: ctx.Query("severity"),
+			Limit:    limit,
+		})
+		if err != nil || hasUnknownQuery(ctx, "site_id", "state", "severity", "limit") {
+			writeError(ctx, http.StatusBadRequest, "invalid_request", "invalid query parameters")
+			return
+		}
+		if alertStore == nil {
+			writeError(ctx, http.StatusServiceUnavailable, "unavailable", "service unavailable")
+			return
+		}
+		alerts, err := alertStore.List(
+			ctx.Request.Context(), alertAccess(principal), filter,
+		)
+		if err != nil {
+			writeAlertError(ctx, err)
+			return
+		}
+		ctx.JSON(http.StatusOK, gin.H{"data": alerts})
+	})
+	api.POST("/alerts/:id/acknowledge", func(ctx *gin.Context) {
+		principal, ok := currentPrincipal(ctx)
+		if !ok {
+			return
+		}
+		if !alertops.CanMutate(principal.Role) {
+			writeError(ctx, http.StatusForbidden, "forbidden", "operation not permitted")
+			return
+		}
+		var input alertops.AcknowledgeInput
+		if err := decodeJSON(ctx, &input); err != nil ||
+			alertops.ValidateAcknowledge(input) != nil {
+			writeError(ctx, http.StatusBadRequest, "invalid_request", "invalid request body")
+			return
+		}
+		if alertStore == nil {
+			writeError(ctx, http.StatusServiceUnavailable, "unavailable", "service unavailable")
+			return
+		}
+		alert, err := alertStore.Acknowledge(
+			ctx.Request.Context(), alertAccess(principal), ctx.Param("id"), input,
+		)
+		if err != nil {
+			writeAlertError(ctx, err)
+			return
+		}
+		ctx.JSON(http.StatusOK, gin.H{"data": alert})
+	})
+	api.POST("/alerts/:id/silence", func(ctx *gin.Context) {
+		principal, ok := currentPrincipal(ctx)
+		if !ok {
+			return
+		}
+		if !alertops.CanMutate(principal.Role) {
+			writeError(ctx, http.StatusForbidden, "forbidden", "operation not permitted")
+			return
+		}
+		var input alertops.SilenceInput
+		if err := decodeJSON(ctx, &input); err != nil {
+			writeError(ctx, http.StatusBadRequest, "invalid_request", "invalid request body")
+			return
+		}
+		normalized, err := alertops.ValidateSilence(input, time.Now())
+		if err != nil {
+			writeError(ctx, http.StatusBadRequest, "invalid_request", "invalid request body")
+			return
+		}
+		if alertStore == nil {
+			writeError(ctx, http.StatusServiceUnavailable, "unavailable", "service unavailable")
+			return
+		}
+		alert, err := alertStore.Silence(
+			ctx.Request.Context(), alertAccess(principal), ctx.Param("id"), normalized,
+		)
+		if err != nil {
+			writeAlertError(ctx, err)
+			return
+		}
+		ctx.JSON(http.StatusOK, gin.H{"data": alert})
+	})
 	return router
 }
 
@@ -253,6 +373,15 @@ func currentPrincipal(ctx *gin.Context) (auth.Principal, bool) {
 
 func maintenanceAccess(principal auth.Principal) maintenance.Access {
 	return maintenance.Access{
+		UserID:   principal.UserID,
+		Role:     principal.Role,
+		SiteIDs:  principal.SiteIDs,
+		IssuedAt: principal.IssuedAt,
+	}
+}
+
+func alertAccess(principal auth.Principal) alertops.Access {
+	return alertops.Access{
 		UserID:   principal.UserID,
 		Role:     principal.Role,
 		SiteIDs:  principal.SiteIDs,
@@ -295,6 +424,21 @@ func writeMaintenanceError(ctx *gin.Context, err error) {
 	case errors.Is(err, maintenance.ErrNotFound):
 		writeError(ctx, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, maintenance.ErrConflict):
+		writeError(ctx, http.StatusConflict, "conflict", "resource version conflict")
+	default:
+		writeError(ctx, http.StatusServiceUnavailable, "unavailable", "service unavailable")
+	}
+}
+
+func writeAlertError(ctx *gin.Context, err error) {
+	switch {
+	case errors.Is(err, alertops.ErrInvalid):
+		writeError(ctx, http.StatusBadRequest, "invalid_request", "invalid alert operation")
+	case errors.Is(err, alertops.ErrForbidden):
+		writeError(ctx, http.StatusForbidden, "forbidden", "operation not permitted")
+	case errors.Is(err, alertops.ErrNotFound):
+		writeError(ctx, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, alertops.ErrConflict):
 		writeError(ctx, http.StatusConflict, "conflict", "resource version conflict")
 	default:
 		writeError(ctx, http.StatusServiceUnavailable, "unavailable", "service unavailable")

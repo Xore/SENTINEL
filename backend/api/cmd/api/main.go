@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Xore/analyseLaptop/backend/api/internal/alertops"
 	"github.com/Xore/analyseLaptop/backend/api/internal/auth"
 	"github.com/Xore/analyseLaptop/backend/api/internal/config"
 	"github.com/Xore/analyseLaptop/backend/api/internal/httpapi"
@@ -57,10 +58,11 @@ func run() error {
 		return err
 	}
 	maintenanceStore := maintenance.NewStore(pool, cfg.QueryTimeout)
+	alertStore := alertops.NewStore(pool, cfg.QueryTimeout)
 
 	server := &http.Server{
 		Addr:         cfg.Address,
-		Handler:      httpapi.NewRouter(store, validator, metricsClient, maintenanceStore),
+		Handler:      httpapi.NewRouter(store, validator, metricsClient, maintenanceStore, alertStore),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,

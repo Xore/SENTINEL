@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xore/analyseLaptop/backend/api/internal/alertops"
 	"github.com/Xore/analyseLaptop/backend/api/internal/auth"
 	"github.com/Xore/analyseLaptop/backend/api/internal/maintenance"
 	"github.com/Xore/analyseLaptop/backend/api/internal/metricquery"
@@ -71,6 +72,56 @@ type fakeMaintenance struct {
 	createCalls int
 	listCalls   int
 	endCalls    int
+}
+
+type fakeAlerts struct {
+	listed           []alertops.Instance
+	acknowledged     alertops.Instance
+	silenced         alertops.Instance
+	err              error
+	access           alertops.Access
+	listFilter       alertops.ListFilter
+	acknowledgeInput alertops.AcknowledgeInput
+	silenceInput     alertops.SilenceInput
+	mutationID       string
+	listCalls        int
+	acknowledgeCalls int
+	silenceCalls     int
+}
+
+func (f *fakeAlerts) List(
+	_ context.Context, access alertops.Access, filter alertops.ListFilter,
+) ([]alertops.Instance, error) {
+	f.listCalls++
+	f.access = access
+	f.listFilter = filter
+	return f.listed, f.err
+}
+
+func (f *fakeAlerts) Acknowledge(
+	_ context.Context,
+	access alertops.Access,
+	id string,
+	input alertops.AcknowledgeInput,
+) (alertops.Instance, error) {
+	f.acknowledgeCalls++
+	f.access = access
+	f.mutationID = id
+	f.acknowledgeInput = input
+	return f.acknowledged, f.err
+}
+
+func (f *fakeAlerts) Silence(
+	_ context.Context,
+	access alertops.Access,
+	id string,
+	input alertops.SilenceInput,
+) (alertops.Instance, error) {
+	f.silenceCalls++
+	f.access = access
+	f.mutationID = id
+	f.silenceInput = input
+	return f.silenced, f.err
 }
 
 func (f *fakeMaintenance) Create(
@@ -500,6 +551,141 @@ func TestMaintenanceMapsNonDisclosingAndConflictErrors(t *testing.T) {
 			handler,
 			http.MethodGet,
 			"/api/v1/maintenance-windows?site_id=site-a",
+			testToken(t, []string{"site-a"}),
+		)
+		if response.Code != test.status ||
+			!strings.Contains(response.Body.String(), `"code":"`+test.wantCode+`"`) {
+			t.Fatalf("error %v response = %d %s", test.err, response.Code, response.Body)
+		}
+	}
+}
+
+func TestAlertListIsBoundedAndViewerReadable(t *testing.T) {
+	operations := &fakeAlerts{listed: []alertops.Instance{}}
+	handler := NewRouter(
+		&fakeRegistry{}, testValidator(t), &fakeMetrics{}, nil, operations,
+	)
+	response := performRequest(
+		handler,
+		http.MethodGet,
+		"/api/v1/alerts?site_id=site-a&state=active&severity=critical&limit=25",
+		testToken(t, []string{"site-a"}),
+	)
+	if response.Code != http.StatusOK || operations.listCalls != 1 ||
+		operations.access.Role != "viewer" ||
+		operations.listFilter != (alertops.ListFilter{
+			SiteID: "site-a", State: "active", Severity: "critical", Limit: 25,
+		}) {
+		t.Fatalf("list response/store = %d %s %+v", response.Code, response.Body, operations)
+	}
+}
+
+func TestAlertAcknowledgeAndSilence(t *testing.T) {
+	id := "a682bcea-b46d-4c7f-91e5-a5760d4e5ef8"
+	operations := &fakeAlerts{
+		acknowledged: alertops.Instance{ID: id, State: alertops.StateAcknowledged, Version: 2},
+		silenced:     alertops.Instance{ID: id, State: alertops.StateSilenced, Version: 3},
+	}
+	handler := NewRouter(
+		&fakeRegistry{}, testValidator(t), &fakeMetrics{}, nil, operations,
+	)
+	token := testRoleToken(t, []string{"site-a"}, "operator")
+	response := performRequestBody(
+		handler, http.MethodPost, "/api/v1/alerts/"+id+"/acknowledge",
+		token, `{"expected_version":1}`,
+	)
+	if response.Code != http.StatusOK || operations.acknowledgeCalls != 1 ||
+		operations.mutationID != id || operations.acknowledgeInput.ExpectedVersion != 1 {
+		t.Fatalf("acknowledge response/store = %d %s %+v", response.Code, response.Body, operations)
+	}
+
+	until := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	response = performRequestBody(
+		handler, http.MethodPost, "/api/v1/alerts/"+id+"/silence", token,
+		`{"expected_version":2,"until":"`+until.Format(time.RFC3339)+`","reason":"deploy"}`,
+	)
+	if response.Code != http.StatusOK || operations.silenceCalls != 1 ||
+		operations.silenceInput.ExpectedVersion != 2 ||
+		!operations.silenceInput.Until.Equal(until) ||
+		operations.silenceInput.Reason != "deploy" {
+		t.Fatalf("silence response/store = %d %s %+v", response.Code, response.Body, operations)
+	}
+}
+
+func TestAlertRejectsViewerAndMalformedInputs(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		token  string
+		body   string
+	}{
+		{
+			name: "viewer mutation", method: http.MethodPost,
+			path:  "/api/v1/alerts/a/acknowledge",
+			token: testToken(t, []string{"site-a"}), body: `{"expected_version":1}`,
+		},
+		{
+			name: "unknown query", method: http.MethodGet,
+			path:  "/api/v1/alerts?site_id=site-a&extra=true",
+			token: testToken(t, []string{"site-a"}),
+		},
+		{
+			name: "duplicate query", method: http.MethodGet,
+			path:  "/api/v1/alerts?site_id=site-a&site_id=site-b",
+			token: testToken(t, []string{"site-a"}),
+		},
+		{
+			name: "unknown JSON", method: http.MethodPost,
+			path:  "/api/v1/alerts/a/acknowledge",
+			token: testRoleToken(t, []string{"site-a"}, "operator"),
+			body:  `{"expected_version":1,"extra":true}`,
+		},
+		{
+			name: "invalid silence", method: http.MethodPost,
+			path:  "/api/v1/alerts/a/silence",
+			token: testRoleToken(t, []string{"site-a"}, "operator"),
+			body:  `{"expected_version":1,"until":"2000-01-01T00:00:00Z","reason":"old"}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			operations := &fakeAlerts{}
+			handler := NewRouter(
+				&fakeRegistry{}, testValidator(t), &fakeMetrics{}, nil, operations,
+			)
+			response := performRequestBody(
+				handler, test.method, test.path, test.token, test.body,
+			)
+			want := http.StatusBadRequest
+			if test.name == "viewer mutation" {
+				want = http.StatusForbidden
+			}
+			if response.Code != want ||
+				operations.listCalls+operations.acknowledgeCalls+operations.silenceCalls != 0 {
+				t.Fatalf("response/store = %d %s %+v", response.Code, response.Body, operations)
+			}
+		})
+	}
+}
+
+func TestAlertMapsNonDisclosingAndConflictErrors(t *testing.T) {
+	tests := []struct {
+		err      error
+		status   int
+		wantCode string
+	}{
+		{alertops.ErrNotFound, http.StatusNotFound, "not_found"},
+		{alertops.ErrConflict, http.StatusConflict, "conflict"},
+		{alertops.ErrUnavailable, http.StatusServiceUnavailable, "unavailable"},
+	}
+	for _, test := range tests {
+		operations := &fakeAlerts{err: test.err}
+		handler := NewRouter(
+			&fakeRegistry{}, testValidator(t), &fakeMetrics{}, nil, operations,
+		)
+		response := performRequest(
+			handler, http.MethodGet, "/api/v1/alerts?site_id=site-a",
 			testToken(t, []string{"site-a"}),
 		)
 		if response.Code != test.status ||
