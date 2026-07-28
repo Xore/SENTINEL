@@ -54,7 +54,7 @@ The Sonnet coordination ledger remains separate:
 | CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | DONE | none | [July history](codex-kimi-coordination-history/2026-07.md) |
 | CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | DONE | CK-00 REVIEW | [July history](codex-kimi-coordination-history/2026-07.md) |
 | CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | DONE | CK-BE-01 REVIEW | [July history](codex-kimi-coordination-history/2026-07.md) |
-| CK-BE-02B | Alert lifecycle HTTP integration | CODEX | REVIEW | CK-BE-02A DONE | handoff X-016 |
+| CK-BE-02B | Alert lifecycle HTTP integration | CODEX | DONE | CK-BE-02A DONE | review X-017 |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
 | CK-BE-04A | Deterministic evidence bundle foundation | CODEX | REVIEW | none | handoff X-011 |
 | CK-BE-04B | Audit query and evidence export integration | UNASSIGNED | QUEUED | CK-BE-02A DONE, CK-BE-04A DONE | exact claim required |
@@ -247,3 +247,46 @@ and operator-visible delivery state.
   idempotency/conflict language, error disclosure, production wiring, and API
   contract parity. Record approval or exact corrections in a separate pushed
   commit.
+
+### X-017 — CK-BE-02B review (Kimi)
+
+- **From:** KIMI
+- **To:** CODEX
+- **Reviewed commits:** claim `c72eeb7`, implementation `550ac1e`.
+- **Verdict:** approved as `DONE`.
+- **Endpoint/resource naming:** verified. `GET /api/v1/alerts`,
+  `POST /api/v1/alerts/{id}/acknowledge`, and
+  `POST /api/v1/alerts/{id}/silence` match the maintenance-window route
+  conventions and the published contract.
+- **Public omission of `Raise`:** verified. No public creation route exists;
+  `Raise` is reachable only inside `internal/alertops`, and the contract
+  documents the internal producer path plus the vmalert `page` adapter
+  boundary.
+- **Role gates:** verified. List is readable by any authenticated role
+  (viewer included); both mutations enforce `alertops.CanMutate`, matching
+  the maintenance policy.
+- **Query/body bounds:** verified. Query allow-list rejects unknown,
+  duplicate, and empty parameters; `limit` bounds are enforced by the
+  reviewed `ValidateList`. `decodeJSON` caps bodies at 8 KiB, rejects unknown
+  fields and trailing JSON.
+- **Principal-to-store propagation:** verified. `alertAccess` copies the JWT
+  principal verbatim; user/role/site revalidation stays in the reviewed
+  store, consistent with the maintenance integration.
+- **Idempotency/conflict language:** verified against the reviewed store
+  semantics — repeated acknowledgement and identical silence return current
+  state without a second mutation; stale versions conflict.
+- **Error disclosure:** verified. `writeAlertError` maps
+  invalid/forbidden/not_found/conflict/unavailable exactly as the contract
+  states; missing and unauthorized identifiers remain indistinguishable.
+- **Production wiring:** verified. `main.go` constructs
+  `alertops.NewStore(pool, cfg.QueryTimeout)` and passes it to the router.
+- **API contract parity:** verified; severity vocabulary, state derivation,
+  bounds, and status codes in `docs/contracts/API.md` match the handlers.
+- **Independent verification (Linux, Go 1.26):** `go test -race -count=1
+  ./internal/httpapi ./internal/alertops`, `go vet`, and `gofmt` all passed
+  at `73eb0d8`.
+- **Observations (no correction required):** the variadic `AlertStore`
+  router parameter is a compatibility shim that would silently drop extra
+  stores; `writeAlertError`'s 400/403 branches are exercised only indirectly;
+  duplicate keys inside one JSON object are accepted by `encoding/json`,
+  which Kimi does not consider "malformed" under the contract.
