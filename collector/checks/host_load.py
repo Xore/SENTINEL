@@ -10,6 +10,7 @@ Standalone in this claim: not yet registered by `collector/__main__.py` and
 does not create any OTel instrument. Registration and metric emission are a
 later, separately reviewed claim (see docs/guides/SONNET-5-WORK-QUEUE.md).
 """
+
 from __future__ import annotations
 
 import os
@@ -29,9 +30,16 @@ class HostLoadCheck(BaseCheck):
     interval_s = 30.0
 
     async def run(self) -> CheckResult:
+        getloadavg = getattr(os, "getloadavg", None)
+        if not callable(getloadavg):
+            error = "os.getloadavg is unavailable on this platform"
+            log.warning("check.degraded", check=self.name, error=error)
+            return CheckResult(ok=False, error=error)
         try:
-            load1, load5, load15 = os.getloadavg()
-        except (OSError, AttributeError) as exc:
+            # Astroid resolves the Windows `os` surface, where the dynamic
+            # callable is absent, despite the explicit runtime guard above.
+            load1, load5, load15 = getloadavg()  # pylint: disable=not-callable
+        except OSError as exc:
             log.warning("check.degraded", check=self.name, error=str(exc))
             return CheckResult(ok=False, error=str(exc))
 

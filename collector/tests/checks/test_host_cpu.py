@@ -1,7 +1,9 @@
 """Tests for collector.checks.host_cpu — Linux CPU utilization check."""
+
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 import pytest
@@ -48,6 +50,7 @@ class TestReadCpuJiffies:
         with pytest.raises(FileNotFoundError):
             _read_cpu_jiffies(str(tmp_path / "nope"))
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics required")
     def test_permission_denied_raises(self, tmp_path):
         path = tmp_path / "stat"
         path.write_text(_stat_line())
@@ -60,6 +63,10 @@ class TestReadCpuJiffies:
 
 
 class TestHostCpuCheck:
+    @pytest.fixture(autouse=True)
+    def _linux_platform(self, monkeypatch):
+        monkeypatch.setattr("collector.checks.host_cpu.sys.platform", "linux")
+
     async def test_first_run_records_baseline_with_no_metrics(self, settings, tmp_path):
         path = tmp_path / "stat"
         path.write_text(_stat_line())
@@ -96,6 +103,7 @@ class TestHostCpuCheck:
         result = await check.run()
         assert result.ok is False
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics required")
     async def test_permission_denied_never_raises(self, settings, tmp_path):
         path = tmp_path / "stat"
         path.write_text(_stat_line())

@@ -1,4 +1,5 @@
 """Tests for collector.checks.host_service — systemd service-status check."""
+
 from __future__ import annotations
 
 import asyncio
@@ -72,6 +73,10 @@ class TestServiceIsActive:
 
 
 class TestHostServiceCheck:
+    @pytest.fixture(autouse=True)
+    def _linux_platform(self, monkeypatch):
+        monkeypatch.setattr("collector.checks.host_service.sys.platform", "linux")
+
     async def test_run_ok_when_active(self, settings, monkeypatch):
         monkeypatch.setattr(
             "collector.checks.host_service.asyncio.create_subprocess_exec",

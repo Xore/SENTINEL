@@ -1,7 +1,9 @@
 """Tests for collector.checks.host_process — process-presence check."""
+
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 import pytest
@@ -44,6 +46,7 @@ class TestIsProcessRunning:
         with pytest.raises(FileNotFoundError):
             _is_process_running(str(tmp_path / "nope"), "sshd")
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics required")
     def test_unreadable_comm_is_skipped_not_fatal(self, tmp_path):
         proc_root = _make_fake_proc(tmp_path, {"100": "sshd"})
         (proc_root / "100" / "comm").chmod(0o000)
@@ -54,6 +57,10 @@ class TestIsProcessRunning:
 
 
 class TestHostProcessCheck:
+    @pytest.fixture(autouse=True)
+    def _linux_platform(self, monkeypatch):
+        monkeypatch.setattr("collector.checks.host_process.sys.platform", "linux")
+
     async def test_run_ok_when_running(self, settings, tmp_path):
         proc_root = _make_fake_proc(tmp_path, {"100": "nginx"})
         check = HostProcessCheck(

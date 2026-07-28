@@ -1,7 +1,9 @@
 """Tests for collector.checks.host_network — interface throughput check."""
+
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 import pytest
@@ -52,6 +54,10 @@ class TestReadInterfaceCounters:
 
 
 class TestHostNetworkCheck:
+    @pytest.fixture(autouse=True)
+    def _linux_platform(self, monkeypatch):
+        monkeypatch.setattr("collector.checks.host_network.sys.platform", "linux")
+
     async def test_first_run_records_baseline_with_no_metrics(self, settings, tmp_path):
         path = tmp_path / "net_dev"
         path.write_text(_NET_DEV)
@@ -101,14 +107,13 @@ class TestHostNetworkCheck:
         result = await check.run()
         assert result.ok is False
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics required")
     async def test_permission_denied_never_raises(self, settings, tmp_path):
         path = tmp_path / "net_dev"
         path.write_text(_NET_DEV)
         path.chmod(0o000)
         try:
-            check = HostNetworkCheck(
-                settings, meter=None, interface="eth0", net_dev_path=str(path)
-            )
+            check = HostNetworkCheck(settings, meter=None, interface="eth0", net_dev_path=str(path))
             result = await check.run()
             assert result.ok is False
         finally:

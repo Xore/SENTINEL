@@ -1,4 +1,5 @@
 """Tests for collector.checks.host_load — system load average check."""
+
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +10,7 @@ from collector.checks.host_load import HostLoadCheck
 
 class TestHostLoadCheck:
     async def test_run_ok_result(self, settings, monkeypatch):
-        monkeypatch.setattr(os, "getloadavg", lambda: (0.5, 0.75, 1.0))
+        monkeypatch.setattr(os, "getloadavg", lambda: (0.5, 0.75, 1.0), raising=False)
         check = HostLoadCheck(settings, meter=None)
 
         result = await check.run()
@@ -22,7 +23,7 @@ class TestHostLoadCheck:
         def raising():
             raise OSError("load average unobtainable")
 
-        monkeypatch.setattr(os, "getloadavg", raising)
+        monkeypatch.setattr(os, "getloadavg", raising, raising=False)
         check = HostLoadCheck(settings, meter=None)
 
         result = await check.run()

@@ -1,7 +1,9 @@
 """Tests for collector.checks.host_memory — Linux memory utilization check."""
+
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 import pytest
@@ -55,6 +57,10 @@ class TestReadMeminfo:
 
 
 class TestHostMemoryCheck:
+    @pytest.fixture(autouse=True)
+    def _linux_platform(self, monkeypatch):
+        monkeypatch.setattr("collector.checks.host_memory.sys.platform", "linux")
+
     async def test_uses_mem_available_when_present(self, settings, tmp_path):
         path = tmp_path / "meminfo"
         path.write_text(_MEMINFO_WITH_AVAILABLE)
@@ -89,6 +95,7 @@ class TestHostMemoryCheck:
         result = await check.run()
         assert result.ok is False
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics required")
     async def test_permission_denied_never_raises(self, settings, tmp_path):
         path = tmp_path / "meminfo"
         path.write_text(_MEMINFO_WITH_AVAILABLE)

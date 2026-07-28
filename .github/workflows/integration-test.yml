@@ -256,17 +256,56 @@ jobs:
           PY
 
           range_start="$(date -u -d '5 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')"
-          range_end="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-          curl --fail --silent --show-error --get \
-            -H "Authorization: Bearer ${authorized_token}" \
-            --data-urlencode "metric=sentinel_collector_heartbeat_total" \
-            --data-urlencode "site_id=site-a" \
-            --data-urlencode "collector_id=dev-node-1" \
-            --data-urlencode "start=${range_start}" \
-            --data-urlencode "end=${range_end}" \
-            --data-urlencode "step=30" \
-            -o "${RUNNER_TEMP}/api-metrics-range.json" \
-            http://localhost:8080/api/v1/metrics/range
+          range_end="$(date -u -d '30 seconds' '+%Y-%m-%dT%H:%M:%SZ')"
+          metrics_ready=false
+          for attempt in $(seq 1 10); do
+            curl --fail --silent --show-error --get \
+              -H "Authorization: Bearer ${authorized_token}" \
+              --data-urlencode "metric=sentinel_collector_heartbeat_total" \
+              --data-urlencode "site_id=site-a" \
+              --data-urlencode "collector_id=dev-node-1" \
+              --data-urlencode "start=${range_start}" \
+              --data-urlencode "end=${range_end}" \
+              --data-urlencode "step=30" \
+              -o "${RUNNER_TEMP}/api-metrics-range.json" \
+              http://localhost:8080/api/v1/metrics/range
+            curl --fail --silent --show-error --get \
+              -H "Authorization: Bearer ${authorized_token}" \
+              --data-urlencode "metric=sentinel_collector_http_response_seconds_count" \
+              --data-urlencode "site_id=site-a" \
+              --data-urlencode "collector_id=dev-node-1" \
+              --data-urlencode "start=${range_start}" \
+              --data-urlencode "end=${range_end}" \
+              --data-urlencode "step=30" \
+              -o "${RUNNER_TEMP}/api-http-metrics-range.json" \
+              http://localhost:8080/api/v1/metrics/range
+            if python - \
+                "${RUNNER_TEMP}/api-metrics-range.json" \
+                "${RUNNER_TEMP}/api-http-metrics-range.json" <<'PY'
+          import json
+          import sys
+
+          for path in sys.argv[1:]:
+              payload = json.load(open(path, encoding="utf-8"))
+              if (
+                  payload.get("data", {}).get("result_type") != "matrix"
+                  or not payload.get("data", {}).get("result")
+              ):
+                  raise SystemExit(1)
+          PY
+            then
+              metrics_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "${metrics_ready}" != true ]]; then
+            echo "authenticated metrics did not become queryable before the deadline"
+            cat "${RUNNER_TEMP}/api-metrics-range.json"
+            cat "${RUNNER_TEMP}/api-http-metrics-range.json"
+            exit 1
+          fi
+
           python - "${RUNNER_TEMP}/api-metrics-range.json" <<'PY'
           import json
           import sys
@@ -283,16 +322,6 @@ jobs:
               raise SystemExit(f"expected one site-scoped matrix, got: {payload}")
           PY
 
-          curl --fail --silent --show-error --get \
-            -H "Authorization: Bearer ${authorized_token}" \
-            --data-urlencode "metric=sentinel_collector_http_response_seconds_count" \
-            --data-urlencode "site_id=site-a" \
-            --data-urlencode "collector_id=dev-node-1" \
-            --data-urlencode "start=${range_start}" \
-            --data-urlencode "end=${range_end}" \
-            --data-urlencode "step=30" \
-            -o "${RUNNER_TEMP}/api-http-metrics-range.json" \
-            http://localhost:8080/api/v1/metrics/range
           python - "${RUNNER_TEMP}/api-http-metrics-range.json" <<'PY'
           import json
           import sys
