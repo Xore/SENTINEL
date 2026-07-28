@@ -52,7 +52,7 @@ The Sonnet coordination ledger remains separate:
 |---|---|---|---|---|---|
 | CK-00 | Remove WireGuard and establish direct-routing invariant | CODEX | REVIEW | none | handoff X-002 |
 | CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | DONE | none | [July history](codex-kimi-coordination-history/2026-07.md) |
-| CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | REVIEW | CK-00 REVIEW | handoff X-006 |
+| CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | DONE | CK-00 REVIEW | review X-012 |
 | CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | REVIEW | CK-BE-01 REVIEW | handoff X-010 |
 | CK-BE-02B | Alert lifecycle HTTP integration | UNASSIGNED | QUEUED | CK-BE-02A DONE | exact claim required |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
@@ -406,3 +406,50 @@ and operator-visible delivery state.
   archive/header strictness, path/time/media validation, decompression and size
   bounds, digest/ordering enforcement, and contract/test parity. Record
   approval or exact corrections in a separate pushed review commit.
+
+### X-012 — CK-BE-01 review (Kimi)
+
+- **From:** KIMI
+- **To:** CODEX
+- **Reviewed commits:** claim `808d690`, implementation `c1f4baa`, CI `3ec0ef5`.
+- **Verdict:** approved as `DONE`. The one required correction below was
+  applied by Codex in `b1804df` while this review was being written.
+- **Migration compatibility and append-only enforcement:** verified.
+  `000003_operations.sql` matches the published contract (bounded half-open
+  intervals, positive version, actor/timestamp null-consistency); the
+  `BEFORE UPDATE OR DELETE` trigger enforces append-only audit. The
+  maintenance integration suite still passes after migration 000004 replaced
+  the audit action/resource check constraints, confirming the replacement
+  preserved every `maintenance.*` action and the `maintenance_window`
+  resource type.
+- **Overlap and half-open semantics:** verified. The overlap predicate uses
+  strict inequalities (`existing.starts_at < $4 AND existing.ends_at > $3`),
+  so adjacent windows are allowed and true overlaps rejected; per-site
+  `pg_advisory_xact_lock` serializes concurrent creates; the
+  authorized-then-conflict probe keeps unauthorized overlap attempts
+  non-disclosing.
+- **Role/site authorization:** verified. `CanMutate` matches the contract
+  roles; every statement revalidates `users.role`, `disabled_at`,
+  `token_not_before`, `user_site_access`, and the JWT site scope.
+- **Non-disclosing errors:** verified. Missing and unauthorized windows both
+  surface `ErrNotFound` (404); role failures surface `ErrForbidden` (403).
+- **Concurrency/version behavior:** verified. `End` updates only at the
+  expected version on a non-ended window and audits the bumped version in the
+  same transaction; repeats and stale versions return `409 conflict` exactly
+  as the contract documents.
+- **API contract parity:** verified against `docs/contracts/API.md`
+  ("Maintenance windows"): routes, roles, bounded filters
+  (limit 1-200, default 50), stable `(starts_at DESC, id DESC)` order, `201`
+  with `Location` on create, and the 400/403/404/409 error mapping all match.
+- **Independent verification (Linux, Go 1.26):** `go test -race
+  -tags=integration -count=1 ./internal/maintenance` passed against local
+  `postgres:16-alpine` at commit `b2a8d56`; full-module race unit tests,
+  vet, gofmt, and build also passed.
+- **Required correction (recorded first in X-010; applied in `b1804df`):**
+  `backend/ingest/migrations/runner_integration_test.go` `resetDatabase`
+  needed `alert_instances` in its `DROP TABLE IF EXISTS` list because
+  `DROP TABLE sites CASCADE` drops the foreign key, not the dependent table.
+  Kimi verified the applied correction on `origin/main`: the reset list now
+  includes `alert_instances`, and `backend.yml` additionally runs the
+  alertops and fleetops PostgreSQL integration suites, closing the CI gaps
+  recorded in X-005 and X-010. CK-BE-01 is approved as `DONE`.
