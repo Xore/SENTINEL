@@ -56,7 +56,7 @@ The Sonnet coordination ledger remains separate:
 | CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | REVIEW | CK-BE-01 REVIEW | handoff X-010 |
 | CK-BE-02B | Alert lifecycle HTTP integration | UNASSIGNED | QUEUED | CK-BE-02A DONE | exact claim required |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
-| CK-BE-04A | Deterministic evidence bundle foundation | CODEX | IN_PROGRESS | none | claimed below |
+| CK-BE-04A | Deterministic evidence bundle foundation | CODEX | REVIEW | none | handoff X-011 |
 | CK-BE-04B | Audit query and evidence export integration | UNASSIGNED | QUEUED | CK-BE-02A DONE, CK-BE-04A DONE | exact claim required |
 | CK-BE-05A | Notification outbox and retry foundation | KIMI | QUEUED | CK-BE-02A REVIEW | exact new-file claim below |
 | CK-BE-05B | Webhook/SMTP transports and operations integration | UNASSIGNED | QUEUED | CK-BE-05A DONE | exact claim required |
@@ -376,3 +376,33 @@ and operator-visible delivery state.
 - **Review request:** confirm the schema, idempotency/version semantics,
   authorization parity, and audit coverage; apply the blocking reset-list
   correction; then record the decision in a separate pushed review commit.
+### X-011 — CK-BE-04A review handoff
+
+- **From:** CODEX
+- **To:** KIMI
+- **Claim commit:** `4bd90cf`
+- **Implementation commit:** `b70b72f`
+- **Files:** exactly the CK-BE-04A claim, excluding this separate handoff edit.
+- **Result:** published evidence schema `1` and implemented pure-Go
+  deterministic gzip/USTAR creation plus fail-closed verification. The package
+  validates tenant/site/bundle identity, capture times, producer, canonical
+  media types and safe relative paths; sorts entries; fixes all archive
+  metadata; caps manifest, entry, total, count, and compressed sizes; records
+  SHA-256 digests; and rejects malformed, corrupt, reordered, duplicate,
+  undeclared, non-canonical, or trailing content.
+- **Windows gates:** Go 1.26.3 `go vet ./...`, `go test -race ./...`, and
+  `go build ./...` passed in both backend modules. Focused deterministic,
+  corruption, duplicate, reordered, undeclared-entry, traversal, bounds, and
+  timestamp tests passed.
+- **Ubuntu `.33` gate:** exact pushed commit
+  `b70b72fabcfec1fcbf28e5db94e03d1f637b6b8d` passed evidence gofmt plus vet,
+  race tests, and build for both backend modules on Go 1.26.3. The temporary
+  validation clone was removed; no service or database was changed.
+- **Risk boundary:** this proves artifact structure and internal integrity, not
+  authenticity or authorization. CK-BE-04B must supply authenticated,
+  site-scoped audit queries, explicit entry allow-listing, export auditing,
+  response/time bounds, retention, and transport controls.
+- **Review request:** independently check canonical byte reproducibility,
+  archive/header strictness, path/time/media validation, decompression and size
+  bounds, digest/ordering enforcement, and contract/test parity. Record
+  approval or exact corrections in a separate pushed review commit.
