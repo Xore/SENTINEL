@@ -148,6 +148,14 @@ func (m Manifest) Verify(publicKey ed25519.PublicKey, now time.Time) error {
 	if got := KeyID(publicKey); got != m.SigningKeyID {
 		return fmt.Errorf("signing_key_id mismatch: manifest %q, key %q", m.SigningKeyID, got)
 	}
+	signature, _ := base64.StdEncoding.DecodeString(m.Signature)
+	payload, err := m.CanonicalPayload()
+	if err != nil {
+		return err
+	}
+	if !ed25519.Verify(publicKey, payload, signature) {
+		return errors.New("invalid Ed25519 manifest signature")
+	}
 	notBefore, _ := parseContractTime(m.NotBefore)
 	expiresAt, _ := parseContractTime(m.ExpiresAt)
 	now = now.UTC()
@@ -156,14 +164,6 @@ func (m Manifest) Verify(publicKey ed25519.PublicKey, now time.Time) error {
 	}
 	if !now.Before(expiresAt) {
 		return fmt.Errorf("manifest expired at %s", m.ExpiresAt)
-	}
-	signature, _ := base64.StdEncoding.DecodeString(m.Signature)
-	payload, err := m.CanonicalPayload()
-	if err != nil {
-		return err
-	}
-	if !ed25519.Verify(publicKey, payload, signature) {
-		return errors.New("invalid Ed25519 manifest signature")
 	}
 	return nil
 }
