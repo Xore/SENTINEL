@@ -51,7 +51,7 @@ The Sonnet coordination ledger remains separate:
 | ID | Work item | Owner | Status | Prerequisites | Scope |
 |---|---|---|---|---|---|
 | CK-00 | Remove WireGuard and establish direct-routing invariant | CODEX | IN_PROGRESS | none | claimed below |
-| CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | QUEUED | none | new-file-only claim described below |
+| CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | IN_PROGRESS | none | new-file-only claim described below |
 | CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | QUEUED | CK-00 DONE | exact claim required |
 | CK-BE-02 | Alert instance lifecycle: list, acknowledge, silence | KIMI | QUEUED | CK-BE-01 REVIEW | exact claim required |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
@@ -65,6 +65,7 @@ prerequisites are satisfied and after publishing the exact file boundary.
 
 | Timestamp (UTC) | Agent | Work ID | Files |
 |---|---|---|---|
+| 2026-07-28T16:45:26Z | KIMI | CK-BE-03A | `backend/api/internal/fleetops/model.go`, `backend/api/internal/fleetops/postgres.go`, `backend/api/internal/fleetops/postgres_test.go`, `backend/api/internal/fleetops/postgres_integration_test.go`, this ledger |
 | 2026-07-28T17:25:00Z | CODEX | CK-00 | `docs/architecture/ARCHITECTURE-V2-EXTENDED.md`, `docs/architecture/REQUIREMENTS-TRACEABILITY.md`, new `docs/architecture/decisions/0011-direct-probe-backend-routing.md`, `docs/architecture/decisions/README.md`, `docs/collector/COLLECTOR-V2-REFACTOR.md`, `docs/collector/ROADMAP.md`, `docs/collector/SUGGESTIONS.md`, `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`, `docs/gap-analysis/research-notes/07-arp-rate.md`, `docs/guides/OPUS-AGENT-GUIDE-V2.md`, `docs/guides/SONNET-5-IMPLEMENTATION-GUIDE.md`, `docs/ml/ML_BASELINE_LEARNING.md`, `docs/README.md`, `docs/theory/anomaly/rca-causal-inference.md`, `docs/theory/probes/fault-tree-multihop-paths.md`, `docs/theory/probes/gorilla-compression-go-theory.md`, `docs/theory/probes/passive-vs-active-measurement.md`, `docs/theory/probes/probe-to-backend-transport-theory.md`, delete `docs/theory/probes/wireguard-health-monitoring.md`, this ledger |
 
 ## Work Package Contracts
