@@ -67,7 +67,7 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S2-02 | 2 | Core network probe activation and hardening | CODEX | IN_PROGRESS | S2-01 DONE | Codex takeover below |
+| S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Codex takeover below |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | exact new-file scope below |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
@@ -663,6 +663,52 @@ Implementation commit: `d9bef65`.
   collector gates, production-path integration verification, and a separate
   pushed REVIEW handoff. Sonnet must not edit the active scope before that
   handoff.
+
+#### S2-02 Codex correction handoff
+
+- **Timestamp:** 2026-07-28T17:51:27Z.
+- **Status:** REVIEW. Implementation commit `0e254b0`.
+- **Files changed:** `collector/config.py`, `collector/__main__.py`,
+  `collector/checks/net_http.py`, `collector/checks/net_icmp.py`,
+  `collector/tests/test_config.py`, `collector/tests/test_main.py`,
+  `collector/tests/checks/test_net_http.py`,
+  `collector/tests/checks/test_net_tcp.py`, and
+  `collector/tests/checks/test_net_icmp.py`. No frozen S3/S4/S5 file,
+  contract, dependency, workflow, or architecture document changed.
+- **Corrections:** disabled families are no longer constructed; all five
+  timeout fields require a positive finite value; HTTP results, errors, and
+  logs use `target_id` and exception type without URL/credential/query
+  material; ICMP/latency explicitly reject IPv6 while the IPv4 ICMP runtime
+  resolves hostnames and verifies reply source; ICMP, TCP, and HTTP now join
+  the existing DNS/latency external-cancellation matrix, including bounded
+  ICMP worker recovery.
+- **Windows/Python 3.14.5 scoped gates:** changed-file Ruff passed; mypy
+  passed for all four changed production modules; Pylint rated the production
+  modules 10.00/10; focused network/config/registration suite passed
+  `221 passed, 1 skipped`.
+- **Windows repository-wide evidence:** Ruff passed and Pylint rated
+  `10.00/10`. Full mypy stops only at frozen S3 file
+  `collector/checks/host_load.py:33` because Windows has no typed
+  `os.getloadavg`; full pytest reports `431 passed, 1 skipped, 19 failed`,
+  with all failures confined to frozen S3 Linux host-check modules/tests.
+  These pre-existing cross-platform S3 corrections are outside this exact
+  claim and remain for the independent S3 review.
+- **Ubuntu 24.04/Python 3.12.3 exact-commit evidence on `.33`:** host
+  `/home/adminuser/analyseLaptop` was clean, fast-forwarded to exact
+  `0e254b0045a3da35adaa25e2f8286cddaa532d77`, then Ruff passed, mypy passed
+  all 55 source files, Pylint rated `10.00/10`, and pytest passed
+  `450 passed, 1 skipped`.
+- **GitHub evidence at exact implementation SHA:** collector run
+  `30384526449` passed its Ubuntu/Python 3.12 job (all four gates); its
+  Windows job reproduced only the frozen S3 `host_load.py` mypy blocker.
+  Pylint run `30384526404` and CodeQL run `30384526429` passed.
+  Production-path phase-1 integration run `30384526391` passed real
+  enrollment, mTLS collector export, VictoriaMetrics storage, and the
+  authenticated site-scoped API assertion.
+- **Review request:** independently inspect only the nine-file correction
+  diff from `4e18ad8..0e254b0` against the five items in Codex review 1.
+  Keep this REVIEW scope frozen. C2-03 may now start under its disjoint
+  workflow-only claim; S2-02 must not be marked DONE by its implementer.
 
 ---
 
