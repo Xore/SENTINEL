@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Xore/analyseLaptop/backend/api/internal/auth"
+	"github.com/Xore/analyseLaptop/backend/api/internal/maintenance"
 	"github.com/Xore/analyseLaptop/backend/api/internal/metricquery"
 	"github.com/Xore/analyseLaptop/backend/api/internal/registry"
 	"github.com/golang-jwt/jwt/v5"
@@ -57,6 +58,52 @@ type fakeMetrics struct {
 	calls  int
 }
 
+type fakeMaintenance struct {
+	created     maintenance.Window
+	listed      []maintenance.Window
+	ended       maintenance.Window
+	err         error
+	access      maintenance.Access
+	createInput maintenance.CreateInput
+	listFilter  maintenance.ListFilter
+	endInput    maintenance.EndInput
+	endID       string
+	createCalls int
+	listCalls   int
+	endCalls    int
+}
+
+func (f *fakeMaintenance) Create(
+	_ context.Context, access maintenance.Access, input maintenance.CreateInput,
+) (maintenance.Window, error) {
+	f.createCalls++
+	f.access = access
+	f.createInput = input
+	return f.created, f.err
+}
+
+func (f *fakeMaintenance) List(
+	_ context.Context, access maintenance.Access, filter maintenance.ListFilter,
+) ([]maintenance.Window, error) {
+	f.listCalls++
+	f.access = access
+	f.listFilter = filter
+	return f.listed, f.err
+}
+
+func (f *fakeMaintenance) End(
+	_ context.Context,
+	access maintenance.Access,
+	id string,
+	input maintenance.EndInput,
+) (maintenance.Window, error) {
+	f.endCalls++
+	f.access = access
+	f.endID = id
+	f.endInput = input
+	return f.ended, f.err
+}
+
 func (f *fakeMetrics) QueryRange(
 	_ context.Context, query metricquery.Query,
 ) (metricquery.Result, error) {
@@ -75,6 +122,10 @@ func testValidator(t *testing.T) *auth.Validator {
 }
 
 func testToken(t *testing.T, sites []string) string {
+	return testRoleToken(t, sites, "viewer")
+}
+
+func testRoleToken(t *testing.T, sites []string, role string) string {
 	t.Helper()
 	now := time.Now()
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
@@ -84,7 +135,7 @@ func testToken(t *testing.T, sites []string) string {
 		"iat":      now.Unix(),
 		"nbf":      now.Add(-time.Minute).Unix(),
 		"exp":      now.Add(time.Hour).Unix(),
-		"role":     "viewer",
+		"role":     role,
 		"site_ids": sites,
 	})
 	raw, err := token.SignedString(routerTestSecret)
@@ -95,7 +146,13 @@ func testToken(t *testing.T, sites []string) string {
 }
 
 func performRequest(handler http.Handler, method, path, token string) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(method, path, nil)
+	return performRequestBody(handler, method, path, token, "")
+}
+
+func performRequestBody(
+	handler http.Handler, method, path, token, body string,
+) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -106,7 +163,7 @@ func performRequest(handler http.Handler, method, path, token string) *httptest.
 
 func TestHealthAndReadiness(t *testing.T) {
 	store := &fakeRegistry{}
-	handler := NewRouter(store, testValidator(t), &fakeMetrics{})
+	handler := NewRouter(store, testValidator(t), &fakeMetrics{}, nil)
 
 	for _, path := range []string{"/healthz", "/readyz"} {
 		response := performRequest(handler, http.MethodGet, path, "")
@@ -121,7 +178,7 @@ func TestHealthAndReadiness(t *testing.T) {
 
 func TestCollectorsRequiresAuthentication(t *testing.T) {
 	store := &fakeRegistry{}
-	handler := NewRouter(store, testValidator(t), &fakeMetrics{})
+	handler := NewRouter(store, testValidator(t), &fakeMetrics{}, nil)
 
 	response := performRequest(handler, http.MethodGet, "/api/v1/collectors", "")
 	if response.Code != http.StatusUnauthorized {
@@ -148,7 +205,7 @@ func TestCollectorsPassesTokenScopeToRegistry(t *testing.T) {
 			},
 		},
 	}
-	handler := NewRouter(store, testValidator(t), &fakeMetrics{})
+	handler := NewRouter(store, testValidator(t), &fakeMetrics{}, nil)
 
 	response := performRequest(
 		handler,
@@ -179,7 +236,7 @@ func TestReadinessAndCollectorFailureHideDetails(t *testing.T) {
 		pingErr: registry.ErrUnavailable,
 		listErr: registry.ErrUnavailable,
 	}
-	handler := NewRouter(store, testValidator(t), &fakeMetrics{})
+	handler := NewRouter(store, testValidator(t), &fakeMetrics{}, nil)
 
 	ready := performRequest(handler, http.MethodGet, "/readyz", "")
 	if ready.Code != http.StatusServiceUnavailable {
@@ -214,7 +271,7 @@ func TestMetricsRangeEnforcesSiteAccessAndPassesBoundedQuery(t *testing.T) {
 			},
 		}},
 	}}
-	handler := NewRouter(store, testValidator(t), metrics)
+	handler := NewRouter(store, testValidator(t), metrics, nil)
 	path := "/api/v1/metrics/range?metric=sentinel_collector_heartbeat_total" +
 		"&site_id=site-a&collector_id=dev-node-1" +
 		"&start=" + now.Add(-time.Minute).Format(time.RFC3339) +
@@ -265,7 +322,7 @@ func TestMetricsRangeRejectsInvalidAndUnauthorizedQueriesBeforeVictoriaMetrics(t
 		t.Run(test.name, func(t *testing.T) {
 			store := &fakeRegistry{authorized: test.authorized}
 			metrics := &fakeMetrics{}
-			handler := NewRouter(store, testValidator(t), metrics)
+			handler := NewRouter(store, testValidator(t), metrics, nil)
 			response := performRequest(
 				handler, http.MethodGet, test.path, testToken(t, []string{"site-a"}),
 			)
@@ -284,7 +341,7 @@ func TestMetricsRangeHidesDependencyErrors(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	store := &fakeRegistry{authorized: true}
 	metrics := &fakeMetrics{err: metricquery.ErrUnavailable}
-	handler := NewRouter(store, testValidator(t), metrics)
+	handler := NewRouter(store, testValidator(t), metrics, nil)
 	path := "/api/v1/metrics/range?metric=sentinel_collector_heartbeat_total" +
 		"&site_id=site-a&start=" + now.Add(-time.Minute).Format(time.RFC3339) +
 		"&end=" + now.Format(time.RFC3339) + "&step=30"
@@ -292,5 +349,162 @@ func TestMetricsRangeHidesDependencyErrors(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable ||
 		strings.Contains(response.Body.String(), "metrics query") {
 		t.Fatalf("unexpected response: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestMaintenanceCreateAndEnd(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	id := "a682bcea-b46d-4c7f-91e5-a5760d4e5ef8"
+	operations := &fakeMaintenance{
+		created: maintenance.Window{
+			ID:        id,
+			SiteID:    "site-a",
+			StartsAt:  now,
+			EndsAt:    now.Add(time.Hour),
+			Reason:    "planned work",
+			State:     "active",
+			Version:   1,
+			CreatedBy: "viewer-1",
+			CreatedAt: now,
+		},
+		ended: maintenance.Window{
+			ID:        id,
+			SiteID:    "site-a",
+			StartsAt:  now,
+			EndsAt:    now.Add(time.Hour),
+			Reason:    "planned work",
+			State:     "ended",
+			Version:   2,
+			CreatedBy: "viewer-1",
+			CreatedAt: now,
+		},
+	}
+	handler := NewRouter(
+		&fakeRegistry{}, testValidator(t), &fakeMetrics{}, operations,
+	)
+	token := testRoleToken(t, []string{"site-a"}, "operator")
+	createBody := `{"site_id":"site-a","starts_at":"` + now.Format(time.RFC3339) +
+		`","ends_at":"` + now.Add(time.Hour).Format(time.RFC3339) +
+		`","reason":"planned work"}`
+	created := performRequestBody(
+		handler, http.MethodPost, "/api/v1/maintenance-windows", token, createBody,
+	)
+	if created.Code != http.StatusCreated ||
+		created.Header().Get("Location") != "/api/v1/maintenance-windows/"+id ||
+		operations.createCalls != 1 ||
+		operations.access.Role != "operator" ||
+		operations.createInput.SiteID != "site-a" {
+		t.Fatalf("create response/store = %d %s %+v", created.Code, created.Body, operations)
+	}
+
+	ended := performRequestBody(
+		handler,
+		http.MethodPost,
+		"/api/v1/maintenance-windows/"+id+"/end",
+		token,
+		`{"expected_version":1}`,
+	)
+	if ended.Code != http.StatusOK || operations.endCalls != 1 ||
+		operations.endID != id || operations.endInput.ExpectedVersion != 1 {
+		t.Fatalf("end response/store = %d %s %+v", ended.Code, ended.Body, operations)
+	}
+}
+
+func TestMaintenanceListIsBoundedAndViewerReadable(t *testing.T) {
+	operations := &fakeMaintenance{listed: []maintenance.Window{}}
+	handler := NewRouter(
+		&fakeRegistry{}, testValidator(t), &fakeMetrics{}, operations,
+	)
+	response := performRequest(
+		handler,
+		http.MethodGet,
+		"/api/v1/maintenance-windows?site_id=site-a&state=active&limit=25",
+		testToken(t, []string{"site-a"}),
+	)
+	if response.Code != http.StatusOK || operations.listCalls != 1 ||
+		operations.listFilter.SiteID != "site-a" ||
+		operations.listFilter.State != "active" ||
+		operations.listFilter.Limit != 25 {
+		t.Fatalf("list response/store = %d %s %+v", response.Code, response.Body, operations)
+	}
+}
+
+func TestMaintenanceRejectsViewerMutationAndMalformedInputs(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		token  string
+		body   string
+		status int
+	}{
+		{
+			name:   "viewer create",
+			method: http.MethodPost,
+			path:   "/api/v1/maintenance-windows",
+			token:  testToken(t, []string{"site-a"}),
+			body:   `{}`,
+			status: http.StatusForbidden,
+		},
+		{
+			name:   "unknown JSON field",
+			method: http.MethodPost,
+			path:   "/api/v1/maintenance-windows",
+			token:  testRoleToken(t, []string{"site-a"}, "operator"),
+			body:   `{"site_id":"site-a","unknown":true}`,
+			status: http.StatusBadRequest,
+		},
+		{
+			name:   "unknown query",
+			method: http.MethodGet,
+			path:   "/api/v1/maintenance-windows?site_id=site-a&extra=true",
+			token:  testToken(t, []string{"site-a"}),
+			status: http.StatusBadRequest,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			operations := &fakeMaintenance{}
+			handler := NewRouter(
+				&fakeRegistry{}, testValidator(t), &fakeMetrics{}, operations,
+			)
+			response := performRequestBody(
+				handler, test.method, test.path, test.token, test.body,
+			)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			if operations.createCalls+operations.listCalls+operations.endCalls != 0 {
+				t.Fatalf("store called for rejected request: %+v", operations)
+			}
+		})
+	}
+}
+
+func TestMaintenanceMapsNonDisclosingAndConflictErrors(t *testing.T) {
+	tests := []struct {
+		err      error
+		status   int
+		wantCode string
+	}{
+		{maintenance.ErrNotFound, http.StatusNotFound, "not_found"},
+		{maintenance.ErrConflict, http.StatusConflict, "conflict"},
+		{maintenance.ErrUnavailable, http.StatusServiceUnavailable, "unavailable"},
+	}
+	for _, test := range tests {
+		operations := &fakeMaintenance{err: test.err}
+		handler := NewRouter(
+			&fakeRegistry{}, testValidator(t), &fakeMetrics{}, operations,
+		)
+		response := performRequest(
+			handler,
+			http.MethodGet,
+			"/api/v1/maintenance-windows?site_id=site-a",
+			testToken(t, []string{"site-a"}),
+		)
+		if response.Code != test.status ||
+			!strings.Contains(response.Body.String(), `"code":"`+test.wantCode+`"`) {
+			t.Fatalf("error %v response = %d %s", test.err, response.Code, response.Body)
+		}
 	}
 }

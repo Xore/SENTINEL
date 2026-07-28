@@ -44,6 +44,20 @@ func TestRunnerAppliesAndRevalidatesMigrations(t *testing.T) {
 	if count != len(expected) {
 		t.Fatalf("migration record count = %d, want %d", count, len(expected))
 	}
+
+	for _, table := range []string{"maintenance_windows", "operational_audit_log"} {
+		var exists bool
+		if err := pool.QueryRow(
+			ctx,
+			"SELECT to_regclass('public.' || $1) IS NOT NULL",
+			table,
+		).Scan(&exists); err != nil {
+			t.Fatalf("check table %s: %v", table, err)
+		}
+		if !exists {
+			t.Fatalf("table %s was not created", table)
+		}
+	}
 }
 
 func TestRunnerRejectsChangedAppliedMigration(t *testing.T) {
@@ -78,8 +92,10 @@ WHERE version = 1`); err != nil {
 func resetDatabase(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 	const reset = `
-DROP TABLE IF EXISTS user_site_access, users, federation_outbox, durable_events,
-    enrollment_tokens, collectors, sites, sentinel_schema_migrations CASCADE`
+DROP TABLE IF EXISTS operational_audit_log, maintenance_windows,
+    user_site_access, users, federation_outbox, durable_events,
+    enrollment_tokens, collectors, sites, sentinel_schema_migrations CASCADE;
+DROP FUNCTION IF EXISTS reject_operational_audit_mutation()`
 	if _, err := pool.Exec(ctx, reset); err != nil {
 		t.Fatalf("reset database: %v", err)
 	}

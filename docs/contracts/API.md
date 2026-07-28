@@ -59,7 +59,9 @@ Defined Phase 1 codes:
 |---:|---|---|
 | 400 | `invalid_request` | Query parameters are missing, malformed, unsupported, or exceed a bound |
 | 401 | `unauthorized` | Missing, malformed, invalid, expired, or unsupported token |
+| 403 | `forbidden` | The authenticated role cannot perform the requested mutation |
 | 404 | `not_found` | The requested site does not exist or is outside current authorization |
+| 409 | `conflict` | The supplied optimistic-concurrency version is stale |
 | 503 | `unavailable` | API dependency is not ready or a bounded query failed |
 
 Every response includes `X-Request-ID` and `Cache-Control: no-store`.
@@ -156,3 +158,64 @@ Example response:
 An unauthorized site returns the same `404 not_found` response whether the site
 does not exist, is absent from the JWT, or is absent from current database
 access. VictoriaMetrics is not queried in those cases.
+
+## Maintenance windows
+
+Maintenance windows are site-wide operational records. They suppress or
+annotate alerting and provide contamination masks to future analysis/training
+jobs; the API does not directly control those consumers.
+
+`viewer` may list windows. Creating or ending a window requires `operator`,
+`analyst`, `admin`, or `ot-operator`. Every query revalidates the current user,
+role, token-not-before boundary, JWT site scope, and database site access.
+Missing and unauthorized resources are indistinguishable.
+
+A window has:
+
+- server-generated UUID `id`;
+- `site_id`;
+- RFC 3339 UTC `starts_at` and `ends_at`, with a positive duration no longer
+  than 31 days;
+- a trimmed, non-empty `reason` of at most 500 UTF-8 bytes;
+- derived state `scheduled`, `active`, or `ended`;
+- positive optimistic-concurrency `version`;
+- creator and creation timestamp; and
+- optional explicit end actor and timestamp.
+
+Creating and explicitly ending a window atomically append an immutable
+operational audit record. Non-ended windows for the same site may not overlap;
+concurrent creates are serialized per site and an overlap returns
+`409 conflict`. Adjacent half-open intervals are allowed.
+
+### `GET /api/v1/maintenance-windows`
+
+Required `site_id`; optional `state` (`all`, `scheduled`, `active`, or `ended`)
+and `limit` (1–200, default 50). Unknown or duplicate parameters are rejected.
+Results use stable `(starts_at DESC, id DESC)` order.
+
+### `POST /api/v1/maintenance-windows`
+
+Request:
+
+```json
+{
+  "site_id": "site-a",
+  "starts_at": "2026-07-28T18:00:00Z",
+  "ends_at": "2026-07-28T20:00:00Z",
+  "reason": "PLC firmware maintenance"
+}
+```
+
+Returns `201`, a `Location` header, and the created resource.
+
+### `POST /api/v1/maintenance-windows/{id}/end`
+
+Request:
+
+```json
+{"expected_version": 1}
+```
+
+Returns the ended resource with an incremented version. Repeating the mutation
+or supplying a stale version returns `409 conflict`; malformed identifiers and
+versions return `400 invalid_request`.

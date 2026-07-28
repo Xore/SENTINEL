@@ -12,6 +12,7 @@ import (
 	"github.com/Xore/analyseLaptop/backend/api/internal/auth"
 	"github.com/Xore/analyseLaptop/backend/api/internal/config"
 	"github.com/Xore/analyseLaptop/backend/api/internal/httpapi"
+	"github.com/Xore/analyseLaptop/backend/api/internal/maintenance"
 	"github.com/Xore/analyseLaptop/backend/api/internal/metricquery"
 	"github.com/Xore/analyseLaptop/backend/api/internal/registry"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -55,10 +56,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	maintenanceStore := maintenance.NewStore(pool, cfg.QueryTimeout)
 
 	server := &http.Server{
 		Addr:         cfg.Address,
-		Handler:      httpapi.NewRouter(store, validator, metricsClient),
+		Handler:      httpapi.NewRouter(store, validator, metricsClient, maintenanceStore),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
