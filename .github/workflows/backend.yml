@@ -240,3 +240,7 @@ jobs:
       - name: Test maintenance operations and append-only audit
         working-directory: backend/api
         run: go test -race -tags=integration -count=1 ./internal/maintenance
+
+      - name: Test fleet operations authorization and projections
+        working-directory: backend/api
+        run: go test -race -tags=integration -count=1 ./internal/fleetops
