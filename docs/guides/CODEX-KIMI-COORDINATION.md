@@ -51,7 +51,7 @@ The Sonnet coordination ledger remains separate:
 | ID | Work item | Owner | Status | Prerequisites | Scope |
 |---|---|---|---|---|---|
 | CK-00 | Remove WireGuard and establish direct-routing invariant | CODEX | REVIEW | none | handoff X-002 |
-| CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | REVIEW | none | handoff X-005 |
+| CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | DONE | none | approved X-008; archive pending |
 | CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | REVIEW | CK-00 REVIEW | handoff X-006 |
 | CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | IN_PROGRESS | CK-BE-01 REVIEW | exact new-file claim below |
 | CK-BE-02B | Alert lifecycle HTTP integration | UNASSIGNED | QUEUED | CK-BE-02A DONE | exact claim required |
@@ -69,7 +69,6 @@ prerequisites are satisfied and after publishing the exact file boundary.
 |---|---|---|---|
 | 2026-07-28T17:06:51Z | KIMI | CK-BE-02A | new `backend/ingest/migrations/000004_alert_operations.sql`, new `backend/api/internal/alertops/model.go`, new `backend/api/internal/alertops/postgres.go`, new `backend/api/internal/alertops/postgres_test.go`, new `backend/api/internal/alertops/postgres_integration_test.go`, this ledger |
 | 2026-07-28T16:49:20Z | CODEX | CK-BE-01 | `docs/contracts/API.md`, new `backend/ingest/migrations/000003_operations.sql`, `backend/ingest/migrations/runner_integration_test.go`, new `backend/api/internal/maintenance/model.go`, new `backend/api/internal/maintenance/postgres.go`, new `backend/api/internal/maintenance/postgres_test.go`, new `backend/api/internal/maintenance/postgres_integration_test.go`, `backend/api/internal/httpapi/router.go`, `backend/api/internal/httpapi/router_test.go`, `backend/api/cmd/api/main.go`, this ledger |
-| 2026-07-28T16:45:26Z | KIMI | CK-BE-03A | `backend/api/internal/fleetops/model.go`, `backend/api/internal/fleetops/postgres.go`, `backend/api/internal/fleetops/postgres_test.go`, `backend/api/internal/fleetops/postgres_integration_test.go`, this ledger |
 | 2026-07-28T17:25:00Z | CODEX | CK-00 | `docs/architecture/ARCHITECTURE-V2-EXTENDED.md`, `docs/architecture/REQUIREMENTS-TRACEABILITY.md`, new `docs/architecture/decisions/0011-direct-probe-backend-routing.md`, `docs/architecture/decisions/README.md`, `docs/collector/COLLECTOR-V2-REFACTOR.md`, `docs/collector/ROADMAP.md`, `docs/collector/SUGGESTIONS.md`, `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`, `docs/gap-analysis/research-notes/07-arp-rate.md`, `docs/guides/OPUS-AGENT-GUIDE-V2.md`, `docs/guides/SONNET-5-IMPLEMENTATION-GUIDE.md`, `docs/ml/ML_BASELINE_LEARNING.md`, `docs/README.md`, `docs/theory/anomaly/rca-causal-inference.md`, `docs/theory/probes/fault-tree-multihop-paths.md`, `docs/theory/probes/gorilla-compression-go-theory.md`, `docs/theory/probes/passive-vs-active-measurement.md`, `docs/theory/probes/probe-to-backend-transport-theory.md`, delete `docs/theory/probes/wireguard-health-monitoring.md`, this ledger |
 
 ## Work Package Contracts
@@ -363,3 +362,24 @@ and operator-visible delivery state.
 - **Stop conditions:** stop and record a pushed question if either task needs
   an existing file outside its contract, a new dependency, an HTTP route, or a
   change to another agent's frozen scope.
+
+### X-008 — CK-BE-03A review approval
+
+- **Reviewer:** CODEX
+- **Decision:** approved `DONE`; no correction required.
+- **Reviewed:** claim `79137ec`, implementation `5997b93`, exact four-file
+  implementation scope, authorization and query predicates, unit/integration
+  tests, handoff X-005, and combined-branch behavior.
+- **Findings:** current user/role/token/site authorization matches the registry;
+  lifecycle counts and five-minute boundary are consistent between summary and
+  detail; certificate expiry is correctly orthogonal and excludes disabled
+  collectors; bounds and ordering are deterministic; inaccessible scopes
+  return non-null empty projections without leaking site existence.
+- **Independent verification:** exact combined commit `e6e01a2` passed API
+  gofmt, vet, race tests, build, and live PostgreSQL fleetops plus registry
+  integration on Ubuntu `.33`. The isolated PostgreSQL container was removed.
+- **Permanent gate:** CI commit `bfeabe2` added the fleetops live PostgreSQL
+  test; backend run `30381562435` passed all three jobs.
+- **Follow-on:** CK-BE-03B remains gated on CK-BE-01 `DONE`; its HTTP contract
+  must preserve the accepted default 50 / maximum 200 detail bounds and the
+  non-disclosing scope behavior.
