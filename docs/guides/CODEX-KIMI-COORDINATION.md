@@ -56,7 +56,8 @@ The Sonnet coordination ledger remains separate:
 | CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | IN_PROGRESS | CK-BE-01 REVIEW | exact new-file claim below |
 | CK-BE-02B | Alert lifecycle HTTP integration | UNASSIGNED | QUEUED | CK-BE-02A DONE | exact claim required |
 | CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
-| CK-BE-04 | Append-only operational audit query and evidence export | UNASSIGNED | QUEUED | CK-BE-02A DONE | exact claim required |
+| CK-BE-04A | Deterministic evidence bundle foundation | CODEX | IN_PROGRESS | none | claimed below |
+| CK-BE-04B | Audit query and evidence export integration | UNASSIGNED | QUEUED | CK-BE-02A DONE, CK-BE-04A DONE | exact claim required |
 | CK-BE-05A | Notification outbox and retry foundation | KIMI | QUEUED | CK-BE-02A REVIEW | exact new-file claim below |
 | CK-BE-05B | Webhook/SMTP transports and operations integration | UNASSIGNED | QUEUED | CK-BE-05A DONE | exact claim required |
 
@@ -67,6 +68,7 @@ prerequisites are satisfied and after publishing the exact file boundary.
 
 | Timestamp (UTC) | Agent | Work ID | Files |
 |---|---|---|---|
+| 2026-07-28T17:14:38Z | CODEX | CK-BE-04A | new `docs/contracts/EVIDENCE.md`, `docs/contracts/README.md`, new `backend/api/internal/evidence/model.go`, new `backend/api/internal/evidence/bundle.go`, new `backend/api/internal/evidence/bundle_test.go`, this ledger |
 | 2026-07-28T17:06:51Z | KIMI | CK-BE-02A | new `backend/ingest/migrations/000004_alert_operations.sql`, new `backend/api/internal/alertops/model.go`, new `backend/api/internal/alertops/postgres.go`, new `backend/api/internal/alertops/postgres_test.go`, new `backend/api/internal/alertops/postgres_integration_test.go`, this ledger |
 | 2026-07-28T16:49:20Z | CODEX | CK-BE-01 | `docs/contracts/API.md`, new `backend/ingest/migrations/000003_operations.sql`, `backend/ingest/migrations/runner_integration_test.go`, new `backend/api/internal/maintenance/model.go`, new `backend/api/internal/maintenance/postgres.go`, new `backend/api/internal/maintenance/postgres_test.go`, new `backend/api/internal/maintenance/postgres_integration_test.go`, `backend/api/internal/httpapi/router.go`, `backend/api/internal/httpapi/router_test.go`, `backend/api/cmd/api/main.go`, this ledger |
 | 2026-07-28T17:25:00Z | CODEX | CK-00 | `docs/architecture/ARCHITECTURE-V2-EXTENDED.md`, `docs/architecture/REQUIREMENTS-TRACEABILITY.md`, new `docs/architecture/decisions/0011-direct-probe-backend-routing.md`, `docs/architecture/decisions/README.md`, `docs/collector/COLLECTOR-V2-REFACTOR.md`, `docs/collector/ROADMAP.md`, `docs/collector/SUGGESTIONS.md`, `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`, `docs/gap-analysis/research-notes/07-arp-rate.md`, `docs/guides/OPUS-AGENT-GUIDE-V2.md`, `docs/guides/SONNET-5-IMPLEMENTATION-GUIDE.md`, `docs/ml/ML_BASELINE_LEARNING.md`, `docs/README.md`, `docs/theory/anomaly/rca-causal-inference.md`, `docs/theory/probes/fault-tree-multihop-paths.md`, `docs/theory/probes/gorilla-compression-go-theory.md`, `docs/theory/probes/passive-vs-active-measurement.md`, `docs/theory/probes/probe-to-backend-transport-theory.md`, delete `docs/theory/probes/wireguard-health-monitoring.md`, this ledger |
@@ -129,11 +131,26 @@ Intended outcome: integrate the reviewed fleet summary and collector-detail
 projections into bounded, versioned HTTP endpoints with role enforcement and
 non-disclosing not-found behavior.
 
-### CK-BE-04 — Audit and evidence
+### CK-BE-04A — Deterministic evidence bundle foundation
 
-Intended outcome: append-only, site-scoped audit query plus deterministic
-evidence bundle creation with integrity metadata. Export authorization and
-size/time bounds are mandatory.
+Codex owns the exact active claim above. Implement a pure Go package that
+creates and verifies deterministic gzip-compressed tar evidence bundles from
+caller-supplied metadata and allow-listed byte entries. Require canonical safe
+relative paths, stable ordering and manifest JSON, per-entry and total byte
+caps, entry-count caps, SHA-256 digests, fixed archive metadata, duplicate and
+unknown-entry rejection, and fail-closed verification.
+
+The bundle contract must make site/tenant scope, bundle/schema version, capture
+window, generation time, producer version, media type, size, and digest
+explicit. The same validated input must produce identical bytes. No database,
+HTTP, filesystem crawl, secret discovery, or live export is part of this slice.
+
+### CK-BE-04B — Audit query and evidence export integration
+
+Intended outcome: append-only site-scoped audit query plus authorized evidence
+export orchestration using the reviewed CK-BE-04A package. Database/HTTP
+authorization, pagination, export timeouts, response-size bounds, and audit of
+the export itself are mandatory.
 
 ### CK-BE-05A — Notification outbox and retry foundation
 
@@ -264,3 +281,15 @@ and operator-visible delivery state.
 - **Stop conditions:** stop and record a pushed question if either task needs
   an existing file outside its contract, a new dependency, an HTTP route, or a
   change to another agent's frozen scope.
+
+### X-009 — CK-BE-04A claim
+
+- **Owner:** CODEX
+- **Scope:** exactly the CK-BE-04A Active File Claims row.
+- **Plan:** publish the normative evidence format; implement deterministic
+  creation and fail-closed verification with fixed archive metadata, canonical
+  manifest ordering, bounded safe paths/content, SHA-256 integrity, and
+  corruption/duplicate/unknown-entry tests.
+- **Excluded:** Kimi's alert/notification scopes, migrations, API routes,
+  PostgreSQL access, filesystem collection, notification delivery, workflows,
+  frontend, and collector files.
