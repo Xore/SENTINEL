@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"hash/crc32"
 	"io"
 	"strings"
 	"testing"
@@ -145,6 +147,29 @@ func TestVerifyFailsClosed(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
+	t.Run("non-zero trailing decompressed content", func(t *testing.T) {
+		_, err := Verify(packWithSuffix(t, files, []byte{1}))
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("oversized zero padding", func(t *testing.T) {
+		_, err := Verify(packWithSuffix(t, files, make([]byte, maxTarPaddingBytes+1)))
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("one zero padding block", func(t *testing.T) {
+		if _, err := Verify(packWithSuffix(t, files, make([]byte, maxTarPaddingBytes))); err != nil {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("gzip header CRC flag", func(t *testing.T) {
+		_, err := Verify(withGzipHeaderCRC(t, artifact.Bytes))
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("got %v", err)
+		}
+	})
 	t.Run("corrupt archive", func(t *testing.T) {
 		changed := append([]byte(nil), artifact.Bytes...)
 		changed[len(changed)/2] ^= 0xff
@@ -233,6 +258,47 @@ func pack(t *testing.T, files []testFile) []byte {
 		t.Fatal(err)
 	}
 	return output.Bytes()
+}
+
+func packWithSuffix(t *testing.T, files []testFile, suffix []byte) []byte {
+	t.Helper()
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	for _, file := range files {
+		if err := writeEntry(writer, file.name, file.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive.Write(suffix)
+
+	var output bytes.Buffer
+	gz, _ := gzip.NewWriterLevel(&output, gzip.BestCompression)
+	gz.Header.ModTime = archiveTime
+	gz.Header.OS = 255
+	if _, err := gz.Write(archive.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
+func withGzipHeaderCRC(t *testing.T, bundle []byte) []byte {
+	t.Helper()
+	if len(bundle) < 10 || bundle[3] != 0 {
+		t.Fatal("test fixture does not have the canonical fixed gzip header")
+	}
+	output := make([]byte, len(bundle)+2)
+	copy(output[:10], bundle[:10])
+	output[3] |= gzipFlagHeaderCRC
+	checksum := crc32.ChecksumIEEE(output[:10])
+	binary.LittleEndian.PutUint16(output[10:12], uint16(checksum))
+	copy(output[12:], bundle[10:])
+	return output
 }
 
 func cloneFiles(input []testFile) []testFile {

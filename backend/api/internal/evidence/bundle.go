@@ -17,6 +17,11 @@ import (
 
 const manifestPath = "manifest.json"
 
+const (
+	gzipFlagHeaderCRC  = 0x02
+	maxTarPaddingBytes = 512
+)
+
 var archiveTime = time.Unix(0, 0).UTC()
 
 // Build creates a byte-for-byte deterministic evidence bundle.
@@ -98,6 +103,9 @@ func Verify(bundle []byte) (Manifest, error) {
 	if len(bundle) > MaxArchiveBytes {
 		return Manifest{}, ErrTooLarge
 	}
+	if len(bundle) < 10 || bundle[3]&gzipFlagHeaderCRC != 0 {
+		return Manifest{}, invalidError("non-canonical gzip flags")
+	}
 	source := bytes.NewReader(bundle)
 	gzipReader, err := gzip.NewReader(source)
 	if err != nil {
@@ -155,8 +163,17 @@ func Verify(bundle []byte) (Manifest, error) {
 		}
 		return Manifest{}, invalidError("undeclared entry " + extra.Name)
 	}
-	if _, err := io.Copy(io.Discard, gzipReader); err != nil {
+	padding, err := io.ReadAll(io.LimitReader(gzipReader, maxTarPaddingBytes+1))
+	if err != nil {
 		return Manifest{}, integrityError("gzip trailer", err)
+	}
+	if len(padding) > maxTarPaddingBytes {
+		return Manifest{}, invalidError("oversized archive padding")
+	}
+	for _, value := range padding {
+		if value != 0 {
+			return Manifest{}, invalidError("non-zero trailing archive data")
+		}
 	}
 	if err := gzipReader.Close(); err != nil {
 		return Manifest{}, integrityError("close gzip", err)
