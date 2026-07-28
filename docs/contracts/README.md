@@ -10,6 +10,7 @@ API, federation, global services, and frontends.
 | [`event-envelope.schema.json`](event-envelope.schema.json) | Machine-readable event schema |
 | [`ENROLLMENT.md`](ENROLLMENT.md) | One-time-token CSR enrollment and certificate identity |
 | [`SERVICE-BOUNDARIES.md`](SERVICE-BOUNDARIES.md) | Component ownership and data flow |
+| [`EVIDENCE.md`](EVIDENCE.md) | Deterministic, bounded evidence bundle format and verification |
 
 Contract changes require:
 
