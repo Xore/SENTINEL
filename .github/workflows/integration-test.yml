@@ -135,7 +135,7 @@ jobs:
                 http://localhost:8428/api/v1/query \
               && curl --fail --silent --show-error --get \
                 --data-urlencode \
-                'query=sentinel_collector_http_response_seconds{collector_id="dev-node-1",site_id="site-a",target_id="ci-http",state="ok"}' \
+                'query=sentinel_collector_http_response_seconds_count{collector_id="dev-node-1",site_id="site-a",target_id="ci-http",state="ok"}' \
                 --output "${probe_result}" \
                 http://localhost:8428/api/v1/query \
               && python - "${heartbeat_result}" "${probe_result}" "${target_url}" <<'PY'
@@ -285,7 +285,7 @@ jobs:
 
           curl --fail --silent --show-error --get \
             -H "Authorization: Bearer ${authorized_token}" \
-            --data-urlencode "metric=sentinel_collector_http_response_seconds" \
+            --data-urlencode "metric=sentinel_collector_http_response_seconds_count" \
             --data-urlencode "site_id=site-a" \
             --data-urlencode "collector_id=dev-node-1" \
             --data-urlencode "start=${range_start}" \
