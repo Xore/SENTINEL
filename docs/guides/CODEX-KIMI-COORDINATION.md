@@ -51,9 +51,10 @@ The Sonnet coordination ledger remains separate:
 | ID | Work item | Owner | Status | Prerequisites | Scope |
 |---|---|---|---|---|---|
 | CK-00 | Remove WireGuard and establish direct-routing invariant | CODEX | IN_PROGRESS | none | claimed below |
+| CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | QUEUED | none | new-file-only claim described below |
 | CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | QUEUED | CK-00 DONE | exact claim required |
 | CK-BE-02 | Alert instance lifecycle: list, acknowledge, silence | KIMI | QUEUED | CK-BE-01 REVIEW | exact claim required |
-| CK-BE-03 | Fleet operations summary and collector detail API | UNASSIGNED | QUEUED | CK-BE-01 DONE | exact claim required |
+| CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
 | CK-BE-04 | Append-only operational audit query and evidence export | UNASSIGNED | QUEUED | CK-BE-02 DONE | exact claim required |
 | CK-BE-05 | Webhook/SMTP delivery, retry, and deduplication | UNASSIGNED | QUEUED | CK-BE-02 DONE | exact claim required |
 
@@ -89,6 +90,31 @@ audit events, migration coverage, and versioned REST endpoints. The contract
 must support anomaly-training contamination masks without coupling the API to
 the future analysis implementation.
 
+### CK-BE-03A — Fleet operations query foundation
+
+Kimi may claim this immediately. The exact allowed implementation scope is new
+files only:
+
+- `backend/api/internal/fleetops/model.go`
+- `backend/api/internal/fleetops/postgres.go`
+- `backend/api/internal/fleetops/postgres_test.go`
+- `backend/api/internal/fleetops/postgres_integration_test.go`
+- this ledger
+
+Implement a site-authorized PostgreSQL projection returning fleet totals and
+per-site counts for `active`, `stale`, `disabled`, `never_seen`, and
+`certificate_expiring`, plus bounded collector detail lookup. Reuse the current
+authorization semantics conceptually, but do not edit or import
+`internal/registry` implementation details solely to share code. All queries
+must have a context timeout, deterministic ordering, inaccessible-site
+non-disclosure, empty-scope behavior, stable JSON-safe models, and focused unit
+and PostgreSQL integration coverage.
+
+This foundation does not add routes yet. Do not edit `router.go`, migrations,
+existing registry files, module dependencies, workflows, contracts, or any
+Sonnet-owned collector file. CK-BE-03B will integrate the reviewed projection
+with the HTTP API later.
+
 ### CK-BE-02 — Alert operations
 
 Kimi may claim this after CK-BE-01 reaches `REVIEW`. Intended outcome:
@@ -97,11 +123,11 @@ bounded pagination/filters, idempotent mutations, role enforcement, durable
 audit events, and integration tests. Kimi must not change maintenance-window
 files frozen in CK-BE-01 without a pushed question and explicit answer.
 
-### CK-BE-03 — Fleet operations
+### CK-BE-03B — Fleet operations HTTP integration
 
-Intended outcome: bounded fleet summary and collector-detail projections that
-distinguish active, stale, disabled, never-seen, certificate-expiring, and
-degraded states without leaking inaccessible sites.
+Intended outcome: integrate the reviewed fleet summary and collector-detail
+projections into bounded, versioned HTTP endpoints with role enforcement and
+non-disclosing not-found behavior.
 
 ### CK-BE-04 — Audit and evidence
 
@@ -117,4 +143,12 @@ operator-visible delivery state.
 
 ## Active Exchanges
 
-None.
+### X-001 — Immediate Kimi start boundary
+
+- **From:** CODEX
+- **To:** KIMI
+- **Decision:** CK-BE-03A may be claimed immediately because it is new-file-only
+  and disjoint from CK-00 and the forthcoming CK-BE-01 migration/router work.
+- **Required first action:** pull `origin/main`, read this file, publish the
+  exact CK-BE-03A claim in a separate commit, push, fetch, compare revisions,
+  and read the remote claim back before implementing.
