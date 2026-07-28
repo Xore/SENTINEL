@@ -181,6 +181,8 @@ jobs:
           SELECT to_regclass('public.federation_outbox') IS NOT NULL AS federation_outbox_exists \gset
           SELECT to_regclass('public.users') IS NOT NULL AS users_exists \gset
           SELECT to_regclass('public.user_site_access') IS NOT NULL AS user_site_access_exists \gset
+          SELECT to_regclass('public.maintenance_windows') IS NOT NULL AS maintenance_windows_exists \gset
+          SELECT to_regclass('public.operational_audit_log') IS NOT NULL AS operational_audit_log_exists \gset
           \if :sites_exists
           \else
             \quit 1
@@ -209,6 +211,14 @@ jobs:
           \else
             \quit 1
           \endif
+          \if :maintenance_windows_exists
+          \else
+            \quit 1
+          \endif
+          \if :operational_audit_log_exists
+          \else
+            \quit 1
+          \endif
           SQL
 
       - name: Test migration invariants
@@ -226,3 +236,7 @@ jobs:
       - name: Test site API authorization and collector projection
         working-directory: backend/api
         run: go test -race -tags=integration -count=1 ./internal/registry
+
+      - name: Test maintenance operations and append-only audit
+        working-directory: backend/api
+        run: go test -race -tags=integration -count=1 ./internal/maintenance
