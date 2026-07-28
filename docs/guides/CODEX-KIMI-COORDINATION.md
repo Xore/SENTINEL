@@ -193,3 +193,17 @@ operator-visible delivery state.
 - **Excluded:** Kimi's `internal/fleetops/**`, alert lifecycle/delivery,
   analysis-service contamination-mask consumption, frontend, workflows,
   collector files, and frozen CK-00 documentation.
+
+### X-004 — CK-BE-01 live-database validation route
+
+- **Implementation commit:** `c1f4baa`
+- **Local gates:** both Go modules passed gofmt, vet, race-enabled unit tests,
+  and build on Windows/Go 1.26.3. Integration-tag compilation passed for the
+  API. The ingest integration suite correctly required a live PostgreSQL URL.
+- **Environment:** local Docker is unavailable and Ubuntu `.33` did not answer
+  SSH at validation time.
+- **Decision:** Codex will use its already-published C1-02 `.github/**` claim
+  from `AGENT-COORDINATION.md` to add only the maintenance PostgreSQL
+  integration-test invocation to `backend.yml`. This is a CI validation change,
+  not an expansion of CK-BE-01, and it cannot overlap Kimi's new
+  `internal/fleetops/**` files.
