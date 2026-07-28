@@ -240,6 +240,8 @@ and operator-visible delivery state.
 - **Ubuntu `.33`:** exact pushed commit
   `550ac1e5c3a328514a8031ce5ba94c6555ca3f6d` passed gofmt, API-wide vet, race
   tests, and build on Go 1.26.3. The temporary clone was removed.
+- **GitHub:** backend run `30383250770` passed all three jobs, including live
+  PostgreSQL alert lifecycle coverage and the API container build.
 - **Review request:** check endpoint/resource naming, public omission of
   `Raise`, role gates, query/body bounds, principal-to-store propagation,
   idempotency/conflict language, error disclosure, production wiring, and API
