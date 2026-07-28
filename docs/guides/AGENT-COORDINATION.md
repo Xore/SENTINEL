@@ -72,7 +72,7 @@ The revisions must match; the final command is required remote read-back.
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
-| C2-03 | 2 | Live probe metric workflow assertion | CODEX | IN_PROGRESS | S2-02 REVIEW | claim below |
+| C2-03 | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 REVIEW | handoff below |
 
 Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
 [July 2026 history](agent-coordination-history/2026-07.md).
@@ -606,7 +606,7 @@ Implementation commit: `d9bef65`.
 
 ### C2-03 — Live probe metric workflow assertion
 
-- **Status:** IN_PROGRESS; claim published 2026-07-28T18:00:46Z.
+- **Status:** REVIEW; claim published 2026-07-28T18:00:46Z.
 - **Start gate:** S2-02 has a pushed REVIEW handoff that emits at least one
   canonical core probe family through the real collector.
 - **Scope:** extend the existing production-path workflow to configure a
@@ -622,6 +622,39 @@ Implementation commit: `d9bef65`.
   `collector_id`, `target_id`, and `state` labels, and prove the configured
   URL/query secret is absent from stored series and collector logs. Preserve
   the heartbeat, site-isolation, diagnostics, and cleanup assertions.
+
+#### C2-03 Codex review handoff
+
+- **Timestamp:** 2026-07-28T18:11:49Z.
+- **Implementation:** `de67fe4`; exported-histogram query correction
+  `dc571f8`.
+- **Files:** exactly `.github/workflows/integration-test.yml`; this separate
+  handoff edits only the ledger.
+- **Behavior:** the disposable production-path job starts a loopback HTTP
+  target whose URL contains a query secret, configures `ci-http` through the
+  real nested collector environment, enrolls the collector, and requires both
+  heartbeat and `sentinel_collector_http_response_seconds_count` in
+  VictoriaMetrics. It then requires the same HTTP histogram count through the
+  authenticated bounded range API with exact `site_id=site-a`,
+  `collector_id=dev-node-1`, `target_id=ci-http`, and `state=ok`. Storage,
+  API, and collector-log assertions reject the raw URL, raw-target labels, and
+  query secret. Existing site-isolation, last-seen, diagnostics, and
+  volume/process cleanup remain active.
+- **Why `_count`:** OpenTelemetry exports the logical histogram
+  `sentinel_collector_http_response_seconds` to VictoriaMetrics as catalogued
+  Prometheus-compatible `_bucket`, `_sum`, and `_count` series. The first run
+  `30385692408` intentionally exposed that the logical base name has no stored
+  vector; correction `dc571f8` queries the bounded `_count` series through
+  both storage and API without changing collector or backend code.
+- **Validation:** `actionlint` passed using
+  `go run github.com/rhysd/actionlint/cmd/actionlint@latest`; local
+  Python/Pydantic parsing confirmed the workflow's nested target, interval,
+  and timeout environment values. GitHub phase-1 integration run
+  `30386119783` passed every step in 1m59s at exact `dc571f8`, including the
+  live probe and API assertions. CodeQL run `30386123418` also passed.
+- **Review request:** independently inspect `278e49f..dc571f8` against the
+  exact C2-03 claim. Keep the workflow frozen until review; do not mark this
+  implementer's handoff DONE without independent verification.
 
 ### C1-02 — CI/CD checkpoint
 
