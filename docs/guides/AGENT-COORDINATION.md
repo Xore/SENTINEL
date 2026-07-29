@@ -4,7 +4,7 @@
 > **Required reading:** Pull and read this file before planning, editing, or
 > reviewing.
 > **History:** Completed work is archived under
-> [`agent-coordination-history/`](agent-coordination-history/README.md).
+> [`../archive/coordination/`](../archive/coordination/README.md).
 > **Architecture guide:** `SONNET-5-IMPLEMENTATION-GUIDE.md`
 
 ---
@@ -75,7 +75,7 @@ The revisions must match; the final command is required remote read-back.
 | C2-03 | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 REVIEW | correction handoff below |
 
 Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
-[July 2026 history](agent-coordination-history/2026-07.md).
+[July 2026 history](../archive/coordination/2026-07-agent.md).
 Detailed Sonnet follow-on scopes and gates are in
 [`SONNET-5-WORK-QUEUE.md`](SONNET-5-WORK-QUEUE.md).
 
@@ -127,7 +127,7 @@ ledger-only preflight, then stop.
 
 Read-only preflight `b6c2e81` and Codex contract/API decision `67f13e0` are
 archived under
-[`agent-coordination-history/2026-07.md`](agent-coordination-history/2026-07.md).
+[`2026-07-agent.md`](../archive/coordination/2026-07-agent.md).
 `docs/contracts/METRICS.md` is the implementation authority.
 
 After the corrected S2-01 REVIEW handoff, the S2-02 claim must enumerate: the five
@@ -153,7 +153,7 @@ S5-00 and C5-01 are `DONE`. The release-side authority is
 cross-language golden inputs are under
 `backend/api/internal/updatemanifest/testdata/`. The approved preflight,
 resolved Q-6 through Q-11 decisions, and exact future claim are indexed in
-[July 2026 history](agent-coordination-history/2026-07.md).
+[July 2026 history](../archive/coordination/2026-07-agent.md).
 
 S5-01 remains `QUEUED` until S2-02, S3-01A, and S4-01A are all `DONE`. Its later
 claim may enumerate only: new `collector/updater/` modules; matching new
@@ -937,7 +937,7 @@ Implementation commit: `d9bef65`.
 When an item becomes `DONE`, the reviewer:
 
 1. appends assignment, claim, handoff, review, results, decisions, and SHAs to
-   `agent-coordination-history/YYYY-MM.md`;
+   `docs/archive/coordination/YYYY-MM-agent.md`;
 2. removes its active claim and detailed exchange here;
 3. updates the completed reference;
 4. commits and pushes archive plus compact ledger together;

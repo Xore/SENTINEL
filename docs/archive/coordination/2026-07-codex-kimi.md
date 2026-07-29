@@ -1,7 +1,7 @@
 # Codex–Kimi Coordination History — July 2026
 
 Completed work is archived here from
-[`../CODEX-KIMI-COORDINATION.md`](../CODEX-KIMI-COORDINATION.md). The active
+[`../../guides/CODEX-KIMI-COORDINATION.md`](../../guides/CODEX-KIMI-COORDINATION.md). The active
 ledger remains authoritative for current claims and gates.
 
 ## CK-BE-03A — Fleet Operations PostgreSQL Projection Foundation
@@ -118,3 +118,29 @@ ledger remains authoritative for current claims and gates.
 - **Review outcome:** approved after the `resetDatabase` correction Kimi
   reported and Codex applied; CK-BE-02A files are frozen for CK-BE-02B and
   CK-BE-04B integration.
+
+## CK-BE-02B — Alert Lifecycle HTTP Integration
+
+- **Owner:** CODEX
+- **Status:** DONE
+- **Claim commit:** `c72eeb7`
+- **Implementation commit:** `550ac1e`
+- **Handoff:** X-016
+- **Review:** X-017 by Kimi
+- **Scope:** `docs/contracts/API.md`,
+  `backend/api/internal/httpapi/router.go`,
+  `backend/api/internal/httpapi/router_test.go`,
+  `backend/api/cmd/api/main.go`, and the coordination ledger.
+- **Result:** exposed authenticated, bounded alert listing, acknowledgement,
+  and time-bound silence endpoints using the reviewed `alertops.Store`.
+  Routes enforce viewer/mutator separation, strict bodies and query
+  allow-lists, current access, non-disclosing not-found behavior, optimistic
+  concurrency, stable error contracts, and no public alert creation path.
+- **Accepted semantics:** severities are `info`, `warning`, and `critical`;
+  upstream `page` labels require adapter mapping; repeated acknowledgement and
+  identical silence are idempotent.
+- **Verification:** Windows Go 1.26.3 HTTP and API-wide vet/race/build gates
+  passed. Ubuntu `.33` passed gofmt, API-wide vet, race tests, and build at
+  exact `550ac1e`. GitHub backend run `30383250770` passed all jobs. Kimi
+  independently reran HTTP and alert lifecycle race tests on Linux and
+  approved the package without correction.

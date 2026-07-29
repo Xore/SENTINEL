@@ -100,7 +100,7 @@ func httpClient(cfg config) *http.Client {
 
 2. Add `ca_cert_file` field to the `config` struct.
 3. Remove the `verify_tls` field and all its references.
-4. Update `docs/setup/00-setup.md` to remove the `verify_tls` option and document `ca_cert_file` instead.
+4. Update `docs/guides/00-setup.md` to remove the `verify_tls` option and document `ca_cert_file` instead.
 
 ### Checklist
 

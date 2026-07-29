@@ -5,7 +5,7 @@ that file records *what Auvik does*, this file is *what we build and in what ord
 — an Auvik-style live topology map and the monitoring around it, built entirely
 from the v2 collector's **passive/safe-active OTLP metrics** (no credential sweeps,
 no config push). Fits the delivery discipline already in
-[`../../ROADMAP.md`](../../ROADMAP.md).
+[`../collector/ROADMAP.md`](../collector/ROADMAP.md).
 
 ## Guiding constraints
 

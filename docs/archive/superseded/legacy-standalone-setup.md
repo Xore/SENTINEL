@@ -1,4 +1,8 @@
-# Unified setup
+# Legacy standalone setup
+
+> **Archived:** 2026-07-29. This guide targets the retired standalone
+> installation layout and references scripts that are no longer present.
+> Use the current [v2 collector setup guide](../../guides/00-setup.md).
 
 The front door for installing the Network Probe. One orchestrator,
 [`scripts/setup.sh`](../../scripts/setup.sh), drives every component installer in the

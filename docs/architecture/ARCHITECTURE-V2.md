@@ -15,4 +15,5 @@
 > - Alerting: vmalert + Alertmanager
 > - RBAC, evidence bundles, audit log, collector auto-update
 >
-> Implementation phases are tracked in [`../../ROADMAP.md`](../../ROADMAP.md).
+> Implementation phases are tracked in
+> [`../collector/ROADMAP.md`](../collector/ROADMAP.md).
