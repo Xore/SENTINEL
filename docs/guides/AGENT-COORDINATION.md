@@ -70,6 +70,8 @@ The revisions must match; the final command is required remote read-back.
 | S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Codex takeover below |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | Codex design review 1 below |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
+| S3-01B | 3 | Host-health metrics and runtime integration | CODEX | QUEUED | S2-02 DONE, S3-01A DONE | forward package below |
+| S4-01B | 4 | Durable export spool and replay integration | CODEX | QUEUED | S2-02 DONE, S4-01A DONE | forward package below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 | C2-03 | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 REVIEW | correction handoff below |
@@ -167,6 +169,39 @@ workflows, backend runtime, or earlier collector scopes.
 ## Open Questions
 
 None.
+
+---
+
+## Forward Probe Packages
+
+### S3-01B — Host-health metrics and runtime integration
+
+After S2-02 and S3-01A are independently `DONE`, publish an exact claim for the
+Phase 3 metrics contract, bounded host-check configuration, registration and
+lifecycle wiring, the seven host modules only where reviewed adapter changes
+are required, and focused tests. Define canonical `sentinel_` metric names,
+types, units, and cardinality budgets before emission. Process and service
+families use validated `target_id`; interface identifiers are bounded; raw
+process/service/path values never become labels. Prove disabled families are
+not constructed, first-sample baselines emit nothing misleading, instruments
+are reused, and Windows degrades only for genuinely unsupported checks.
+
+### S4-01B — Durable export spool and replay integration
+
+After S2-02 and S4-01A are independently `DONE`, publish an exact claim for an
+async adapter around the reviewed SQLite queue, transport integration,
+configuration, runtime wiring, canonical queue telemetry, and focused tests.
+Failed exports must be durably enqueued before acknowledgement; reconnect
+drains deterministic oldest-first batches with bounded exponential backoff and
+jitter; duplicates remain idempotent; poison/corrupt/expired records cannot
+wedge replay; blocking SQLite work never runs on the event loop; cancellation
+and shutdown leave no task or envelope in an ambiguous state. Enforce the
+24-hour/200-MB bounds and test restart, outage, recovery, concurrent enqueue/
+drain, redaction, and live backend replay.
+
+Both packages are deliberately queued behind their reviewed foundations. Their
+future claims must not overlap Sonnet's correction scopes or silently modify
+contracts outside the enumerated files.
 
 ---
 

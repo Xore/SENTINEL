@@ -62,6 +62,8 @@ The Sonnet coordination ledger remains separate:
 | CK-BE-05B | Webhook/SMTP transports and operations integration | UNASSIGNED | QUEUED | CK-BE-05A DONE | exact claim required |
 | CK-BE-06A | Operational audit query foundation | KIMI | QUEUED | CK-BE-02A DONE | exact new-file scope below |
 | CK-BE-06B | Operational audit HTTP integration | KIMI | QUEUED | CK-BE-06A DONE | exact integration scope below |
+| CK-BE-07A | Maintenance suppression decision foundation | CODEX | READY | CK-BE-01 DONE | exact new-file scope below |
+| CK-BE-07B | Alert/notification suppression integration | CODEX | QUEUED | CK-BE-05A DONE, CK-BE-07A DONE | exact claim required |
 
 `UNASSIGNED` rows are not claims. Codex or Kimi may claim them only after their
 prerequisites are satisfied and after publishing the exact file boundary.
@@ -191,7 +193,55 @@ foundation and evidence bundle package to implement authorized evidence export
 orchestration and audit the export itself; it must not duplicate the audit-list
 store or route.
 
+### CK-BE-07A — Maintenance suppression decision foundation
+
+Codex may claim this immediately. The exact allowed scope is new files only:
+
+- `backend/api/internal/alertpolicy/model.go`;
+- `backend/api/internal/alertpolicy/postgres.go`;
+- `backend/api/internal/alertpolicy/postgres_test.go`;
+- `backend/api/internal/alertpolicy/postgres_integration_test.go`;
+- this ledger.
+
+Implement a bounded read-only decision service over the reviewed
+`maintenance_windows` authority. Given a validated site and UTC evaluation
+time, it returns a deterministic decision stating whether alert delivery and
+ML-training eligibility are suppressed, plus the matching window ID/version
+and bounded end time/reason needed for operator-visible rationale. A window is
+active only when it has started, has not ended early, and its half-open end is
+after the evaluation time. Invalid input and database failure are distinct
+fail-closed errors; every query uses the configured timeout.
+
+Unit and PostgreSQL integration tests must cover boundary instants, scheduled/
+active/expired/ended windows, site isolation, impossible overlap defense,
+timeout/unavailable mapping, current schema compatibility, and read-only
+behavior. Do not edit migrations, maintenance or alert packages, notification
+files, HTTP routes, contracts, dependencies, workflows, or collector files.
+
+### CK-BE-07B — Alert/notification suppression integration
+
+After CK-BE-05A and CK-BE-07A are independently `DONE`, integrate the reviewed
+decision service into alert raising and notification enqueue/claim behavior.
+Alerts remain durably visible during maintenance, but outbound delivery is
+held with an operator-visible suppression reason and resumes idempotently when
+the window ends. ML contamination-mask integration remains a separate analysis
+service package. The future claim must enumerate every shared alert,
+notification, wiring, migration/contract, and test file before editing.
+
 ## Active Exchanges
+
+### X-022 — Codex backend follow-on queue
+
+- **Timestamp:** 2026-07-29T15:20:51Z.
+- **Owner:** CODEX.
+- **Ready now:** CK-BE-07A is disjoint from Kimi's active CK-BE-05A claim and
+  all frozen evidence/audit scopes. Codex may publish its exact claim and
+  begin immediately.
+- **Queued:** CK-BE-07B waits for independent approval of CK-BE-05A and
+  CK-BE-07A because it intentionally joins those reviewed contracts.
+- **Stop conditions:** publish a pushed question before adding collector-level
+  maintenance scope, changing the existing maintenance schema, treating a
+  dependency outage as permission to send, or editing another active claim.
 
 ### X-021 — Kimi follow-on continuity queue
 
