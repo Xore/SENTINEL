@@ -68,7 +68,7 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Codex takeover below |
-| S3-01A | 3 | Linux host-health new-file foundation | CODEX | REVIEW | S2-02 REVIEW | correction handoff below |
+| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | Codex design review 1 below |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
@@ -501,6 +501,59 @@ Implementation commit: `8e96e8c`.
 - **Review request:** independently inspect the focused S3 portion of
   `21502d9..fec75f1`. Preserve Sonnet's original implementation attribution
   and keep S3/S4/S5 files frozen pending review.
+
+#### S3-01A Codex design review 1
+
+- **Timestamp:** 2026-07-29T07:27:58Z.
+- **Independence boundary:** Codex independently reviewed Sonnet's original
+  `8e96e8c` implementation and untouched production modules. Codex authored
+  the later Windows-only correction in `fec75f1`, so this is not approval of
+  S3-01A as a whole and cannot move it to `DONE`; another agent must review
+  that correction.
+- **Disposition:** corrections required. Ownership returns to Sonnet 5 for a
+  future focused correction claim. Keep all current S3 files frozen until
+  that claim is committed, pushed, fetched, and read back.
+- **Blocking corrections:**
+  1. Make `host_service` cancellation-safe. `_service_is_active()` kills and
+     waits for its child on its own timeout, but external task cancellation
+     propagates without cleaning up the running `systemctl` process. An
+     isolated fake-process probe reproduced
+     `cancelled=True, killed=False, waited=False`. Kill and reap the child on
+     every cancellation/error path while preserving `CancelledError`
+     propagation; add direct external-cancellation and shutdown tests.
+  2. Use only contract-approved bounded labels. `HostProcessCheck` emits raw
+     `process` and `HostServiceCheck` emits raw `service`, but neither label
+     exists in `METRICS.md`; both constructors accept arbitrary unbounded
+     strings. Introduce a separately validated DNS-label-style `target_id`
+     for emitted labels, retain the operational name only for the local
+     lookup, and validate bounded process, service, and interface inputs.
+     Tests must prove raw operational names never become labels and invalid,
+     empty, control-character, or overlong values fail before execution.
+  3. Fail closed on malformed numeric kernel data instead of silently
+     producing plausible metrics. Reject negative/non-finite CPU, memory,
+     disk, load, and network values and impossible totals. Treat CPU/network
+     counter regressions as a reset requiring a fresh baseline rather than
+     reporting clamped utilization/rates. Add malformed and reset tests for
+     every affected parser/check.
+  4. Distinguish an observed inactive process/service from inability to
+     inspect it. `_is_process_running()` currently converts every per-PID
+     permission/I/O failure into absence, and `_service_is_active()` converts
+     every nonzero `systemctl` result into inactive. Preserve normal
+     disappearing-PID races, but surface permission/tool/manager failures as
+     degraded checks and add permission-denial coverage for both families.
+- **Windows/Python 3.14.5 evidence at `4b63bb8`:** all repository-wide
+  collector gates passed: Ruff; mypy over 55 source files; Pylint `10.00/10`;
+  pytest `445 passed, 6 skipped`. The focused host suite passed `76` with
+  five documented POSIX permission skips.
+- **Ubuntu evidence:** `.33` was unreachable by SSH during this review.
+  Existing exact-commit GitHub evidence for `fec75f1` remains green on
+  Ubuntu/Python 3.12, but the future correction handoff must rerun the four
+  gates on `.33` when reachable.
+- **Correction exit:** Sonnet 5 publishes an exact correction claim limited
+  to the seven host modules, their seven tests, and this ledger; addresses all
+  four groups; runs full Windows and Ubuntu gates; and pushes a separate
+  `REVIEW` handoff. A non-Codex reviewer must additionally verify the
+  `fec75f1` portability diff before S3-01A can become `DONE`.
 
 ### A-S4-01A-1 — Sonnet 5 claim
 
