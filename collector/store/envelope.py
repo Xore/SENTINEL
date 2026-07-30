@@ -1,7 +1,8 @@
 """Crash-safe telemetry envelope — the immutable unit the cold queue stores.
 
 Version `1` is frozen: `event_id`, `site_id`, `collector_id`, `observed_at`,
-`created_at`, `expires_at`, `attempt_count`, `content_type`, opaque `payload`
+`created_at`, `expires_at`, `attempt_count` (an exact non-negative integer —
+a count, so neither `1.5` nor `True` is one), `content_type`, opaque `payload`
 bytes, and a SHA-256 `checksum` computed from `payload` at construction.
 Serialization (`to_bytes`/`from_bytes`) is deterministic sorted-key JSON with
 base64-encoded payload bytes, and `from_bytes` rejects any version other than
@@ -47,6 +48,20 @@ def _validate_event_id(value: str) -> str:
     return str(parsed)
 
 
+def _validate_exact_int(value: object, field_name: str) -> int:
+    """Require a true `int`.
+
+    `bool` is an `int` subclass and JSON floats compare equal to integers
+    (`1.0 == 1`), so both would otherwise pass an `isinstance`/equality check
+    and make a count or a version non-canonical.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise EnvelopeError(
+            f"{field_name} must be an exact integer, not {type(value).__name__}: got {value!r}"
+        )
+    return value
+
+
 def _require_aware_utc(value: datetime, field_name: str) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise EnvelopeError(f"{field_name} must be an aware UTC datetime: got {value!r}")
@@ -77,7 +92,7 @@ class Envelope:  # pylint: disable=too-many-instance-attributes
     checksum: str = ""
 
     def __post_init__(self) -> None:
-        if self.version != ENVELOPE_VERSION:
+        if _validate_exact_int(self.version, "version") != ENVELOPE_VERSION:
             raise EnvelopeError(f"unsupported envelope version: {self.version!r}")
         object.__setattr__(self, "event_id", _validate_event_id(self.event_id))
         object.__setattr__(self, "site_id", _validate_dns_label(self.site_id, "site_id"))
@@ -93,7 +108,7 @@ class Envelope:  # pylint: disable=too-many-instance-attributes
                 f"expires_at={self.expires_at!r}, observed_at={self.observed_at!r}, "
                 f"created_at={self.created_at!r}"
             )
-        if self.attempt_count < 0:
+        if _validate_exact_int(self.attempt_count, "attempt_count") < 0:
             raise EnvelopeError(f"attempt_count must be non-negative: got {self.attempt_count!r}")
         if not isinstance(self.content_type, str) or not self.content_type:
             raise EnvelopeError(
@@ -150,6 +165,11 @@ class Envelope:  # pylint: disable=too-many-instance-attributes
             raise EnvelopeError(f"envelope must decode to a JSON object: got {type(obj)!r}")
 
         version = obj.get("version")
+        # Checked exactly here as well as in `__post_init__`: JSON's `1.0`
+        # compares equal to `1`, so an inexact version must not slip past this
+        # gate and be normalized on the way in.
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise EnvelopeError(f"envelope version must be an exact integer: got {version!r}")
         if version != ENVELOPE_VERSION:
             raise EnvelopeError(f"unsupported envelope version: {version!r}")
 
@@ -167,6 +187,10 @@ class Envelope:  # pylint: disable=too-many-instance-attributes
                 payload=payload,
                 version=version,
             )
+        except EnvelopeError:
+            # Already precise (and an `EnvelopeError` is a `ValueError`, so it
+            # would otherwise be re-wrapped by the clause below).
+            raise
         except KeyError as exc:
             raise EnvelopeError(f"missing envelope field: {exc}") from exc
         except (TypeError, ValueError) as exc:

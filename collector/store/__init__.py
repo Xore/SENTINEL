@@ -7,6 +7,12 @@ claim — no LMDB hot tier, configuration, or transport integration yet.
 from __future__ import annotations
 
 from collector.store.envelope import ENVELOPE_VERSION, Envelope, EnvelopeError
-from collector.store.sqlite_queue import SqliteQueue
+from collector.store.sqlite_queue import QueueCapacityError, SqliteQueue
 
-__all__ = ["ENVELOPE_VERSION", "Envelope", "EnvelopeError", "SqliteQueue"]
+__all__ = [
+    "ENVELOPE_VERSION",
+    "Envelope",
+    "EnvelopeError",
+    "QueueCapacityError",
+    "SqliteQueue",
+]

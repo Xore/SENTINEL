@@ -113,6 +113,59 @@ class TestValidation:
             _make(version=2)
 
 
+class TestExactIntegerFields:
+    """`attempt_count` and `version` are counts, not numbers-in-general.
+
+    `bool` is an `int` subclass and JSON has one numeric type, so `True` and
+    `1.0` both compare equal to `1`. Accepting either would let a non-canonical
+    value round-trip: `True` re-serializes as `true`, and `1.0` as `1.0`, so two
+    envelopes with the same meaning would produce different bytes — and
+    different checksums downstream.
+    """
+
+    @pytest.mark.parametrize("bad", [True, False, 1.0, 0.0, 1.5, "1", None])
+    def test_construction_rejects_inexact_attempt_count(self, bad):
+        with pytest.raises(EnvelopeError, match="attempt_count must be an exact integer"):
+            _make(attempt_count=bad)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("bad", [True, 1.0, "1", None])
+    def test_construction_rejects_inexact_version(self, bad):
+        with pytest.raises(EnvelopeError, match="version must be an exact integer"):
+            _make(version=bad)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _reserialize(**overrides) -> bytes:
+        obj = json.loads(_make().to_bytes())
+        obj.update(overrides)
+        return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    @pytest.mark.parametrize("bad", [True, 1.0, 1.5, "1", None])
+    def test_from_bytes_rejects_inexact_attempt_count(self, bad):
+        with pytest.raises(EnvelopeError, match="attempt_count"):
+            Envelope.from_bytes(self._reserialize(attempt_count=bad))
+
+    @pytest.mark.parametrize("bad", [True, 1.0, "1", None])
+    def test_from_bytes_rejects_inexact_version(self, bad):
+        with pytest.raises(EnvelopeError, match="version must be an exact integer"):
+            Envelope.from_bytes(self._reserialize(version=bad))
+
+    def test_a_precise_field_error_is_not_rewrapped_as_a_generic_one(self):
+        # `EnvelopeError` subclasses `ValueError`, so the broad handler in
+        # `from_bytes` would otherwise swallow the specific diagnosis.
+        with pytest.raises(EnvelopeError) as excinfo:
+            Envelope.from_bytes(self._reserialize(site_id="Not_A_Label"))
+        assert "site_id" in str(excinfo.value)
+        assert "malformed envelope field" not in str(excinfo.value)
+
+    def test_exact_integers_are_accepted_and_survive_a_round_trip(self):
+        env = _make(attempt_count=12)
+        restored = Envelope.from_bytes(env.to_bytes())
+        assert restored.attempt_count == 12
+        for field in (restored.attempt_count, restored.version):
+            # `isinstance(True, int)` is True, so the bool exclusion is explicit.
+            assert isinstance(field, int) and not isinstance(field, bool)
+
+
 class TestSerializationRoundTrip:
     def test_to_bytes_is_deterministic(self):
         env = _make()
