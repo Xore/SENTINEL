@@ -91,11 +91,17 @@ WHERE version = 1`); err != nil {
 
 func resetDatabase(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
+	// Every table and function any migration creates must be listed here.
+	// DROP ... CASCADE removes dependent constraints, not referencing tables,
+	// so a table omitted from this list survives the reset and makes the next
+	// runner test fail with "relation ... already exists".
 	const reset = `
-DROP TABLE IF EXISTS operational_audit_log, alert_instances, maintenance_windows,
+DROP TABLE IF EXISTS notification_attempts, notification_outbox,
+    operational_audit_log, alert_instances, maintenance_windows,
     user_site_access, users, federation_outbox, durable_events,
     enrollment_tokens, collectors, sites, sentinel_schema_migrations CASCADE;
-DROP FUNCTION IF EXISTS reject_operational_audit_mutation()`
+DROP FUNCTION IF EXISTS reject_operational_audit_mutation();
+DROP FUNCTION IF EXISTS reject_notification_attempt_mutation()`
 	if _, err := pool.Exec(ctx, reset); err != nil {
 		t.Fatalf("reset database: %v", err)
 	}
