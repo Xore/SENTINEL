@@ -67,16 +67,15 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Sonnet review below: not approved, 3 corrections |
-| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | `e81cdaf`; Ubuntu gates pass, awaiting review only |
+| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 DONE | `e81cdaf`; Ubuntu gates pass, awaiting review only |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | `0dc7f5d`; Ubuntu gates pass, awaiting review only |
-| S3-01B | 3 | Host-health metrics and runtime integration | CODEX | QUEUED | S2-02 DONE, S3-01A DONE | forward package below |
-| S4-01B | 4 | Durable export spool and replay integration | CODEX | QUEUED | S2-02 DONE, S4-01A DONE | forward package below |
-| S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
+| S3-01B | 3 | Host-health metrics and runtime integration | CODEX | QUEUED | ~~S2-02 DONE~~, S3-01A DONE | forward package below; **only S3-01A still gates it** |
+| S4-01B | 4 | Durable export spool and replay integration | CODEX | QUEUED | ~~S2-02 DONE~~, S4-01A DONE | forward package below; **only S4-01A still gates it** |
+| S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | ~~S2-02~~, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate; **S3-01A and S4-01A still gate it** |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
-| C2-03 | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 REVIEW | Sonnet review below: not approved, 3 corrections |
+| C2-03 | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 DONE | Sonnet review below: not approved, 3 corrections |
 
-Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
+Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, **S2-02**, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
 [July 2026 history](../archive/coordination/2026-07-agent.md).
 Detailed Sonnet follow-on scopes and gates are in
 [`SONNET-5-WORK-QUEUE.md`](SONNET-5-WORK-QUEUE.md).
@@ -1367,6 +1366,7 @@ observes is the fake's, not production's, so the test would pass unchanged no
 matter how long the real worker blocks.
 
 **Corrections required (S2-02 stays REVIEW; only these three):**
+*(All three discharged at `4bc6264` — see A-S2-02-3 below for what each became.)*
 
 1. Bring name resolution inside the finite timeout and out of the capped pool.
    The requirement is behavioural, not a specific API: after the fix, a probe
@@ -1410,6 +1410,89 @@ above, which touched no repository file. Codex's own gate evidence at
 `30384526449`, Pylint `30384526404`, CodeQL `30384526429`, integration
 `30384526391` — is consistent with the diff and I do not dispute it. It does
 not speak to the finding above, because no gate exercises a slow resolver.
+
+### A-S2-02-3 — Sonnet 5 takeover and closure
+
+- **Timestamp:** claim 2026-07-30T16:12:48Z (`f6f24af`, published before any
+  edit); implementation `4bc6264`; this closure entry separate.
+- **Status:** **DONE.** S2-02 is closed.
+- **Authority, stated plainly.** Marking `DONE` a scope I implemented myself is
+  normally forbidden by this ledger — the whole point of the two-agent protocol
+  is that the reviewer, not the implementer, closes an item. The user
+  explicitly authorized it: *"you are also allowed to close the S2-02 scope
+  when its done so that other tasks are not gated anymore."* I read the
+  qualifier as binding, so I verified first that the three corrections were
+  genuinely unapplied (they were), implemented them, and am closing only after
+  both platforms' gates pass. Anyone auditing this should treat S2-02 as
+  self-approved and weight it accordingly.
+- **Why a takeover at all:** Codex's S2-02 claim had been idle since `0e254b0`
+  (2026-07-28T17:47Z) and Codex had moved on to backend CK-BE-05A. Items 1–4 of
+  Codex's own review were already addressed and were not reopened.
+
+**What the three corrections became.**
+
+1. *Resolution off the capped pool.* Of the two implementations the review
+   deliberately left open, this takes the first: `resolve_ipv4()` awaits
+   `loop.getaddrinfo(host, None, family=socket.AF_INET)` under
+   `asyncio.timeout`, and `_ping_once_blocking` gets an IPv4 literal
+   (`target_ip` → `destination_ip`). The review flagged that the `ping()`
+   docstring argued against the loop's default executor on Pi 3B CPU grounds;
+   that argument does not survive — a stalled resolver is not CPU work, and
+   ADR 0012 retired the 3B anyway. The honest limit: nothing reclaims a
+   `getaddrinfo` thread early, on any executor. What changes is that the
+   *probe* now fails within `timeout_s` and the collector's own small pool is
+   untouched, which is what the timeout budget actually promises.
+   `LatencyCheck` resolves once per burst, so a dead resolver costs one timeout
+   instead of `sample_count`, and no burst can average samples taken from two
+   different addresses. Its resolution failure has its own degraded path
+   (`ok=False`, `icmp_loss_pct=100.0`) rather than falling through the sample
+   loop.
+2. *The resolution path is covered.* `TestResolveIpv4`: literal short-circuit
+   (asserted by making any resolver call an error), hostname success including
+   the `family=AF_INET` argument, empty answer, resolver error, and a hanging
+   resolver failing inside `timeout_s`. Plus the one that justifies the design
+   — a stalled resolution holds no `thread_pool` worker, asserted by requiring
+   every worker in a pinned-size pool to rendezvous at a barrier while a
+   resolution hangs. Check-level tests cover the resolved-literal ping and the
+   contained resolution failure for both `IcmpCheck` and `LatencyCheck`.
+3. *The recovery test can now fail.* It drives the real `_ping_once_blocking`
+   against a fake socket that blocks for exactly the deadline production hands
+   it via `settimeout`, with the pool pinned to a known size, all callers
+   cancelled, and a later probe required to get a worker within `4 × timeout_s`.
+   The review said a test for this item must be able to fail when the
+   production bound breaks, so I verified that directly: deleting
+   `sock.settimeout(remaining)` makes it fail (5.1s against its bound), where
+   the old `bounded_ping` version stayed green. Reverted immediately.
+
+**Incidental.** Async tests now swap `net_icmp`'s `socket` *module reference*
+rather than patching `socket.socket` globally: the Windows `ProactorEventLoop`
+calls `isinstance(conn, socket.socket)` on its own self-pipe and raises once
+that name is a function. This surfaced as a real failure here because these
+tests keep the patch in place across awaits, which the pre-existing sync tests
+never did. Also cleared the two stale Pi 3B rationales ADR 0012 listed inside
+this scope (`checks/__init__.py`, `config.py`) — wording only.
+`max_concurrent_probes` keeps its value of 20: re-deriving it needs
+measurement on the reference Pi 5, not a guess, and stays on ADR 0012's list.
+
+**Gates — both platforms, at `4bc6264`.**
+
+| Gate | Windows 11 / Python 3.14.5 | Ubuntu `.33` / Python 3.12 |
+|---|---|---|
+| pytest | 668 passed, 8 skipped | 675 passed, 1 skipped |
+| ruff | clean | clean |
+| mypy | no issues, 55 source files | no issues, 55 source files |
+| pylint | 10.00/10 | 10.00/10 |
+
+The skip counts differ by platform guard, not by coverage: Windows skips the
+POSIX permission-semantics tests, Ubuntu skips the one non-POSIX test.
+
+**What this does and does not unblock.** S2-02 was one gate among several.
+S3-01B still waits on S3-01A, S4-01B still waits on S4-01A, and S5-01 waits on
+both — all three are Sonnet-authored and sit in `REVIEW` awaiting Codex. I am
+**not** extending the user's authorization to those: closing S2-02 was
+specifically authorized, and self-approving my own S3-01A/S4-01A handoffs is a
+different act with no such instruction behind it. C2-03's three corrections
+also remain open and are Codex's.
 
 ### A-HW-2 — CPU thread-pool worker count becomes configuration
 
@@ -1957,6 +2040,11 @@ passing run does not exercise.
   Keep this REVIEW scope frozen. C2-03 may now start under its disjoint
   workflow-only claim; S2-02 must not be marked DONE by its implementer.
 
+> **Superseded 2026-07-30 by A-S2-02-3.** The last clause no longer holds for
+> S2-02: the user explicitly authorized Sonnet 5 to close it after taking the
+> outstanding corrections over from an idle Codex claim. The rule itself stands
+> for every other item — this is a named exception, not a precedent.
+
 ---
 
 ## Archive Procedure
@@ -1998,14 +2086,16 @@ next action. The documents that become archivable the moment their items reach
 
 | When this is `DONE` | Move |
 |---|---|
-| S2-02 | `research-notes/01-baseline-parity.md`, once its ±1-sample validation against the standalone monitor is ticked |
+| ~~S2-02~~ (`DONE` 2026-07-30) | `research-notes/01-baseline-parity.md` — **re-applied and it still does not qualify**: the note's `±1 sample` box against the standalone monitor's `ping_samples` is unticked and needs live network access, so the note keeps an open next action and stays put. Nothing else was gated on S2-02 alone. |
 | S3-01A + S3-01B | the OS-health portion of `research-notes/02-routes-wan-os-tls-snmp.md`; the rest stays until routes/WAN/TLS/SNMP ship |
 | S4-01A + S4-01B | `research-notes/09-sqlite-tsdb.md` |
 | S5-01 | the S5 gate section here; **not** `contracts/COLLECTOR-UPDATE-MANIFEST-V1.md` |
 | C1-02 | the C1 exchanges here |
 
 `SONNET-5-WORK-QUEUE.md` moves only when S2-02, S3-01A and S4-01A are all
-`DONE` — it is still the cited authority for two items in `REVIEW`.
+`DONE` — it is still the cited authority for two items in `REVIEW`. S2-02
+reached `DONE` on 2026-07-30 (A-S2-02-3); S3-01A and S4-01A have not, so the
+queue stays.
 
 Git history is the lossless source for verbose earlier ledger states. Monthly
 history is the readable durable index.
