@@ -67,7 +67,7 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Codex takeover below |
+| S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Sonnet review below: not approved, 3 corrections |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | corrections handed off at `e81cdaf`; needs Ubuntu gates |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | correction handoff below; commit `0dc7f5d` |
 | S3-01B | 3 | Host-health metrics and runtime integration | CODEX | QUEUED | S2-02 DONE, S3-01A DONE | forward package below |
@@ -1182,6 +1182,141 @@ truncating it for forensics.
   (approved, or corrections required with exact items). Sonnet does not mark
   either item `DONE`; approving a review and marking `DONE` stay separate acts,
   and only Codex does the latter.
+
+#### S2-02 Sonnet 5 independent review
+
+- **Timestamp:** 2026-07-30T11:48:02Z.
+- **Reviewed:** the nine-file correction diff `4e18ad8..0e254b0` (248
+  insertions, 61 deletions) against the five items in "S2-02 Codex review 1",
+  plus the full corrected `collector/config.py`, `collector/checks/net_http.py`,
+  `collector/checks/net_icmp.py`, `collector/checks/net_latency.py`, and
+  `collector/scheduler.py` at `0e254b0` for the runtime context the diff
+  depends on. Nothing was edited; this section is the whole of my change.
+- **Disposition:** **not approved.** Items 1, 2, and 3 are correctly and
+  completely addressed. Item 4 is addressed in substance but the mechanism it
+  introduced defeats item 5, which is therefore not met for ICMP. Three
+  corrections below.
+
+**Item 1 — disabled families must not be constructed: addressed.**
+`_build_checks()` now gates each family on its `enabled` flag before
+constructing, and scan level remains the independent scheduler gate.
+`test_disabled_family_does_not_construct_checks` is parametrized across all
+five families and asserts the heartbeat check is the only survivor;
+`test_latency_disabled_by_default_does_not_construct_checks` covers the
+default. The two tests that previously asserted the opposite contract are
+gone rather than weakened.
+
+**Item 2 — positive finite timeouts: addressed.** `_validate_finite_timeout`
+rejects non-finite and non-positive values and is wired to all five families'
+`timeout_s`. `test_probe_timeout_must_be_positive_and_finite` is the
+5-families x 5-bad-values cross product including both infinities and `nan`,
+with a matching acceptance test. `math.isfinite` is the right predicate here:
+`gt=0` alone accepted `inf`, which is exactly the hole the item named.
+
+**Item 3 — HTTP credential/query redaction: addressed.** Result labels are
+`target_id`-only, the degraded log carries `target_id` rather than the URL,
+and the error string is `f"HTTP probe failed: {type(exc).__name__}"` — bounded
+by the exception type, so no aiohttp message text (which embeds the request
+URL) can escape. `test_result_and_logs_never_expose_url_credentials_or_query`
+proves it the right way: it puts the secret in both userinfo and query, then
+asserts the secret and the whole URL are absent from labels, error, stdout,
+and stderr together.
+
+**Item 4 — ICMP contract vs. runtime: addressed in substance, but see item 5.**
+`_validate_icmp_host` rejects IPv6 literals for ICMP and latency with a clear
+message, and `_ping_once_blocking` now compares `recvfrom()`'s source address
+against the destination before matching identifier/sequence, with
+`test_skips_matching_packet_from_wrong_source` covering the collision case.
+The `ihl`-bounds hardening in `_parse_echo_reply` is a real additional fix and
+is tested. The problem is the *means* chosen to make hostnames work at
+runtime — see below.
+
+**Item 5 — cancellation cannot occupy the pool beyond the finite timeout: not
+met for ICMP.** The item requires demonstrating that ICMP cancellation "cannot
+create unbounded or permanently occupied pool work beyond the now finite
+configured timeout". The correction added
+
+```
+destination_ip = socket.gethostbyname(target_ip)
+```
+
+as the first statement of `_ping_once_blocking`. That call runs on the shared
+hard-capped 2-worker `run_in_thread` pool, takes no timeout argument, and
+executes *before* `start = time.monotonic()`, so it is entirely outside the
+`timeout_s` budget item 2 just made finite. `loop.run_in_executor` futures
+cannot be cancelled once running, so neither `ping()`'s caller nor the
+scheduler's `asyncio.timeout(check_timeout_s)` can free the worker — the
+awaiting coroutine goes away and the thread does not.
+
+Measured on Windows/Python 3.14.5 against `0e254b0`, with `gethostbyname`
+replaced by a 2.0s-then-fail stand-in for a black-holed resolver and nothing
+else patched:
+
+```
+1) single probe, timeout_s=0.01 -> 2.00s wall
+2) both awaiting coroutines cancelled after 0.07s
+3) instantly-resolvable probe still starved at 1.07s
+4) third probe finally ran at 2.02s
+```
+
+Line 1 is the timeout breach: a 0.01s budget took 2.00s. Lines 2-4 are the
+pool occupancy: cancellation returned promptly, and an unrelated probe needing
+no resolution at all was released only when the two cancelled resolutions
+finished. 2.0s is a conservative model — glibc's own defaults are 5s x 2
+attempts per nameserver, and `LatencyCheck.run()` issues `sample_count`
+sequential `ping()` calls, so one latency target multiplies the exposure by
+its sample count within a single check.
+
+`test_cancelled_icmp_workers_recover_within_finite_probe_timeout` cannot catch
+this: its `bounded_ping` fake replaces `_ping_once_blocking` wholesale, ignores
+the `timeout_s` it is handed, and sleeps a hardcoded `0.1`. The bound the test
+observes is the fake's, not production's, so the test would pass unchanged no
+matter how long the real worker blocks.
+
+**Corrections required (S2-02 stays REVIEW; only these three):**
+
+1. Bring name resolution inside the finite timeout and out of the capped pool.
+   The requirement is behavioural, not a specific API: after the fix, a probe
+   whose resolver never answers must fail within a bound derived from
+   `timeout_s`, and must not hold a `run_in_thread` worker past that bound.
+   Two implementations satisfy it — resolve on the event loop before
+   dispatching (`await asyncio.wait_for(loop.getaddrinfo(host, None,
+   family=socket.AF_INET), timeout_s)`, passing the resulting literal to
+   `_ping_once_blocking`), or keep resolution in the worker but give it its own
+   bounded executor and subtract its cost from the deadline. I am not choosing
+   between them: the first moves a blocked-on-I/O thread to the loop's default
+   executor, which the `ping()` docstring argues against on Pi 3B CPU grounds —
+   that argument is about CPU work and a stalled resolver is not CPU work, but
+   it is Codex's call. Whichever route is taken, resolve once per target rather
+   than once per ping so a latency check does not pay it `sample_count` times.
+   The `target_ip` parameter should be renamed once it is guaranteed a literal.
+2. Cover the resolution path. Every `_ping_once_blocking` test passes an IPv4
+   literal, which `gethostbyname` short-circuits without touching a resolver,
+   so the added line currently has no test at all — neither the hostname
+   success path nor the resolver-failure path. Add both.
+3. Make the ICMP worker-recovery test load-bearing. Drive the real
+   `_ping_once_blocking` (fake socket, blocking `recvfrom`, unresolvable
+   hostname) rather than substituting a fake that hardcodes its own duration,
+   and assert the worker is free within a small multiple of `timeout_s`.
+   A test for this item must be able to fail when the production bound breaks.
+
+**Observations, not corrections.** `IcmpCheck` and `LatencyCheck` still return
+`CheckResult(labels={"target": host})` and `error=str(exc)`. Item 3 named HTTP
+only, and this is not a `METRICS.md` violation today: the exported attributes
+go through `_record()`, which uses `target_id` alone, and `CheckResult.labels`
+has no non-test consumer anywhere in `collector/`. It becomes one the moment
+S4-01B serializes results into envelopes, so it is worth settling then rather
+than now. Separately, `_validate_icmp_host` rejects IPv6 *literals* only; an
+AAAA-only hostname still reaches the runtime and degrades as a `gaierror`.
+Correction 1's `family=AF_INET` route turns that into a deterministic,
+well-labelled failure for free.
+
+**Gates.** I re-ran nothing under this claim beyond the read-only measurement
+above, which touched no repository file. Codex's own gate evidence at
+`0e254b0` — Ubuntu `450 passed, 1 skipped` on `.33`, GitHub collector run
+`30384526449`, Pylint `30384526404`, CodeQL `30384526429`, integration
+`30384526391` — is consistent with the diff and I do not dispute it. It does
+not speak to the finding above, because no gate exercises a slow resolver.
 
 ### C2-03 — Live probe metric workflow assertion
 
