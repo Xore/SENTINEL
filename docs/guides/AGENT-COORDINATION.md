@@ -69,7 +69,7 @@ The revisions must match; the final command is required remote read-back.
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Codex takeover below |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | corrections handed off at `e81cdaf`; needs Ubuntu gates |
-| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
+| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | IN_PROGRESS | S3-01A REVIEW | Sonnet correction claim A-S4-01A-2 below |
 | S3-01B | 3 | Host-health metrics and runtime integration | CODEX | QUEUED | S2-02 DONE, S3-01A DONE | forward package below |
 | S4-01B | 4 | Durable export spool and replay integration | CODEX | QUEUED | S2-02 DONE, S4-01A DONE | forward package below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
@@ -94,7 +94,8 @@ Detailed Sonnet follow-on scopes and gates are in
 | 2026-07-28T17:42:13Z | CODEX | S2-02 | takeover of Sonnet's frozen exact claim: `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
 | 2026-07-30T11:00:07Z | SONNET5 | S3-01A | corrections to Codex design review 1 only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
 | 2026-07-26T14:10:00Z | SONNET5 | S3-01A | superseded by the correction row above; original new-file claim: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
-| 2026-07-26T15:05:00Z | SONNET5 | S4-01A | new files only: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/__init__.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
+| 2026-07-30T12:58:44Z | SONNET5 | S4-01A | corrections to Codex review 1 only: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
+| 2026-07-26T15:05:00Z | SONNET5 | S4-01A | superseded by the correction row above; original new-file claim: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/__init__.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
 
 
 ---
@@ -109,11 +110,11 @@ new REVIEW handoff.
    and handed off at `e81cdaf` (A-S3-01A-2 below); it is now `REVIEW` and only
    needs Ubuntu gate evidence plus a non-Sonnet review. `fec75f1`'s S3 host
    portion was independently verified in that handoff, which also fixed the
-   `host_load` catch-narrowing defect it introduced. **Next Sonnet item:**
-   S4-01A's six correction groups — claim it now that this handoff is pushed,
-   one queue item at a time. Independent review of Codex-implemented work
-   (S2-02 `0e254b0`, C2-03 `dc571f8`/`fec75f1` workflow portion) is authorized
-   by the user and follows S4-01A.
+   `host_load` catch-narrowing defect it introduced. **Now active:** S4-01A's
+   six correction groups, claimed under A-S4-01A-2 below — one queue item at a
+   time. Independent review of Codex-implemented work (S2-02 `0e254b0`, C2-03
+   `dc571f8`/`fec75f1` workflow portion) is authorized by the user and follows
+   S4-01A.
 1. Keep S1-02/S2-01 and every S2-02/S4-01A file frozen. S5-00 is approved
    and archived; do not claim S5-01 before its explicit gate is satisfied.
 2. Codex owns the still-active exact S2-02 claim and will address only the five
@@ -961,6 +962,57 @@ Implementation commit: `d9bef65`.
   groups, run the four full collector gates on Windows and Ubuntu, add
   adversarial multi-instance repetitions, then push a separate `REVIEW`
   handoff. Do not begin S5-01 while S4 remains short of `DONE`.
+
+#### A-S4-01A-2 — Sonnet 5 correction claim
+
+- **Timestamp:** 2026-07-30T12:58:44Z.
+- **Status:** IN_PROGRESS. Answers Codex review 1's six blocking groups.
+- **Scope:** exactly the 2026-07-30 File Claims row — `collector/store/`'s
+  three modules, the two store test modules, and this ledger. No config,
+  entry-point, contract, dependency, workflow, `pyproject.toml`, or
+  S2/S3/S5 edit. S3-01A is in `REVIEW` and its files stay frozen.
+- **Plan, by review group:**
+  1. **Hard `max_bytes` cap.** `enqueue()` raises a new
+     `QueueCapacityError` for an envelope that cannot fit even in an empty
+     queue, instead of the current "insert it anyway" branch; the existing
+     test that asserts the violation as correct is rewritten to assert
+     rejection. The invariant becomes: after any successful mutation,
+     `total_bytes() <= max_bytes` and `count() <= max_records`. Because
+     `mark_attempt()` grows a blob (`attempt_count` 9→10 adds a byte), it
+     evicts other oldest rows to make room and raises `QueueCapacityError`
+     with the row untouched if the updated record alone cannot fit.
+  2. **Explicit write transactions that start before the first read.** The
+     connection moves to `isolation_level=None` and every mutating operation
+     runs inside a `BEGIN IMMEDIATE` … `COMMIT`/`ROLLBACK` context manager, so
+     the write lock is held across each operation's read/decide/write
+     sequence. `peek()` is included because it may quarantine, which makes it
+     a mutating operation — a cold queue trades peek concurrency for the
+     guarantee the reviewer asked for, and the busy-timeout pragma absorbs the
+     contention. Deterministic separate-instance tests: N instances each
+     calling `mark_attempt()` on the same row must produce exactly N (no lost
+     increments), and N instances enqueuing concurrently must never leave
+     `total_bytes()` above the cap.
+  3. **Row-vs-blob validation.** After decoding, `peek()` and
+     `mark_attempt()` compare the row's `event_id`, `created_at`,
+     `expires_at`, and `byte_size` against the canonical blob and quarantine
+     any mismatch, so a row whose primary key disagrees with its blob can
+     never be returned as healthy and then be unacknowledgeable.
+  4. **Exact-integer `attempt_count`.** Rejected unless it is a non-boolean
+     `int` (so `1.5` and `True` both fail) at construction and therefore also
+     via `from_bytes`. `version` gets the same exact-int treatment, since
+     `1.0 != 1` is currently False and would slip through.
+  5. **Real concurrent producer/consumer coverage.** Producers and consumers
+     run simultaneously rather than in sequential phases, both as many threads
+     on one instance and as separate instances against the same file, with
+     every enqueued event accounted for exactly once.
+  6. **Bounded quarantine.** Quarantine gets its own validated
+     `max_quarantine_records`/`max_quarantine_bytes` caps with deterministic
+     oldest-first (`quarantined_at`, `event_id`) cleanup and a
+     `quarantined_bytes()` accessor, so repeatedly quarantining corrupt rows
+     cannot grow this local buffer without limit.
+- **Exit:** one correction implementation commit, all four collector gates on
+  Windows and (when `.33` is reachable) Ubuntu, adversarial multi-instance
+  repetitions, then a separate pushed `REVIEW` handoff.
 
 ### C2-03 — Live probe metric workflow assertion
 
