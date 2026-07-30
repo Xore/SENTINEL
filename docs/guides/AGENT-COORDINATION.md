@@ -67,15 +67,14 @@ The revisions must match; the final command is required remote read-back.
 
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
-| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 DONE | `e81cdaf`; Ubuntu gates pass, awaiting review only |
-| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | `0dc7f5d`; Ubuntu gates pass, awaiting review only |
-| S3-01B | 3 | Host-health metrics and runtime integration | CODEX | QUEUED | ~~S2-02 DONE~~, S3-01A DONE | forward package below; **only S3-01A still gates it** |
-| S4-01B | 4 | Durable export spool and replay integration | CODEX | QUEUED | ~~S2-02 DONE~~, S4-01A DONE | forward package below; **only S4-01A still gates it** |
-| S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | ~~S2-02~~, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate; **S3-01A and S4-01A still gate it** |
+| S3-01B | 3 | Host-health metrics and runtime integration | CODEX | READY | ~~S2-02~~, ~~S3-01A~~ — all met | forward package below; **unblocked, Codex may start** |
+| S4-01B | 4 | Durable export spool and replay integration | CODEX | READY | ~~S2-02~~, ~~S4-01A~~ — all met | forward package below; **unblocked, Codex may start** |
+| S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | READY | ~~S2-02~~, ~~S3-01A~~, ~~S4-01A~~, ~~C5-01~~ — all met | exact scope in S5-01 gate; **unblocked** |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
 | C2-03 | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 DONE | Sonnet review below: not approved, 3 corrections |
 
-Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, **S2-02**, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
+Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, **S2-02**, **S3-01A**,
+**S4-01A**, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
 [July 2026 history](../archive/coordination/2026-07-agent.md).
 Detailed Sonnet follow-on scopes and gates are in
 [`SONNET-5-WORK-QUEUE.md`](SONNET-5-WORK-QUEUE.md).
@@ -107,6 +106,13 @@ Detailed Sonnet follow-on scopes and gates are in
 ---
 
 ## Next Sonnet Actions
+
+**Superseded in part (2026-07-30T16:32Z, A-REVIEW-S3-01A/S4-01A).** The user
+authorized Sonnet to review and close S2-02, S3-01A and S4-01A directly; all
+three are now `DONE` and no collector scope is frozen for Sonnet except
+Codex-owned ones. Items 0–3 below are kept as the record of what the plan was
+before that authorization; where they say an item awaits Codex or is gated,
+read the Active Work Board instead.
 
 Plan updated after the user assigned S2-02 corrections to Codex while Sonnet is
 unavailable. Sonnet must keep every S2-02 file frozen until Codex publishes a
@@ -141,8 +147,10 @@ new REVIEW handoff.
      still gated. Ubuntu `.33` was unreachable at 11:16Z and 11:34Z
      (`Connection timed out`), so the outstanding Ubuntu gate evidence for
      S3-01A and S4-01A is still owed whenever the host returns.
-   - S5-01 stays `QUEUED`: it gates on S2-02, S3-01A, and S4-01A all being
-     `DONE`, and only Codex may mark them so.
+   - ~~S5-01 stays `QUEUED`: it gates on S2-02, S3-01A, and S4-01A all being
+     `DONE`, and only Codex may mark them so.~~ **Superseded:** all three are
+     `DONE` as of 16:32Z, closed by Sonnet under the user's explicit
+     authorization (A-S2-02-3, A-REVIEW-S3-01A/S4-01A). S5-01 is `READY`.
    - **Ledger timestamp correction (2026-07-30T11:41:18Z):** three Sonnet
      timestamps written earlier today were future-dated against the real
      clock — the S3-01A handoff (`12:41:36Z` → `11:16:49Z`), the A-S4-01A-2
@@ -205,8 +213,8 @@ cross-language golden inputs are under
 resolved Q-6 through Q-11 decisions, and exact future claim are indexed in
 [July 2026 history](../archive/coordination/2026-07-agent.md).
 
-S5-01 remains `QUEUED` until S2-02, S3-01A, and S4-01A are all `DONE`. Its later
-claim may enumerate only: new `collector/updater/` modules; matching new
+S2-02, S3-01A and S4-01A are all `DONE` as of 2026-07-30T16:32Z, so this gate
+is satisfied and S5-01 is `READY`. Its claim may enumerate only: new `collector/updater/` modules; matching new
 `collector/tests/updater/` tests; the three named collector/updater systemd
 unit/timer files under `deploy/systemd/`; and this ledger. It must consume the
 contract and fixtures without changing release-side schema, signing CLI,
@@ -255,8 +263,8 @@ integration on top of this API.
 
 ### S3-01B — Host-health metrics and runtime integration
 
-After S2-02 and S3-01A are independently `DONE`, publish an exact claim for the
-Phase 3 metrics contract, bounded host-check configuration, registration and
+S2-02 and S3-01A are both `DONE` (2026-07-30T16:32Z), so this package is
+unblocked. Publish an exact claim for the Phase 3 metrics contract, bounded host-check configuration, registration and
 lifecycle wiring, the seven host modules only where reviewed adapter changes
 are required, and focused tests. Define canonical `sentinel_` metric names,
 types, units, and cardinality budgets before emission. Process and service
@@ -267,8 +275,8 @@ are reused, and Windows degrades only for genuinely unsupported checks.
 
 ### S4-01B — Durable export spool and replay integration
 
-After S2-02 and S4-01A are independently `DONE`, publish an exact claim for an
-async adapter around the reviewed SQLite queue, transport integration,
+S2-02 and S4-01A are both `DONE` (2026-07-30T16:32Z), so this package is
+unblocked. Publish an exact claim for an async adapter around the reviewed SQLite queue, transport integration,
 configuration, runtime wiring, canonical queue telemetry, and focused tests.
 Failed exports must be durably enqueued before acknowledgement; reconnect
 drains deterministic oldest-first batches with bounded exponential backoff and
@@ -1253,7 +1261,10 @@ truncating it for forensics.
   the property those tests exist to pin.
 - **Both items therefore have no outstanding gate.** S3-01A and S4-01A remain
   `REVIEW`, now blocked only on independent review, which Sonnet cannot
-  perform on its own implementation.
+  perform on its own implementation. **Superseded 16:32Z:** the user
+  authorized exactly that review; both are now `DONE`
+  (A-REVIEW-S3-01A/S4-01A), and the S4-01A gate figures above are superseded
+  by the re-run at `e505191`.
 
 #### S2-02 resolver finding, reproduced on Ubuntu
 
@@ -1494,6 +1505,115 @@ both — all three are Sonnet-authored and sit in `REVIEW` awaiting Codex. I am
 specifically authorized, and self-approving my own S3-01A/S4-01A handoffs is a
 different act with no such instruction behind it. C2-03's three corrections
 also remain open and are Codex's.
+
+**Superseded 16:32Z.** The user answered this paragraph directly — *"continue
+with the rest - yo uare allowed to review them yourself"* — so S3-01A and
+S4-01A were reviewed and closed under that authorization
+(A-REVIEW-S3-01A/S4-01A). The C2-03 sentence still stands: those corrections
+remain open and are Codex's.
+
+### A-REVIEW-S3-01A/S4-01A — Sonnet 5 self-review and closure
+
+- **Timestamp:** claim 2026-07-30T16:32:51Z (`780ac0d`, published before any
+  edit); the one correction it produced is `e505191`; this closure entry
+  separate.
+- **Status:** **DONE** for both S3-01A and S4-01A.
+- **Authority, stated plainly.** As with A-S2-02-3, this is self-approval and
+  should be weighted as such by anyone auditing the ledger. The user
+  authorized it directly, in answer to my saying I would not extend the S2-02
+  authorization on my own: *"continue with the rest - yo uare allowed to
+  review them yourself."* Codex has not picked up either item since they
+  entered `REVIEW` on 2026-07-26 and has moved to backend CK-BE-05A. Both
+  items already carried complete two-platform gate evidence (A-GATES-1), so
+  the only thing outstanding was the review itself.
+- **What was reviewed.** S3-01A at `42262a4..e81cdaf` — the seven
+  `collector/checks/host_*.py` modules and their seven test modules, read in
+  full. S4-01A at `0dc7f5d` — `collector/store/{__init__,envelope,sqlite_queue}.py`
+  and both store test modules, read in full.
+
+**S4-01A — one defect, confirmed by reproduction, fixed.**
+
+`SqliteQueue._write_transaction()` ran `COMMIT` *outside* its exception
+handler. SQLite returns `SQLITE_FULL` and `SQLITE_BUSY` from `COMMIT` itself
+and **leaves the transaction open**, expecting the application to roll back.
+With `COMMIT` outside the handler that failure escaped with the transaction
+still active, so every later `BEGIN IMMEDIATE` raised *"cannot start a
+transaction within a transaction"*: the cold queue is permanently dead until
+the process restarts, and it does not recover when the disk has room again.
+The queue's whole reason to exist is surviving the period when the backend is
+unreachable and data is piling up locally — precisely when a small SD card or
+NVMe (ADR 0012's reference hardware) fills. Reproduced with a connection
+proxy that fails one `COMMIT`: enqueue #2 failed as expected, and enqueues #3
+and #4 and every `peek()` afterwards then failed permanently, while `count()`
+still reported the uncommitted row.
+
+Fix: `COMMIT` moved inside the `try`, so a failed commit rolls back like any
+other failure. The regression test
+(`test_a_failed_commit_does_not_wedge_the_queue_forever`) is verified
+load-bearing by mutation — restoring the previous statement order makes it
+fail with the original `cannot start a transaction within a transaction`,
+reverted immediately. `_FailingConn` gained an optional `max_failures` so the
+proxy can model a transient condition; its existing always-fail behaviour is
+the default and unchanged.
+
+Everything else in S4-01A holds up. `BEGIN IMMEDIATE` before the first read is
+the right call and the concurrency tests prove it (no lost increments across
+four instances, cap never overrun). `Envelope` validation is genuinely
+fail-closed — exact-int checks that reject `bool`, checksum recomputed and
+compared against the on-wire value, `EnvelopeError` re-raised ahead of the
+broader handlers rather than being reclassified. Quarantine is capped in both
+records and bytes, with a blob bigger than the whole cap dropped rather than
+kept over it, and the legacy-schema migration backfills `byte_size` so old
+rows still count.
+
+**S3-01A — no defect found; no file edited.**
+
+The seven host checks are consistent and careful. Every parser fails closed
+rather than producing a plausible number from broken input (negative jiffies,
+non-positive totals, `MemAvailable > MemTotal`, negative interface counters,
+NaN load averages). The two delta-based checks skip an interval on a counter
+reset instead of clamping a negative delta into a believable 0%/0 B/s
+"measurement", which is the harder and correct choice. Label hygiene matches
+`METRICS.md`: raw process names, unit names, mount paths and file contents
+stay in structured logs, and only `target_id`/`interface` reach
+`CheckResult.labels`. `host_process` refusing to assert absence when any PID
+was uninspectable is the sharpest judgement call in the set and is right — a
+false "not running" on a monitored service is worse than a gap.
+`host_service._query_service_state` catching `BaseException` to reap the child
+on the cancellation path, with `run()` catching only `Exception` so
+`CancelledError` still propagates, is correct as written and covered.
+
+Two observations that do **not** require correction, recorded so the next
+reviewer does not have to rediscover them:
+
+- The `test_slow_*_is_cancellable` tests in five modules prove the awaiting
+  *coroutine* is freed, not that the worker thread is. That is what their
+  assertions claim and what the names say, so they are honest — but after
+  S2-02's finding on the same subject, note that no test here bounds worker
+  occupancy. It is not load-bearing for S3-01A: these are file reads on local
+  `/proc`, not network calls, so a thread cannot stall the way a resolver can.
+- `_kill_and_reap` holds no reference to the shielded reap task once it
+  returns on the cancellation path. In CPython the task stays reachable
+  through the subprocess transport's waiter chain, so it is not at risk of
+  collection, and the test asserts the reap happens. Worth knowing if that
+  helper is ever reused somewhere without a transport behind it.
+
+**Gates — both platforms, at `e505191` (the corrected commit).**
+
+| Gate | Windows 11 / Python 3.14.5 | Ubuntu `.33` / Python 3.12 |
+|---|---|---|
+| pytest | 669 passed, 8 skipped | 676 passed, 1 skipped |
+| ruff | clean | clean |
+| mypy | no issues, 55 source files | no issues, 55 source files |
+| pylint | 10.00/10 | 10.00/10 |
+
+The skip counts differ by platform guard, not coverage. `.33` was returned to
+`main` at `e505191` after the run, releasing the gate-host claim.
+
+**What this unblocks.** S3-01B, S4-01B and S5-01 now have every prerequisite
+satisfied — S2-02, S3-01A and S4-01A are all `DONE`. S3-01B and S4-01B are
+Codex's to pick up. C2-03's three corrections remain open and are also Codex's;
+they were not part of this authorization and are untouched.
 
 ### A-HW-2 — CPU thread-pool worker count becomes configuration
 
@@ -2088,15 +2208,18 @@ next action. The documents that become archivable the moment their items reach
 | When this is `DONE` | Move |
 |---|---|
 | ~~S2-02~~ (`DONE` 2026-07-30) | `research-notes/01-baseline-parity.md` — **re-applied and it still does not qualify**: the note's `±1 sample` box against the standalone monitor's `ping_samples` is unticked and needs live network access, so the note keeps an open next action and stays put. Nothing else was gated on S2-02 alone. |
-| S3-01A + S3-01B | the OS-health portion of `research-notes/02-routes-wan-os-tls-snmp.md`; the rest stays until routes/WAN/TLS/SNMP ship |
-| S4-01A + S4-01B | `research-notes/09-sqlite-tsdb.md` |
+| ~~S3-01A~~ (`DONE` 2026-07-30) + S3-01B | the OS-health portion of `research-notes/02-routes-wan-os-tls-snmp.md`; the rest stays until routes/WAN/TLS/SNMP ship. **Re-applied: does not qualify** — this row needs *both*, and S3-01B has not started. |
+| ~~S4-01A~~ (`DONE` 2026-07-30) + S4-01B | `research-notes/09-sqlite-tsdb.md`. **Re-applied: does not qualify** — same reason; S4-01B has not started. |
 | S5-01 | the S5 gate section here; **not** `contracts/COLLECTOR-UPDATE-MANIFEST-V1.md` |
 | C1-02 | the C1 exchanges here |
 
 `SONNET-5-WORK-QUEUE.md` moves only when S2-02, S3-01A and S4-01A are all
 `DONE` — it is still the cited authority for two items in `REVIEW`. S2-02
-reached `DONE` on 2026-07-30 (A-S2-02-3); S3-01A and S4-01A have not, so the
-queue stays.
+reached `DONE` on 2026-07-30 (A-S2-02-3); **S3-01A and S4-01A followed the same
+day (A-REVIEW-S3-01A/S4-01A), so this condition is now met.** The document
+defines exactly five items — S2-01, S2-02, S3-01A, S4-01A, S5-00 — and every
+one is `DONE`, so it is fully discharged and archived under A-ARCHIVE-1 below.
+It never contained an S5-01 spec; that lives in the S5-01 Gate section here.
 
 Git history is the lossless source for verbose earlier ledger states. Monthly
 history is the readable durable index.
