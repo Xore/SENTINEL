@@ -8,7 +8,8 @@ is otherwise unobtainable, both handled as a normal failed run.
 
 Standalone in this claim: not yet registered by `collector/__main__.py` and
 does not create any OTel instrument. Registration and metric emission are a
-later, separately reviewed claim (see docs/guides/SONNET-5-WORK-QUEUE.md).
+later, separately reviewed claim (see the S3-01B forward package in
+docs/guides/AGENT-COORDINATION.md).
 """
 
 from __future__ import annotations

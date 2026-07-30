@@ -76,8 +76,9 @@ The revisions must match; the final command is required remote read-back.
 Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, **S2-02**, **S3-01A**,
 **S4-01A**, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
 [July 2026 history](../archive/coordination/2026-07-agent.md).
-Detailed Sonnet follow-on scopes and gates are in
-[`SONNET-5-WORK-QUEUE.md`](SONNET-5-WORK-QUEUE.md).
+The Sonnet work queue that carried S2-01 through S5-00 is fully discharged and
+[archived](../archive/coordination/SONNET-5-WORK-QUEUE.md); the remaining
+scopes and gates live in this document (S5-01 Gate, Forward Probe Packages).
 
 ---
 
@@ -173,12 +174,20 @@ new REVIEW handoff.
 
 ### Continuity authority through 2026-08-02
 
-Sonnet may follow the explicit REVIEW-handoff gates in
-`SONNET-5-WORK-QUEUE.md` without waiting for Codex to mark each predecessor
+Sonnet may follow the explicit REVIEW-handoff gates in the
+[archived work queue](../archive/coordination/SONNET-5-WORK-QUEUE.md) without
+waiting for Codex to mark each predecessor
 `DONE`. This is not self-approval: handed-off scopes are frozen, successors are
 disjoint, and only Codex may mark work `DONE`. Authorized sequence: S2-01
 corrections → S2-02 → S3-01A new host files → S4-01A new store files → S5-00
 ledger-only preflight, then stop.
+
+**Discharged 2026-07-30T16:39Z.** Every item in that sequence is `DONE`, so
+this window has nothing left to authorize; the queue document is archived. The
+"only Codex may mark work `DONE`" clause was overridden for S2-02, S3-01A and
+S4-01A by the user's explicit instruction — see A-S2-02-3 and
+A-REVIEW-S3-01A/S4-01A, both of which state the self-approval plainly. It
+still stands for every other item.
 
 ---
 
@@ -308,7 +317,8 @@ contracts outside the enumerated files.
 - **Scope:** exactly the File Claims row above, per the archived S2-02
   preflight (`b6c2e81`) and Codex's contract decision
   (`67f13e0`/`docs/contracts/METRICS.md`).
-- **Plan (mirrors `SONNET-5-WORK-QUEUE.md` + Next Sonnet Actions step 3):**
+- **Plan (mirrors the [archived work queue](../archive/coordination/SONNET-5-WORK-QUEUE.md)
+  + Next Sonnet Actions step 3):**
   1. Shared bounded target/result contract: structured `target_id`-bearing
      targets (capped at 32/family) for ICMP/HTTP/DNS, mirroring
      `TcpTarget`; a new `LatencyConfig` (disabled by default, its own
@@ -829,8 +839,9 @@ and the reasoning recorded in the docstring. The cross-sample equivalent
 - **Scope:** exactly the File Claims row above — a new `collector/store/`
   package (envelope + SQLite cold queue) and matching new
   `collector/tests/store/` package. No dependency, config, transport,
-  scheduler, probe, or entry-point edits, per
-  `SONNET-5-WORK-QUEUE.md`'s S4-01A spec.
+  scheduler, probe, or entry-point edits, per the
+  [archived work queue](../archive/coordination/SONNET-5-WORK-QUEUE.md)'s
+  S4-01A spec.
 - **Plan:**
   1. `envelope.py` — immutable, frozen `Envelope` dataclass: version `1`
      (rejects any other value now or on deserialization); `event_id`
@@ -1616,6 +1627,42 @@ satisfied — S2-02, S3-01A and S4-01A are all `DONE`. S3-01B and S4-01B are
 Codex's to pick up. C2-03's three corrections remain open and are also Codex's;
 they were not part of this authorization and are untouched.
 
+### A-ARCHIVE-1 — the Sonnet work queue is discharged and archived
+
+- **Timestamp:** claim 2026-07-30T16:39:11Z (`e33d244`, published before any
+  edit).
+- **Status:** COMPLETE.
+- **Why:** the user's standing rule — *"when any task is done, move the
+  referenced documents to the archive folder to keep the docs folder lean"* —
+  and the discharge-not-mention test recorded under Archive Procedure.
+  `SONNET-5-WORK-QUEUE.md` defines exactly five items (S2-01, S2-02, S3-01A,
+  S4-01A, S5-00) and all five are now `DONE`. Nothing in it is unspent: it
+  contains no S5-01 spec and no S3-01B/S4-01B spec, both of which live in this
+  ledger.
+- **Moved:** `docs/guides/SONNET-5-WORK-QUEUE.md` →
+  `docs/archive/coordination/SONNET-5-WORK-QUEUE.md` (`git mv`, so history
+  follows).
+- **Inbound links fixed in the same commit,** as the archive policy requires:
+  four references in this ledger, a new row in
+  `docs/archive/coordination/README.md`, and one docstring line in each of the
+  seven `collector/checks/host_*.py` modules. Those seven pointed readers at
+  the queue for where the later registration claim is specified, which was
+  already imprecise — the queue never contained an S3-01B spec — so they now
+  point at the S3-01B forward package here. Text inside a module docstring
+  only: no code, no behaviour, no test changed.
+- **Not moved, and why.** `research-notes/01-baseline-parity.md`,
+  `02-routes-wan-os-tls-snmp.md` and `09-sqlite-tsdb.md` were re-checked
+  against the same test and none qualifies — the first has an unticked
+  validation box needing live network access, and the other two are gated on
+  S3-01B/S4-01B, which have not started. The Archive Procedure table records
+  each with its reason rather than leaving a reader to re-derive it.
+
+**Gates.** The seven docstring edits are the only Python in this change, so all
+four were re-run on Windows 11 / Python 3.14.5 at `4e6b7d6`: pytest
+`669 passed, 8 skipped`, Ruff clean, mypy no issues in 55 source files, Pylint
+`10.00/10`. Ubuntu was not re-run for a docstring-only diff; the substantive
+commit `e505191` has full two-platform evidence in A-REVIEW-S3-01A/S4-01A.
+
 ### A-HW-2 — CPU thread-pool worker count becomes configuration
 
 - **Timestamp:** claim 2026-07-30T16:02:51Z (`b6e3b35`, published before any
@@ -2214,13 +2261,16 @@ next action. The documents that become archivable the moment their items reach
 | S5-01 | the S5 gate section here; **not** `contracts/COLLECTOR-UPDATE-MANIFEST-V1.md` |
 | C1-02 | the C1 exchanges here |
 
-`SONNET-5-WORK-QUEUE.md` moves only when S2-02, S3-01A and S4-01A are all
-`DONE` — it is still the cited authority for two items in `REVIEW`. S2-02
-reached `DONE` on 2026-07-30 (A-S2-02-3); **S3-01A and S4-01A followed the same
-day (A-REVIEW-S3-01A/S4-01A), so this condition is now met.** The document
-defines exactly five items — S2-01, S2-02, S3-01A, S4-01A, S5-00 — and every
-one is `DONE`, so it is fully discharged and archived under A-ARCHIVE-1 below.
-It never contained an S5-01 spec; that lives in the S5-01 Gate section here.
+~~`SONNET-5-WORK-QUEUE.md` moves only when S2-02, S3-01A and S4-01A are all
+`DONE` — it is still the cited authority for two items in `REVIEW`.~~
+**Discharged and moved 2026-07-30T16:39Z (A-ARCHIVE-1).** S2-02 reached `DONE`
+that day (A-S2-02-3) and S3-01A and S4-01A followed
+(A-REVIEW-S3-01A/S4-01A), so the condition was met. The document defines
+exactly five items — S2-01, S2-02, S3-01A, S4-01A, S5-00 — and every one is
+`DONE`, so it is fully discharged and now lives at
+[`archive/coordination/SONNET-5-WORK-QUEUE.md`](../archive/coordination/SONNET-5-WORK-QUEUE.md).
+It never contained an S5-01 spec; that lives in the S5-01 Gate section here,
+which is why archiving it strands nothing.
 
 Git history is the lossless source for verbose earlier ledger states. Monthly
 history is the readable durable index.
