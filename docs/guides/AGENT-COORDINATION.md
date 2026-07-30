@@ -94,7 +94,8 @@ Detailed Sonnet follow-on scopes and gates are in
 | 2026-07-28T17:42:13Z | CODEX | S2-02 | takeover of Sonnet's frozen exact claim: `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
 | 2026-07-30T11:00:07Z | SONNET5 | S3-01A | corrections to Codex design review 1 only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
 | 2026-07-26T14:10:00Z | SONNET5 | S3-01A | superseded by the correction row above; original new-file claim: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
-| 2026-07-30T12:58:44Z | SONNET5 | S4-01A | corrections to Codex review 1 only: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
+| 2026-07-30T11:41:18Z | SONNET5 | REVIEW-S2-02/C2-03 | ledger-only: this ledger. Read-only inspection of `4e18ad8..0e254b0` (S2-02) and `278e49f..dc571f8` + the workflow portion of `21502d9..fec75f1` (C2-03). No implementation file is edited under this claim. |
+| 2026-07-30T11:19:04Z | SONNET5 | S4-01A | corrections to Codex review 1 only: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
 | 2026-07-26T15:05:00Z | SONNET5 | S4-01A | superseded by the correction row above; original new-file claim: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/__init__.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
 
 
@@ -122,6 +123,15 @@ new REVIEW handoff.
      claim until those are published.
    - S5-01 stays `QUEUED`: it gates on S2-02, S3-01A, and S4-01A all being
      `DONE`, and only Codex may mark them so.
+   - **Ledger timestamp correction (2026-07-30T11:41:18Z):** three Sonnet
+     timestamps written earlier today were future-dated against the real
+     clock — the S3-01A handoff (`12:41:36Z` → `11:16:49Z`), the A-S4-01A-2
+     claim and its File Claims row (`12:58:44Z` → `11:19:04Z`), and the
+     S4-01A handoff (`14:22:09Z` → `11:34:23Z`). Each is now the UTC commit
+     time of the commit that published it (`6f17da3`, `f9b4ff9`, `be68ef3`).
+     This matters beyond tidiness: claim precedence is decided by these
+     timestamps, and a future-dated Sonnet claim would wrongly outrank a
+     genuinely earlier Codex one. Nothing else in those sections changed.
 1. Keep S1-02/S2-01 and every S2-02/S4-01A file frozen. S5-00 is approved
    and archived; do not claim S5-01 before its explicit gate is satisfied.
 2. Codex owns the still-active exact S2-02 claim and will address only the five
@@ -689,7 +699,7 @@ Implementation commit: `8e96e8c`.
 
 ##### S3-01A Sonnet 5 correction handoff
 
-- **Timestamp:** 2026-07-30T12:41:36Z.
+- **Timestamp:** 2026-07-30T11:16:49Z.
 - **Status:** REVIEW. Implementation commit `e81cdaf`, pushed to `origin/main`.
 - **Scope honored:** exactly the 2026-07-30 File Claims row — seven
   `collector/checks/host_*.py` modules, their seven test modules, and this
@@ -984,7 +994,7 @@ Implementation commit: `d9bef65`.
 
 #### A-S4-01A-2 — Sonnet 5 correction claim
 
-- **Timestamp:** 2026-07-30T12:58:44Z.
+- **Timestamp:** 2026-07-30T11:19:04Z.
 - **Status:** COMPLETE — see the correction handoff below. Answered Codex
   review 1's six blocking groups.
 - **Scope:** exactly the 2026-07-30 File Claims row — `collector/store/`'s
@@ -1036,9 +1046,9 @@ Implementation commit: `d9bef65`.
 
 ##### S4-01A Sonnet 5 correction handoff
 
-- **Timestamp:** 2026-07-30T14:22:09Z.
+- **Timestamp:** 2026-07-30T11:34:23Z.
 - **Status:** REVIEW. Implementation commit `0dc7f5d`, pushed to `origin/main`.
-- **Scope honored:** exactly the 2026-07-30T12:58:44Z File Claims row —
+- **Scope honored:** exactly the 2026-07-30T11:19:04Z File Claims row —
   `collector/store/__init__.py`, `collector/store/envelope.py`,
   `collector/store/sqlite_queue.py`, `collector/tests/store/test_envelope.py`,
   `collector/tests/store/test_sqlite_queue.py`, and this ledger (separate
@@ -1153,6 +1163,25 @@ cold tier, or whether the quarantine decision should be deferred to a separate
 sweep so `peek()` can stay a reader; (c) the group-5 deviation above and
 Q-14; (d) whether dropping an over-cap corrupt blob entirely is preferable to
 truncating it for forensics.
+
+### A-REVIEW-1 — Sonnet 5 independent review claim
+
+- **Timestamp:** 2026-07-30T11:41:18Z.
+- **Status:** IN_PROGRESS.
+- **Authority:** the user authorized Sonnet to review Codex-implemented work.
+  Codex cannot self-approve its own S2-02 and C2-03 handoffs, and both
+  explicitly request independent inspection.
+- **Scope:** this ledger only. The review is read-only against the
+  implementation: no `collector/` file, workflow, contract, or dependency is
+  edited under this claim. Every S2-02 and C2-03 file stays frozen; if a
+  correction is needed the review says so and the implementer makes it.
+- **Targets:** S2-02 correction diff `4e18ad8..0e254b0` against the five items
+  in "S2-02 Codex review 1"; C2-03 `278e49f..dc571f8` plus the workflow portion
+  of `21502d9..fec75f1` against the exact C2-03 claim.
+- **Exit:** one pushed ledger commit per reviewed item stating a disposition
+  (approved, or corrections required with exact items). Sonnet does not mark
+  either item `DONE`; approving a review and marking `DONE` stay separate acts,
+  and only Codex does the latter.
 
 ### C2-03 — Live probe metric workflow assertion
 
