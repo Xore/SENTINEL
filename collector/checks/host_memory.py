@@ -25,7 +25,9 @@ DEFAULT_MEMINFO_PATH = "/proc/meminfo"
 def _parse_meminfo(text: str) -> dict[str, int]:
     """Parse `/proc/meminfo` into a `{field: kB}` mapping.
 
-    Raises `ValueError` if a line's value isn't a leading integer.
+    Fails closed: raises `ValueError` if a line's value isn't a leading integer
+    or is negative. A memory quantity cannot be negative, so accepting one
+    would only serve to produce a believable-looking ratio from broken input.
     """
     fields: dict[str, int] = {}
     for line in text.splitlines():
@@ -36,9 +38,12 @@ def _parse_meminfo(text: str) -> dict[str, int]:
         if not parts:
             continue
         try:
-            fields[key.strip()] = int(parts[0])
+            value = int(parts[0])
         except ValueError as exc:
             raise ValueError(f"non-integer /proc/meminfo value: {line!r}") from exc
+        if value < 0:
+            raise ValueError(f"negative /proc/meminfo value: {line!r}")
+        fields[key.strip()] = value
     return fields
 
 
@@ -87,9 +92,21 @@ class HostMemoryCheck(BaseCheck):
                 )
             if total_kb <= 0:
                 raise ValueError(f"non-positive MemTotal: {total_kb}")
+            if available_kb > total_kb:
+                # Impossible on a healthy kernel; clamping it to a 0.0 used
+                # ratio would report a comfortably idle host instead of a
+                # broken reading.
+                raise ValueError(
+                    f"available memory {available_kb} kB exceeds MemTotal {total_kb} kB"
+                )
         except Exception as exc:  # BaseCheck.run() must never raise
+            # `CancelledError` is a `BaseException`, so external cancellation
+            # still propagates past this handler as the scheduler requires.
             log.warning("check.degraded", check=self.name, error=str(exc))
-            return CheckResult(ok=False, error=str(exc))
+            # The full message can embed the configured path and raw file
+            # content, so it stays in the structured log; the result carries
+            # only the bounded exception type.
+            return CheckResult(ok=False, error=type(exc).__name__)
 
-        used_ratio = max(0.0, min(1.0, 1.0 - (available_kb / total_kb)))
+        used_ratio = 1.0 - (available_kb / total_kb)
         return CheckResult(ok=True, metrics={"memory_used_ratio": used_ratio}, labels={})

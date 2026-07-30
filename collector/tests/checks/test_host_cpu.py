@@ -37,6 +37,16 @@ class TestParseCpuLine:
         assert idle == 800
         assert total == 950
 
+    def test_rejects_negative_jiffies(self):
+        # Kernel jiffie counters are unsigned; a negative one means the input is
+        # not `/proc/stat`. Accepting it would yield a ratio outside [0, 1].
+        with pytest.raises(ValueError, match="negative"):
+            _parse_cpu_line("cpu  100 0 50 -800 10\n")
+
+    def test_rejects_all_zero_line(self):
+        with pytest.raises(ValueError, match="non-positive"):
+            _parse_cpu_line("cpu  0 0 0 0\n")
+
 
 class TestReadCpuJiffies:
     def test_reads_real_file(self, tmp_path):
@@ -90,11 +100,60 @@ class TestHostCpuCheck:
         assert result.ok is True
         assert result.metrics["cpu_utilization_ratio"] == pytest.approx(1 - 50 / 150)
 
+    async def test_counter_reset_skips_the_interval_instead_of_clamping(self, settings, tmp_path):
+        # A reboot or a namespaced /proc swap makes the monotonic counters go
+        # backwards. Reporting a clamped 0%/100% would look like a measurement.
+        path = tmp_path / "stat"
+        path.write_text(_stat_line(user=1000, idle=8000))
+        check = HostCpuCheck(settings, meter=None, proc_stat_path=str(path))
+        await check.run()
+
+        path.write_text(_stat_line(user=10, idle=80))
+        result = await check.run()
+
+        assert result.ok is True
+        assert result.metrics == {}
+
+        # The baseline was refreshed, so the next interval measures normally.
+        path.write_text(_stat_line(user=110, idle=130))
+        result = await check.run()
+        assert result.metrics["cpu_utilization_ratio"] == pytest.approx(1 - 50 / 150)
+
+    async def test_idle_growing_faster_than_total_skips_the_interval(self, settings, monkeypatch):
+        # Mutually inconsistent samples (idle_delta > total_delta) would give a
+        # negative utilization; there is no clamp, so the interval is skipped.
+        samples = iter([(800, 960), (900, 1000)])
+        monkeypatch.setattr(
+            "collector.checks.host_cpu._read_cpu_jiffies", lambda path: next(samples)
+        )
+        check = HostCpuCheck(settings, meter=None)
+        await check.run()
+
+        result = await check.run()
+
+        assert result.ok is True
+        assert result.metrics == {}
+
+    async def test_utilization_is_never_clamped_for_a_valid_interval(self, settings, monkeypatch):
+        # A fully busy interval must read as exactly 1.0, and a fully idle one
+        # as exactly 0.0 — proof the values come from the delta, not a clamp.
+        samples = iter([(800, 960), (800, 1060), (900, 1160)])
+        monkeypatch.setattr(
+            "collector.checks.host_cpu._read_cpu_jiffies", lambda path: next(samples)
+        )
+        check = HostCpuCheck(settings, meter=None)
+        await check.run()
+
+        assert (await check.run()).metrics["cpu_utilization_ratio"] == pytest.approx(1.0)
+        assert (await check.run()).metrics["cpu_utilization_ratio"] == pytest.approx(0.0)
+
     async def test_missing_file_never_raises(self, settings, tmp_path):
         check = HostCpuCheck(settings, meter=None, proc_stat_path=str(tmp_path / "nope"))
         result = await check.run()
         assert result.ok is False
-        assert result.error is not None
+        # Bounded: the exception type only. The full message can embed the
+        # configured path, so it goes to the structured log instead.
+        assert result.error == "FileNotFoundError"
 
     async def test_malformed_file_never_raises(self, settings, tmp_path):
         path = tmp_path / "stat"
@@ -102,6 +161,24 @@ class TestHostCpuCheck:
         check = HostCpuCheck(settings, meter=None, proc_stat_path=str(path))
         result = await check.run()
         assert result.ok is False
+        # No raw file content in the result — a parse error would otherwise
+        # carry an unbounded line straight into the failure record.
+        assert result.error == "ValueError"
+        assert "garbage" not in result.error
+
+    @pytest.mark.parametrize(
+        "content",
+        ["cpu  100 0 50 -800 10\n", "cpu  0 0 0 0\n", "cpu  1 2\n", "cpu  1 2 x 4\n"],
+    )
+    async def test_implausible_values_fail_the_check(self, settings, tmp_path, content):
+        path = tmp_path / "stat"
+        path.write_text(content)
+        check = HostCpuCheck(settings, meter=None, proc_stat_path=str(path))
+
+        result = await check.run()
+
+        assert result.ok is False
+        assert result.metrics == {}
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics required")
     async def test_permission_denied_never_raises(self, settings, tmp_path):

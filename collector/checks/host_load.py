@@ -13,6 +13,7 @@ later, separately reviewed claim (see docs/guides/SONNET-5-WORK-QUEUE.md).
 
 from __future__ import annotations
 
+import math
 import os
 
 import structlog
@@ -39,12 +40,24 @@ class HostLoadCheck(BaseCheck):
             # Astroid resolves the Windows `os` surface, where the dynamic
             # callable is absent, despite the explicit runtime guard above.
             load1, load5, load15 = getloadavg()  # pylint: disable=not-callable
-        except OSError as exc:
+            averages = (float(load1), float(load5), float(load15))
+        except Exception as exc:  # BaseCheck.run() must never raise
+            # Broader than `OSError` on purpose: this is a dynamically resolved
+            # callable, and an unpacking or conversion failure must still become
+            # a failed run rather than escaping into the scheduler.
             log.warning("check.degraded", check=self.name, error=str(exc))
             return CheckResult(ok=False, error=str(exc))
 
+        for value in averages:
+            # A load average is a non-negative finite number. NaN would silently
+            # poison every downstream aggregate, so fail closed instead.
+            if not math.isfinite(value) or value < 0:
+                error = f"implausible load average: {value!r}"
+                log.warning("check.degraded", check=self.name, error=error)
+                return CheckResult(ok=False, error=error)
+
         return CheckResult(
             ok=True,
-            metrics={"load1": load1, "load5": load5, "load15": load15},
+            metrics={"load1": averages[0], "load5": averages[1], "load15": averages[2]},
             labels={},
         )

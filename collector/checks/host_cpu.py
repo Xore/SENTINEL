@@ -25,8 +25,15 @@ DEFAULT_PROC_STAT_PATH = "/proc/stat"
 def _parse_cpu_line(line: str) -> tuple[int, int]:
     """Parse `/proc/stat`'s aggregate `cpu` line into `(idle, total)` jiffies.
 
-    Raises `ValueError` if the line isn't the expected aggregate CPU line or
-    doesn't have enough fields.
+    Fails closed: raises `ValueError` if the line isn't the expected aggregate
+    CPU line, doesn't have enough fields, or reports values that cannot come
+    from a healthy kernel (negative jiffies or a non-positive total). Producing
+    a plausible-looking ratio from impossible input would be worse than
+    reporting a failed check.
+
+    `idle <= total` needs no separate check here: idle is a subset sum of
+    values that have already been proven non-negative. The cross-sample
+    equivalent is not implied that way and is checked in `run()`.
     """
     fields = line.split()
     if not fields or fields[0] != "cpu":
@@ -37,8 +44,12 @@ def _parse_cpu_line(line: str) -> tuple[int, int]:
         raise ValueError(f"non-integer /proc/stat cpu field: {line!r}") from exc
     if len(values) < 4:
         raise ValueError(f"insufficient /proc/stat cpu fields: {line!r}")
+    if any(value < 0 for value in values):
+        raise ValueError(f"negative /proc/stat cpu jiffies: {line!r}")
     idle = values[3] + (values[4] if len(values) > 4 else 0)  # idle + iowait
     total = sum(values)
+    if total <= 0:
+        raise ValueError(f"non-positive /proc/stat cpu total: {line!r}")
     return idle, total
 
 
@@ -79,8 +90,13 @@ class HostCpuCheck(BaseCheck):
         try:
             idle, total = await run_in_thread(_read_cpu_jiffies, self._proc_stat_path)
         except Exception as exc:  # BaseCheck.run() must never raise
+            # `CancelledError` is a `BaseException`, so external cancellation
+            # still propagates past this handler as the scheduler requires.
             log.warning("check.degraded", check=self.name, error=str(exc))
-            return CheckResult(ok=False, error=str(exc))
+            # The full message can embed the configured path and raw file
+            # content, so it stays in the structured log; the result carries
+            # only the bounded exception type.
+            return CheckResult(ok=False, error=type(exc).__name__)
 
         if self._prev is None:
             self._prev = (idle, total)
@@ -91,10 +107,19 @@ class HostCpuCheck(BaseCheck):
         total_delta = total - prev_total
         idle_delta = idle - prev_idle
 
-        if total_delta <= 0:
-            error = f"non-positive /proc/stat jiffies delta: {total_delta}"
-            log.warning("check.degraded", check=self.name, error=error)
-            return CheckResult(ok=False, error=error)
+        if total_delta <= 0 or idle_delta < 0 or idle_delta > total_delta:
+            # Monotonic kernel counters went backwards or became mutually
+            # inconsistent — a reboot, CPU hotplug, or a namespaced `/proc`
+            # being swapped underneath us. The baseline above is already
+            # refreshed, so skip this interval instead of reporting a clamped
+            # utilization that would look like a real measurement.
+            log.info(
+                "check.counter_reset",
+                check=self.name,
+                total_delta=total_delta,
+                idle_delta=idle_delta,
+            )
+            return CheckResult(ok=True, metrics={}, labels={})
 
-        utilization = max(0.0, min(1.0, 1.0 - (idle_delta / total_delta)))
+        utilization = 1.0 - (idle_delta / total_delta)
         return CheckResult(ok=True, metrics={"cpu_utilization_ratio": utilization}, labels={})

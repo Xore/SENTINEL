@@ -43,6 +43,12 @@ class TestParseMeminfo:
         fields = _parse_meminfo("Empty:\nMemTotal:       10000000 kB\n")
         assert fields == {"MemTotal": 10000000}
 
+    def test_rejects_negative_value(self):
+        # A memory quantity cannot be negative; accepting one would only serve
+        # to produce a believable-looking ratio from broken input.
+        with pytest.raises(ValueError, match="negative"):
+            _parse_meminfo("MemTotal:       -10000000 kB\n")
+
 
 class TestReadMeminfo:
     def test_reads_real_file(self, tmp_path):
@@ -82,11 +88,23 @@ class TestHostMemoryCheck:
         available = 1000000 + 200000 + 800000
         assert result.metrics["memory_used_ratio"] == pytest.approx(1 - available / 10000000)
 
+    async def test_fully_used_memory_reads_as_exactly_one(self, settings, tmp_path):
+        # Proof the ratio comes from the reading rather than a clamp.
+        path = tmp_path / "meminfo"
+        path.write_text("MemTotal:       10000000 kB\nMemAvailable:          0 kB\n")
+        check = HostMemoryCheck(settings, meter=None, meminfo_path=str(path))
+
+        result = await check.run()
+
+        assert result.metrics["memory_used_ratio"] == pytest.approx(1.0)
+
     async def test_missing_file_never_raises(self, settings, tmp_path):
         check = HostMemoryCheck(settings, meter=None, meminfo_path=str(tmp_path / "nope"))
         result = await check.run()
         assert result.ok is False
-        assert result.error is not None
+        # Bounded: the exception type only. The full message can embed the
+        # configured path, so it goes to the structured log instead.
+        assert result.error == "FileNotFoundError"
 
     async def test_missing_mem_total_never_raises(self, settings, tmp_path):
         path = tmp_path / "meminfo"
@@ -94,6 +112,40 @@ class TestHostMemoryCheck:
         check = HostMemoryCheck(settings, meter=None, meminfo_path=str(path))
         result = await check.run()
         assert result.ok is False
+        assert result.metrics == {}
+
+    @pytest.mark.parametrize(
+        ("content", "reason"),
+        [
+            ("MemTotal:       abc kB\n", "non-integer value"),
+            ("MemTotal:       -100 kB\n", "negative value"),
+            ("MemTotal:             0 kB\n", "non-positive MemTotal"),
+            ("MemTotal: 100 kB\nMemAvailable: 200 kB\n", "available exceeds total"),
+            ("MemTotal: 100 kB\nMemFree: 90 kB\nCached: 80 kB\n", "fallback exceeds total"),
+        ],
+    )
+    async def test_implausible_readings_fail_closed(self, settings, tmp_path, content, reason):
+        # Each of these would otherwise be clamped into a plausible ratio: an
+        # idle-looking host reported from a broken reading is worse than a
+        # failed check.
+        path = tmp_path / "meminfo"
+        path.write_text(content)
+        check = HostMemoryCheck(settings, meter=None, meminfo_path=str(path))
+
+        result = await check.run()
+
+        assert result.ok is False, reason
+        assert result.metrics == {}
+        assert result.error == "ValueError"
+
+    async def test_raw_file_content_never_reaches_the_result(self, settings, tmp_path):
+        path = tmp_path / "meminfo"
+        path.write_text("MemTotal:       s3cr3t-hostname kB\n")
+        check = HostMemoryCheck(settings, meter=None, meminfo_path=str(path))
+
+        result = await check.run()
+
+        assert "s3cr3t-hostname" not in result.error
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics required")
     async def test_permission_denied_never_raises(self, settings, tmp_path):
