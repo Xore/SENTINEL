@@ -74,7 +74,7 @@ The revisions must match; the final command is required remote read-back.
 | S4-01B | 4 | Durable export spool and replay integration | CODEX | QUEUED | S2-02 DONE, S4-01A DONE | forward package below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
 | C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
-| C2-03 | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 REVIEW | correction handoff below |
+| C2-03 | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 REVIEW | Sonnet review below: not approved, 3 corrections |
 
 Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
 [July 2026 history](../archive/coordination/2026-07-agent.md).
@@ -117,10 +117,20 @@ new REVIEW handoff.
      `REVIEW`, needing only Ubuntu gate evidence plus review. One deliberate
      deviation from the claimed plan is flagged in that handoff (group 5), and
      Q-14 records the lease question it raised.
-   - **Next:** the independent reviews of Codex-implemented work the user
-     authorized — S2-02 (`4e18ad8..0e254b0`) and C2-03 (`278e49f..dc571f8`
-     plus the workflow portion of `21502d9..fec75f1`). No new implementation
-     claim until those are published.
+   - **Both authorized reviews are published (A-REVIEW-1, now COMPLETE):**
+     S2-02 not approved, three corrections, the load-bearing one being that
+     the hostname resolution added under review item 4 sits inside the capped
+     pool worker ahead of the timeout clock and so defeats review item 5.
+     C2-03 not approved, three corrections: a retry loop that cannot retry,
+     a log-redaction assertion that can never fail, and the collector's mTLS
+     key directory being served over loopback. Both sit with Codex; neither
+     may be marked `DONE` by its implementer, and both scopes stay frozen for
+     Sonnet.
+   - **Next:** Sonnet is unblocked for a new claim only where nothing is
+     frozen. S3-01A and S4-01A remain in `REVIEW` awaiting Codex; S5-01 is
+     still gated. Ubuntu `.33` was unreachable at 11:16Z and 11:34Z
+     (`Connection timed out`), so the outstanding Ubuntu gate evidence for
+     S3-01A and S4-01A is still owed whenever the host returns.
    - S5-01 stays `QUEUED`: it gates on S2-02, S3-01A, and S4-01A all being
      `DONE`, and only Codex may mark them so.
    - **Ledger timestamp correction (2026-07-30T11:41:18Z):** three Sonnet
@@ -1167,7 +1177,9 @@ truncating it for forensics.
 ### A-REVIEW-1 — Sonnet 5 independent review claim
 
 - **Timestamp:** 2026-07-30T11:41:18Z.
-- **Status:** IN_PROGRESS.
+- **Status:** COMPLETE — both reviews published below, both "not approved with
+  exact corrections". The ledger-only claim is released; no `collector/` file
+  or workflow was edited under it.
 - **Authority:** the user authorized Sonnet to review Codex-implemented work.
   Codex cannot self-approve its own S2-02 and C2-03 handoffs, and both
   explicitly request independent inspection.
@@ -1396,6 +1408,94 @@ not speak to the finding above, because no gate exercises a slow resolver.
   cleanup step with Actions v7; CodeQL run `30388589523` passed.
 - **Review request:** independently inspect the workflow portion of
   `21502d9..fec75f1`; keep C2-03 in REVIEW until approved.
+
+##### C2-03 Sonnet 5 independent review
+
+- **Timestamp:** 2026-07-30T11:52:40Z.
+- **Reviewed:** `278e49f..dc571f8` (`.github/workflows/integration-test.yml`,
+  103 insertions / 17 deletions) and the workflow portion of
+  `21502d9..fec75f1` (71 insertions / 25 deletions), against the exact C2-03
+  claim; plus the resulting whole step bodies at `fec75f1` and, to check the
+  handoff's contract claims rather than take them on trust,
+  `backend/api/internal/metricquery/request.go`. Nothing was edited.
+- **Disposition:** **not approved.** The claim's substance is met — the live
+  probe, the exact-identity assertions at both storage and API, and the
+  redaction assertions are all there and correct. Three corrections, none of
+  which change what is asserted.
+
+**Verified against the implementation, not just the handoff.** The 30-second
+future `end` margin really is contract-valid: `request.go:16` sets
+`maxFutureClock = 5 * time.Minute` and `request.go:97` admits any `end` inside
+it, so 30s clears second-truncation with margin to spare. `step=30` is inside
+`[minStep, maxStep]` and a 5m30s span yields 12 points against `maxPoints =
+2_000`. `sentinel_collector_http_response_seconds_count` is in `metricCatalog`
+(`request.go:45`), so the bounded API accepts it. The `_count` rationale in
+the handoff is right — OTel exports no series under the logical histogram's
+base name, and querying `_count` needs no collector or backend change.
+
+**Claim coverage.** Deterministic local target: yes, `python -m http.server`
+on loopback serving a `health` file, with a query secret in the configured
+URL. Canonical metric through the real path: yes, required in VictoriaMetrics
+and then again through the authenticated bounded range API. Exact labels:
+yes — `site_id`, `collector_id`, `target_id`, `state` are all pinned, at
+storage by the query selector plus a `len(...) == 1` check, and at the API by
+an explicit per-series comparison plus `len(matches) == 1`. Raw target absent:
+yes, checked three ways (forbidden label keys, the secret string, the URL) in
+storage and API responses. Preserved assertions: heartbeat, `last_seen`,
+site-b isolation (empty collector list and a 404 with `not_found`), and
+`always()` diagnostics/cleanup are all intact. The `trap` was correctly
+widened to stop the target process as well as the collector.
+
+**Corrections required (C2-03 stays REVIEW; only these three):**
+
+1. The bounded retry loop the timing correction added cannot retry the thing
+   it exists to retry. Under the step's `set -euo pipefail`, the two
+   `curl --fail` calls at the top of `for attempt in $(seq 1 10)` are simple
+   commands, not condition operands, so any non-2xx aborts the whole step on
+   the first attempt instead of sleeping and retrying — and `API.md` lists
+   `503 unavailable` for exactly the transient case ("a bounded query failed")
+   this loop is meant to ride out. Only the `python` readiness check is
+   actually retried. The storage loop in the earlier step already has this
+   right: it chains `curl && curl && python - <<'PY'` inside the `if`, which
+   both exempts the curls from `set -e` and retries them. Use the same shape
+   here.
+2. The collector-log redaction assertion can never fail. It greps
+   `collector.log` for the secret only on the success path, and a successful
+   HTTP probe never reaches `HttpCheck.run()`'s degraded branch — the one
+   place S2-02 item 3 put the redaction. So the grep guards a code path the
+   workflow never executes, and a regression of that fix would sail through.
+   Add a second HTTP target whose URL also carries a secret but points at a
+   closed loopback port, so the degraded log line is emitted deterministically
+   before the grep runs. That is the smallest change that makes the existing
+   assertion load-bearing; asserting the resulting `state="error"` series is
+   optional and not required by the claim.
+3. Do not serve `${RUNNER_TEMP}` itself. `python -m http.server --directory
+   "${RUNNER_TEMP}"` publishes that whole directory, with listing enabled, on
+   `127.0.0.1:18080` — and `${RUNNER_TEMP}` is where the job puts
+   `BACKEND__PKI_DIR: ${{ runner.temp }}/dev-node-1-pki`, i.e. the collector's
+   enrolled mTLS private key, alongside `collector.log` and the dev CA. The
+   blast radius on a disposable runner is small and the material is dev-only,
+   but a workflow whose entire purpose is proving that secrets do not leak
+   should not be the one serving the client key over HTTP, and this file is
+   the template later production-path jobs will copy. Serve a dedicated
+   directory (`${RUNNER_TEMP}/http-target-root`) holding only `health`.
+
+**Observations, not corrections.** The API-side forbidden-label check
+(`{"target", "url", "http.url"} & metric.keys()`) sits inside the identity
+match, so a series that fails the identity comparison is never label-checked;
+the payload-wide secret and URL scan still covers it, and the storage-side
+equivalent is query-pinned, so nothing is currently missed. The target server
+is started without a readiness wait, so in principle the collector could
+probe before the port is bound — harmless here because every assertion
+requires `state="ok"`, and it is not a substitute for correction 2 because it
+is a race, not a deterministic path.
+
+**Gates.** I re-ran no CI under this claim. Codex's evidence — actionlint,
+integration run `30388588665`, CodeQL `30388589523` at `fec75f1` — is
+consistent with the diff and I do not dispute it. None of it contradicts the
+three findings: correction 1 describes a path only a transient API error
+reaches, and corrections 2 and 3 describe assertions and exposure that a
+passing run does not exercise.
 
 ### C1-02 — CI/CD checkpoint
 
