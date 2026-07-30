@@ -94,6 +94,7 @@ Detailed Sonnet follow-on scopes and gates are in
 | 2026-07-28T17:42:13Z | CODEX | S2-02 | takeover of Sonnet's frozen exact claim: `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
 | 2026-07-30T11:00:07Z | SONNET5 | S3-01A | corrections to Codex design review 1 only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
 | 2026-07-26T14:10:00Z | SONNET5 | S3-01A | superseded by the correction row above; original new-file claim: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
+| 2026-07-30T13:36:40Z | SONNET5 | GATES-S3-01A/S4-01A | ledger-only in this repo: this ledger. Also claims exclusive use of the shared Ubuntu gate host `.33` (`/home/adminuser/analyseLaptop`) until released, because running exact-commit gates there detaches its working copy. The host is returned to `main` before the claim closes. |
 | 2026-07-30T11:41:18Z | SONNET5 | REVIEW-S2-02/C2-03 | ledger-only: this ledger. Read-only inspection of `4e18ad8..0e254b0` (S2-02) and `278e49f..dc571f8` + the workflow portion of `21502d9..fec75f1` (C2-03). No implementation file is edited under this claim. |
 | 2026-07-30T11:19:04Z | SONNET5 | S4-01A | corrections to Codex review 1 only: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
 | 2026-07-26T15:05:00Z | SONNET5 | S4-01A | superseded by the correction row above; original new-file claim: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/__init__.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
@@ -1194,6 +1195,21 @@ truncating it for forensics.
   (approved, or corrections required with exact items). Sonnet does not mark
   either item `DONE`; approving a review and marking `DONE` stay separate acts,
   and only Codex does the latter.
+
+### A-GATES-1 — Sonnet 5 Ubuntu gate-evidence claim
+
+- **Timestamp:** 2026-07-30T13:36:40Z.
+- **Status:** IN_PROGRESS.
+- **Why:** the S3-01A (`e81cdaf`) and S4-01A (`0dc7f5d`) correction handoffs
+  both went to `REVIEW` with Ubuntu gate evidence owed — `.33` was unreachable
+  at 11:16Z and 11:34Z. It answers again as of 13:33Z, so the owed evidence
+  can be produced.
+- **Scope:** this ledger, plus exclusive use of `.33` while its working copy
+  is detached onto the two exact commits. No repository file is edited; the
+  gates are run, not fixed. If a gate fails, this claim records the failure
+  and the fix goes back to the owning correction claim.
+- **Exit:** one pushed ledger commit carrying both commits' Ubuntu results,
+  pass or fail, and `.33` returned to `main`.
 
 #### S2-02 Sonnet 5 independent review
 
