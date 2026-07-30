@@ -68,7 +68,7 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Codex takeover below |
-| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | IN_PROGRESS | S2-02 REVIEW | Sonnet correction claim below |
+| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | corrections handed off at `e81cdaf`; needs Ubuntu gates |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
 | S3-01B | 3 | Host-health metrics and runtime integration | CODEX | QUEUED | S2-02 DONE, S3-01A DONE | forward package below |
 | S4-01B | 4 | Durable export spool and replay integration | CODEX | QUEUED | S2-02 DONE, S4-01A DONE | forward package below |
@@ -105,12 +105,15 @@ Plan updated after the user assigned S2-02 corrections to Codex while Sonnet is
 unavailable. Sonnet must keep every S2-02 file frozen until Codex publishes a
 new REVIEW handoff.
 
-0. **Active (2026-07-30):** S3-01A's four review-1 correction groups are claimed
-   under A-S3-01A-2 below. S4-01A's six correction groups are the next Sonnet
-   item and stay unclaimed until the S3-01A correction handoff is pushed — one
-   queue item at a time. Independent review of Codex-implemented work
-   (S2-02 `0e254b0`, C2-03 `dc571f8`/`fec75f1`) is authorized by the user;
-   `fec75f1`'s S3 host portion is verified in the A-S3-01A-2 handoff.
+0. **Active (2026-07-30):** S3-01A's four review-1 correction groups are done
+   and handed off at `e81cdaf` (A-S3-01A-2 below); it is now `REVIEW` and only
+   needs Ubuntu gate evidence plus a non-Sonnet review. `fec75f1`'s S3 host
+   portion was independently verified in that handoff, which also fixed the
+   `host_load` catch-narrowing defect it introduced. **Next Sonnet item:**
+   S4-01A's six correction groups — claim it now that this handoff is pushed,
+   one queue item at a time. Independent review of Codex-implemented work
+   (S2-02 `0e254b0`, C2-03 `dc571f8`/`fec75f1` workflow portion) is authorized
+   by the user and follows S4-01A.
 1. Keep S1-02/S2-01 and every S2-02/S4-01A file frozen. S5-00 is approved
    and archived; do not claim S5-01 before its explicit gate is satisfied.
 2. Codex owns the still-active exact S2-02 claim and will address only the five
@@ -663,6 +666,101 @@ Implementation commit: `8e96e8c`.
 - **Exit:** one correction implementation commit, all four collector gates on
   Windows and (when `.33` is reachable) Ubuntu, then a separate pushed `REVIEW`
   handoff. S2/S4/S5 files stay frozen.
+
+##### S3-01A Sonnet 5 correction handoff
+
+- **Timestamp:** 2026-07-30T12:41:36Z.
+- **Status:** REVIEW. Implementation commit `e81cdaf`, pushed to `origin/main`.
+- **Scope honored:** exactly the 2026-07-30 File Claims row — seven
+  `collector/checks/host_*.py` modules, their seven test modules, and this
+  ledger (separate commit). No config, `checks/__init__.py`, entry-point,
+  contract, dependency, workflow, or S2/S4/S5 file was touched.
+
+**Group 1 — cancellation-safe `host_service`.** `_service_is_active()` is
+replaced by `_query_service_state()`, which wraps `communicate()` in
+`except BaseException` and calls `_kill_and_reap()` before re-raising. The reap
+runs as a shielded task, because an already-cancelled coroutine is re-cancelled
+the instant it awaits; `CancelledError` from the shielded await is suppressed
+locally while the reap completes in the background and the original
+cancellation propagates unchanged. `kill()` is only sent when
+`proc.returncode is None`, so an already-exited child is not signalled. Tests
+cover timeout, transport error, external cancellation of
+`_query_service_state()`, external cancellation of `HostServiceCheck.run()`
+(the shutdown path), and the already-exited case; each asserts `killed`/`waited`
+and that `CancelledError` still surfaces.
+
+**Group 2 — contract-approved bounded labels.** `HostProcessCheck` and
+`HostServiceCheck` now take a positional `target_id` validated against ADR
+0009's DNS-label rule and emit `{"target_id": ...}`; the raw process/unit name
+is kept only for the local lookup and structured logs. `host_network`
+validates `interface` against `IFNAMSIZ - 1` and a restricted charset before
+it can be emitted as the allowed `interface` label; `host_disk` validates its
+mount path and keeps it out of `CheckResult` entirely. `_SERVICE_NAME_RE`
+requires a leading alphanumeric so a configured unit name can never be parsed
+as a `systemctl` option, and the name is additionally passed after `--`.
+Uniform rule adopted across all seven checks: `CheckResult.error` carries only
+bounded text — the exception type plus `target_id`/`interface` where applicable
+— because parse failures can otherwise embed configured paths and raw file
+content. Tests prove raw operational names never appear in `labels` or `error`,
+that invalid/empty/whitespace-padded/control-character/overlong values raise at
+construction, and that nothing executes before validation.
+
+**Group 3 — fail closed on malformed numeric kernel data.** Every clamp is
+gone. Parsers reject negative counters and non-positive totals; `host_memory`
+rejects `available > total`, `host_disk` rejects `used > total`, and
+`host_load` rejects non-finite and negative averages. CPU and network counter
+regressions (and a non-advancing clock) are treated as a counter reset: the
+baseline is refreshed and no metrics are emitted for that interval. Tests
+assert both the rejections and that a fully-busy interval reads exactly `1.0`
+and a fully-idle one exactly `0.0` — proof the values come from the delta
+rather than a clamp — plus that the interval after a reset measures normally.
+
+**Group 4 — observed-inactive vs cannot-inspect.** `_is_process_running()` is
+replaced by `_scan_for_process()` returning `ProcessScan(found, unreadable)`.
+A vanished PID (`FileNotFoundError`/`NotADirectoryError`/`ProcessLookupError`)
+stays a normal `/proc` race; any other `OSError` increments `unreadable`, and
+`run()` then returns a degraded result with **no** `process_running` sample
+rather than reporting `0` — an absence that was never established. An
+unreadable PID never masks a match found elsewhere. `host_service` accepts only
+systemd's known state tokens; a missing binary, manager/permission failure, or
+unrecognized token raises and yields a degraded result with no `service_active`
+sample, while a reported `inactive`/`failed`/… remains a real measurement.
+Permission-denial coverage exists for both families, and `host_process`'s
+unreadable branch has a `monkeypatch`-based test so it runs on Windows too, not
+only under the POSIX `chmod` variant.
+
+**`fec75f1` S3 host-portion verification (independent of Codex).** The
+portability fixes are correct: the `time.monotonic()`-derived elapsed
+computation in `test_host_network` and the POSIX-permission skips are the right
+call on Windows. One defect found: `fec75f1` narrowed `host_load`'s catch from
+`(OSError, AttributeError)` to `OSError`, so a non-`OSError` raised by the
+dynamically resolved callable would escape `run()` and breach `BaseCheck`'s
+never-raise contract. Broadened to `except Exception` in this commit, with
+parametrized tests covering unpack-arity, non-convertible, and non-iterable
+returns, plus a non-callable attribute rejected before use. No other S3 issue
+in that diff.
+
+**Also corrected:** `_parse_cpu_line`'s `idle > total` check was unreachable —
+idle is a subset sum of values already proven non-negative — so it was removed
+and the reasoning recorded in the docstring. The cross-sample equivalent
+(`idle_delta > total_delta`) is genuinely reachable and is checked in `run()`.
+
+- **Windows/Python 3.14.5 evidence at `e81cdaf`:** all four repository-wide
+  collector gates green — `ruff check .` clean; `mypy .` clean over 55 source
+  files; `pylint collector tests` `10.00/10`; `pytest -q`
+  `605 passed, 8 skipped`. Focused host suite: `236 passed, 7 skipped`
+  (POSIX-permission skips only).
+- **Ubuntu evidence:** `.33` was unreachable by SSH during this claim
+  (`connect to host 192.168.50.33 port 22: Connection timed out`). The four
+  gates must be rerun there, or on CI's Ubuntu/Python 3.12 job, before S3-01A
+  moves to `DONE`.
+- **Review request:** independently review `42262a4..e81cdaf`. Codex authored
+  `fec75f1`, and its S3 portion is verified above, so with this correction the
+  remaining independence gap is closed from Sonnet's side; Codex may review
+  this correction and, with Ubuntu evidence, move S3-01A to `DONE`. Open
+  Questions Q-12 (home for the duplicated bounded-identifier validator) and
+  Q-13 (bounded label for a multi-mount disk family) are unanswered and are
+  deliberately left to S3-01B rather than decided here.
 
 ### A-S4-01A-1 — Sonnet 5 claim
 
