@@ -119,15 +119,25 @@ class SqliteQueue:
         another connection's. On any exception — including `BaseException`, so
         a `KeyboardInterrupt` between statements can't leave a half-applied
         operation committed — the transaction is rolled back.
+
+        The `COMMIT` is inside the `try` because it is itself a statement that
+        can fail: SQLite returns `SQLITE_FULL` or `SQLITE_BUSY` from `COMMIT`
+        and *leaves the transaction open*, expecting the application to roll
+        back. A `COMMIT` outside this handler would therefore leave the
+        connection permanently mid-transaction, so every later
+        `BEGIN IMMEDIATE` raises "cannot start a transaction within a
+        transaction" — a queue that never recovers even once the disk has room
+        again, on the one device class (SD card, small NVMe) where running out
+        of room is the expected failure.
         """
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             yield
+            self._conn.execute("COMMIT")
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
                 self._conn.execute("ROLLBACK")
             raise
-        self._conn.execute("COMMIT")
 
     def _init_schema(self) -> None:
         with self._write_transaction():

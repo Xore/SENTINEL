@@ -438,12 +438,17 @@ class TestTransactionIsolation:
         """Proxy that fails one statement prefix; `sqlite3.Connection` does
         not accept attribute assignment, so the connection is wrapped."""
 
-        def __init__(self, conn, fail_prefix):
+        def __init__(self, conn, fail_prefix, *, max_failures=None):
             self._conn = conn
             self._fail_prefix = fail_prefix
+            self._max_failures = max_failures
+            self._failures = 0
 
         def execute(self, sql, *args):
-            if sql.lstrip().startswith(self._fail_prefix):
+            if sql.lstrip().startswith(self._fail_prefix) and (
+                self._max_failures is None or self._failures < self._max_failures
+            ):
+                self._failures += 1
                 raise sqlite3.OperationalError("simulated disk I/O error")
             return self._conn.execute(sql, *args)
 
@@ -470,6 +475,37 @@ class TestTransactionIsolation:
         # rolling back must bring it back rather than leave the queue emptied.
         assert queue.count() == 1
         assert [e.event_id for e in queue.peek(10)] == [first.event_id]
+        queue.close()
+
+    def test_a_failed_commit_does_not_wedge_the_queue_forever(self, db_path):
+        """SQLite returns `SQLITE_FULL`/`SQLITE_BUSY` from `COMMIT` and leaves
+        the transaction *open*. If that failure escapes without a rollback the
+        connection stays mid-transaction, so every later `BEGIN IMMEDIATE`
+        raises "cannot start a transaction within a transaction" — a queue that
+        stays dead after the disk has room again, on exactly the hardware
+        (SD card, small NVMe) where filling up is the expected failure.
+        """
+        base = datetime.now(UTC)
+        first = _make(created_at=base)
+        queue = SqliteQueue(db_path)
+        queue.enqueue(first)
+
+        real_conn = queue._conn  # pylint: disable=protected-access
+        queue._conn = self._FailingConn(  # pylint: disable=protected-access
+            real_conn, "COMMIT", max_failures=1
+        )
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                queue.enqueue(_make(created_at=base + timedelta(seconds=1)))
+        finally:
+            queue._conn = real_conn  # pylint: disable=protected-access
+
+        # The uncommitted write is gone, and — the point of the test — the
+        # queue still works once the transient condition has passed.
+        recovered = _make(created_at=base + timedelta(seconds=2))
+        queue.enqueue(recovered)
+        assert [e.event_id for e in queue.peek(10)] == [first.event_id, recovered.event_id]
+        assert queue.count() == 2
         queue.close()
 
     def test_no_lost_increments_across_separate_instances(self, db_path):
