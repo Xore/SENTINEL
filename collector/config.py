@@ -31,6 +31,8 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from collector.utils.thread_pool import default_worker_count
+
 # Env var naming the YAML config file, if the caller doesn't pass one explicitly.
 CONFIG_ENV_VAR = "COLLECTOR_CONFIG"
 
@@ -403,6 +405,12 @@ class CollectorSettings(BaseSettings):
     # (see docs/guides/ASYNCIO-OPTIMIZATION.md §4) — 20 is right for a
     # Raspberry Pi 3B; raise on higher-spec nodes rather than hardcoding.
     max_concurrent_probes: int = Field(default=20, ge=1)
+    # Workers in the shared CPU-bound thread pool (see
+    # docs/guides/ASYNCIO-OPTIMIZATION.md §3). Defaults to a count derived
+    # from the host's cores rather than a literal — ADR 0012 retired the
+    # Raspberry Pi 3B baseline that produced the old hard-coded 2, and the
+    # reference Pi 5 is the floor. Set explicitly to override.
+    cpu_pool_workers: int = Field(default_factory=default_worker_count, ge=1)
 
     model_config = SettingsConfigDict(
         env_file=".env",

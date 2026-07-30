@@ -76,20 +76,31 @@ async def main() -> None:
 eBPF map reads, scapy packet parsing, and lmdb compaction can spike CPU. Use `run_in_executor` to keep them off the event loop thread.
 
 ```python
-# collector/utils/thread_pool.py
-import asyncio
+# collector/utils/thread_pool.py — abridged; see the module for the real thing
+import asyncio, os, threading
 from concurrent.futures import ThreadPoolExecutor
 
-# Shared pool — worker count belongs in CollectorSettings, defaulted for the
-# reference Pi 5. The literal 2 below came from the retired Pi 3B baseline and
-# is now the collector's tightest limit; see ADR 0012.
-_CPU_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="collector-cpu")
+_lock, _pool, _workers = threading.Lock(), None, None
+
+def default_worker_count() -> int:
+    # Derived from the host, never a literal: ADR 0012 retired the Raspberry
+    # Pi 3B baseline that produced the old hard-coded 2. Bounded at both ends
+    # so a 32-core SFF PC does not get 32 workers against the 5% CPU NFR.
+    return min(8, max(2, os.cpu_count() or 2))
+
+def configure(max_workers: int) -> None:
+    """Called once at startup from CollectorSettings.cpu_pool_workers."""
 
 async def run_in_thread(fn, *args):
     """Run a blocking/CPU-bound function in the shared thread pool."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_CPU_POOL, fn, *args)
+    return await loop.run_in_executor(_executor(), fn, *args)
 ```
+
+**Rule:** the worker count is a `CollectorSettings` field (`cpu_pool_workers`),
+not a module-level literal. The pool is created lazily on first use so that
+`configure()` at startup decides its size, and `shutdown()` disposes it on exit
+rather than leaving worker threads to be reaped by process death.
 
 **Usage in a check:**
 

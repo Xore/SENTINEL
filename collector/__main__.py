@@ -23,6 +23,7 @@ from collector.health.loop_watchdog import loop_latency_watchdog
 from collector.pki.enroll import ensure_enrolled
 from collector.scheduler import run_scheduler
 from collector.transport.otlp import build_meter_provider, get_meter, shutdown_meter_provider
+from collector.utils import thread_pool
 
 HEARTBEAT_INTERVAL_S = 30.0
 
@@ -199,6 +200,8 @@ async def main(*, stop_event: asyncio.Event | None = None) -> None:
     provider = build_meter_provider(settings)
     meter = get_meter(provider)
 
+    thread_pool.configure(settings.cpu_pool_workers)
+
     semaphore = asyncio.Semaphore(settings.max_concurrent_probes)
     checks = _build_checks(settings, meter, log, semaphore=semaphore)
 
@@ -216,6 +219,7 @@ async def main(*, stop_event: asyncio.Event | None = None) -> None:
     finally:
         await _close_checks(checks, log)
         shutdown_meter_provider(provider)
+        thread_pool.shutdown()
         log.info("collector.shutdown")
 
 

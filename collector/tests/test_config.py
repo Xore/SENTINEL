@@ -13,6 +13,7 @@ from collector.config import (
     install_sighup_reload,
     load_settings,
 )
+from collector.utils import thread_pool
 
 
 class TestDefaults:
@@ -40,6 +41,24 @@ class TestDefaults:
         monkeypatch.setenv("MAX_CONCURRENT_PROBES", "5")
         s = load_settings()
         assert s.max_concurrent_probes == 5
+
+    def test_cpu_pool_workers_defaults_to_the_derived_count(self):
+        # No literal here on purpose: ADR 0012 retired the hard-coded 2 that
+        # came from the Raspberry Pi 3B, and the default is now derived from
+        # the host. Asserting a number would re-introduce the constant and
+        # would fail on any machine whose core count differs from the runner's.
+        settings = load_settings(collector_id="c")
+        assert settings.cpu_pool_workers == thread_pool.default_worker_count()
+
+    def test_cpu_pool_workers_env_override(self, monkeypatch):
+        monkeypatch.setenv("COLLECTOR_ID", "c")
+        monkeypatch.setenv("CPU_POOL_WORKERS", "6")
+        s = load_settings()
+        assert s.cpu_pool_workers == 6
+
+    def test_cpu_pool_workers_must_be_positive(self):
+        with pytest.raises(ConfigError):
+            load_settings(collector_id="c", cpu_pool_workers=0)
 
     @pytest.mark.parametrize("scan_level_max", ["1", "2", "3"])
     def test_scan_level_max_env_var_string_is_coerced(self, monkeypatch, scan_level_max):
