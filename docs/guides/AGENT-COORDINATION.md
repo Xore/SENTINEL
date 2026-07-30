@@ -1658,7 +1658,7 @@ they were not part of this authorization and are untouched.
   each with its reason rather than leaving a reader to re-derive it.
 
 **Gates.** The seven docstring edits are the only Python in this change, so all
-four were re-run on Windows 11 / Python 3.14.5 at `4e6b7d6`: pytest
+four were re-run on Windows 11 / Python 3.14.5 at `d6e508f`: pytest
 `669 passed, 8 skipped`, Ruff clean, mypy no issues in 55 source files, Pylint
 `10.00/10`. Ubuntu was not re-run for a docstring-only diff; the substantive
 commit `e505191` has full two-platform evidence in A-REVIEW-S3-01A/S4-01A.
