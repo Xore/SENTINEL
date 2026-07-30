@@ -309,9 +309,16 @@ The following design decisions require further empirical work before implementat
    or a simple SSH-push script) needs a concrete design for the OT-adjacent deployment
    scenario.
 
-4. **mTLS overhead on Raspberry Pi 3 (ARMv7).** After et al. benchmarked ARMv8 (64-bit)
-   only. The overhead of TLS 1.3 with Curve25519 on 32-bit ARMv7 at the probe's metric
-   rate has not been measured in this specific context.
+4. **mTLS overhead on constrained ARM.** This item was written against a Raspberry Pi 3
+   (ARMv7) baseline that no longer applies: the minimum collector is now an arm64
+   Raspberry Pi 5 whose Cortex-A76 cores carry the ARMv8 cryptography extensions, so the
+   measured ARMv8 figures below are the applicable ones rather than an optimistic bound
+   ([ADR 0012](../../architecture/decisions/0012-collector-reference-hardware.md)).
+   After et al. benchmarked ARMv8 (64-bit) only, which is now the whole of the supported
+   matrix — the 32-bit ARMv7 case this question used to turn on is out of scope and no
+   longer needs measuring. What remains open is narrower: the overhead of TLS 1.3 with
+   Curve25519 at *this* probe's metric rate and handshake frequency has not been measured
+   in this specific context, on any platform.
 
 ---
 

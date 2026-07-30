@@ -40,8 +40,8 @@ Apply these rules throughout:
 
 | Constraint | Required limit |
 |---|---:|
-| RSS on Raspberry Pi 3B | <= 80 MB |
-| Average CPU on Raspberry Pi 3B | <= 5% |
+| RSS on the reference Raspberry Pi 5 (4 GB) | <= 150 MB |
+| Average CPU on the reference Raspberry Pi 5 | <= 5% |
 | PyInstaller binary | <= 25 MB |
 | Full scan-level-2 cycle | <= 30 seconds |
 | LMDB retry/local hot buffer | <= 200 MB |
@@ -291,7 +291,7 @@ For each probe:
 5. add unit tests for success, timeout, malformed output, permission failure, and cancellation;
 6. verify ingest, storage, MetricsQL query, and API response.
 
-Apply a global configurable network semaphore (20 on Pi 3B), reuse HTTP sessions, and use async DNS APIs.
+Apply a global configurable network semaphore — the default of 20 came from the retired Pi 3B baseline and is due for re-derivation on the Pi 5 ([ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)) — reuse HTTP sessions, and use async DNS APIs.
 
 **Exit gate:** All probe metrics are queryable with correct units and labels, and one broken check cannot stop other checks.
 
@@ -456,7 +456,7 @@ Apply a global configurable network semaphore (20 on Pi 3B), reuse HTTP sessions
 6. Run the entire `08-testing-and-installation.md` acceptance plan first on safe amd64 lab hardware, then ARM64.
 7. Do not modify the documented live Wi-Fi-only node during automated testing.
 
-**Exit gate:** CI is green; resource limits pass on Pi 3B; fresh install, upgrade, rollback, backup, and restore are demonstrated.
+**Exit gate:** CI is green; resource limits pass on the reference Pi 5; fresh install, upgrade, rollback, backup, and restore are demonstrated.
 
 ## Phase 14 — Federation Agent and Global Query Tier
 
@@ -677,7 +677,7 @@ The system is complete only when:
 - the traceability matrix has no unowned or untested requirement;
 - single-site operation remains fully functional without the global tier;
 - all mandatory CI, integration, field, failure, HA, air-gap, and security tests pass;
-- Pi 3B resource limits pass with representative workloads;
+- Reference Pi 5 resource limits pass with representative workloads;
 - collector, hub, federation, and global-tier upgrades and rollbacks are documented and demonstrated;
 - RPO/RTO, retention, capacity, and scale limits are measured;
 - threat model, OT safety case, privacy model, and operator runbooks are current;

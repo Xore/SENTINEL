@@ -207,6 +207,6 @@ CAP_BPF + CAP_PERFMON (Linux 5.8+)
 
 | # | Task | Doc |
 |---|---|---|
-| R1 | scapy AsyncSniffer on Pi 3B: CPU overhead at OT rates (<100 pps) | `docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md` (update: scapy replaces gopacket) |
-| R2 | bcc Python bindings on Raspberry Pi OS: kernel BPF enabled? python3-bpfcc available? | TBD |
-| R3 | PyInstaller --onefile startup time on Pi 3B: acceptable for systemd `ExecStartPre` health check? | TBD |
+| R1 | scapy AsyncSniffer on the reference Pi 5: CPU overhead at OT rates (<100 pps) | `docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md` (scapy replaces gopacket; re-baselined off the Pi 3B by [ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)) |
+| R2 | bcc Python bindings on Raspberry Pi OS for the Pi 5: is `python3-bpfcc` packaged? (kernel BPF itself is no longer in doubt on 6.6+ arm64) | TBD |
+| R3 | PyInstaller --onefile startup time on the reference Pi 5: acceptable for systemd `ExecStartPre` health check? | TBD |

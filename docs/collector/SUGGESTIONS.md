@@ -42,11 +42,11 @@ The v1 collector is written in Go. The backend services (`ingest`, `analyse`, `a
 | Code consistency | Separate from backend | Same language as backend | Python |
 | OT library ecosystem | Sparse | Rich (pymodbus, pysnmp, scapy) | Python |
 
-**Verdict:** Python wins on the dimensions that matter most for this project (toolchain, eBPF, OT libraries, consistency). Go wins on raw performance metrics (memory, startup) that are not constraints for a 30-second-cycle probe agent on a Raspberry Pi 3B with 1 GB RAM.
+**Verdict:** Python wins on the dimensions that matter most for this project (toolchain, eBPF, OT libraries, consistency). Go wins on raw performance metrics (memory, startup) that are not constraints for a 30-second-cycle probe agent. That was already true on the old Raspberry Pi 3B baseline and is further from binding on the current one — a Raspberry Pi 5 minimum, escalating to a small-form-factor PC ([ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)). The language decision is confirmed by the hardware change, not reopened by it.
 
 ### 2.4 Memory Budget Validation
 
-Target: ≤ 80 MB RSS on Pi 3B.
+Target: ≤ 150 MB RSS on the reference Raspberry Pi 5 (was ≤ 80 MB on a Pi 3B; [ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)).
 
 | Component | Estimated RSS |
 |---|---|

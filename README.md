@@ -45,8 +45,11 @@ frontend, with multi-site federation, HA, and federated ML.
    Global tier (optional): cross-site correlation + federated ML (FedAvg)
 ```
 
-Everything runs under Docker Compose. Target NFRs: collector ≤ 80 MB RSS and
-≤ 5 % CPU on a Pi 3B, ≤ 25 MB PyInstaller binary, ≤ 30 s scan cycle.
+Everything runs under Docker Compose. Target NFRs: collector ≤ 150 MB RSS and
+≤ 5 % CPU on the reference Raspberry Pi 5 (4 GB), ≤ 25 MB PyInstaller binary,
+≤ 30 s scan cycle. The Pi 5 is the minimum supported collector platform; where it
+lacks headroom the deployment escalates to a small-form-factor x86-64 PC
+([ADR 0012](docs/architecture/decisions/0012-collector-reference-hardware.md)).
 
 ### Design documents
 

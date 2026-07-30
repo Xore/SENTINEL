@@ -87,6 +87,7 @@ Detailed Sonnet follow-on scopes and gates are in
 
 | Timestamp (UTC) | Agent | Work ID | Files/directories |
 |---|---|---|---|
+| 2026-07-30T15:58:33Z | SONNET5 | A-HW-1 | documentation only, hardware-baseline change directed by the user: `docs/architecture/decisions/0012-collector-reference-hardware.md` (new) + `decisions/README.md`, `docs/architecture/IaC-DEPLOYMENT-STRATEGY.md`, `docs/collector/COLLECTOR-V2-REFACTOR.md`, `docs/collector/ROADMAP.md`, `docs/collector/SUGGESTIONS.md`, `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`, `docs/gap-analysis/research-guide-for-gap-topics.md`, `docs/guides/00-setup.md`, `docs/guides/05-research-and-decisions.md`, `docs/guides/08-testing-and-installation.md`, `docs/guides/ASYNCIO-OPTIMIZATION.md`, `docs/guides/OPUS-AGENT-GUIDE-V2.md`, `docs/guides/SONNET-5-IMPLEMENTATION-GUIDE.md`, `docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md`, `docs/theory/probes/probe-to-backend-transport-theory.md`, `README.md` (the NFR line only), this ledger. **No `collector/` file is edited** — the code constants this invalidates are listed as decisions below, and two of the four sit inside the frozen S2-02 claim. |
 | 2026-07-30T13:48:34Z | SONNET5 | A-DOCS-1 | documentation only: `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`, `docs/collector/ROADMAP.md`, `docs/gap-analysis/research-notes/01-baseline-parity.md`, `02-routes-wan-os-tls-snmp.md`, `03-ot-protocols.md`, `04-mdp-scheduler.md`, `05-probe-budget.md`, `06-ebpf-rtt.md`, `07-arp-rate.md`, this ledger. No file under `collector/`, `backend/`, `.github/`, `contracts/` or `deploy/`, and no contract document, is edited under this claim. |
 | 2026-07-28T18:37:31Z | CODEX | S3-01A | focused CI correction only: `collector/checks/host_load.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
 | 2026-07-28T18:37:31Z | CODEX | C2-03 | timing correction only: `.github/workflows/integration-test.yml`, this ledger |
@@ -1407,6 +1408,112 @@ above, which touched no repository file. Codex's own gate evidence at
 `30384526449`, Pylint `30384526404`, CodeQL `30384526429`, integration
 `30384526391` — is consistent with the diff and I do not dispute it. It does
 not speak to the finding above, because no gate exercises a slow resolver.
+
+### A-HW-1 — Collector reference hardware re-baseline (Pi 3B → Pi 5)
+
+- **Timestamp:** claim authored 2026-07-30T14:04:22Z, published
+  2026-07-30T15:58:33Z (the row carries the later, publication time — a claim
+  cannot take precedence from before it was visible on `origin/main`).
+- **Protocol deviation, stated plainly:** the claim row and the sweep land in
+  **one** commit rather than the usual claim-then-implement pair. Splitting them
+  would have been theatre — both halves push in the same breath, so no other
+  agent could have observed the claim first either way. What I did do is verify
+  the interval: `origin/main` advanced from `7d8e9b5` to `ad95db4` while this
+  was in progress (CK-BE-05A, `backend/api/internal/notifyops/*`, a migration,
+  and `CODEX-KIMI-COORDINATION.md`), which touches **no** file in this claim.
+  Precedence is therefore uncontested rather than merely assumed.
+- **Status:** COMPLETE — documentation swept; claim released.
+- **Directive:** from the user, verbatim in intent: the collector is no longer
+  limited to Raspberry Pi 3B hardware; **the minimum is a Raspberry Pi 5, and
+  where a Pi 5's resources are not enough the deployment moves to a
+  small-form-factor PC.** Every document was to be rechecked and updated
+  accordingly. This is a product decision, not an engineering proposal, so it
+  is recorded as an accepted ADR rather than argued in the ledger.
+- **Decision record:** [`ADR 0012`](../architecture/decisions/0012-collector-reference-hardware.md),
+  listed in `decisions/README.md`. It supersedes the Pi 3B assumptions inside
+  NFR-01/NFR-02 and inside research gates R1–R3. Per the ADR README, ADRs are
+  immutable after acceptance — none of 0001–0011 was rewritten.
+- **Scope:** documentation only. The 16 files named in the File Claims row,
+  plus the new ADR and `README.md`'s NFR line. **No file under `collector/`,
+  `backend/`, `.github/`, `contracts/` or `deploy/` was edited**, and no
+  contract document was touched.
+
+**What changed, and why each way.**
+
+1. **NFR-01: ≤ 80 MB RSS → ≤ 150 MB RSS**, quoted against the reference Pi 5
+   with 4 GB. This is *relatively stricter* than the figure it replaces — 8% of
+   1 GB becomes under 4% of 4 GB — while giving absolute room for the lmdb hot
+   buffer and a scapy sniffer. Per [ADR 0008](../architecture/decisions/0008-measured-capacity-envelopes.md)
+   it is a **proposal until measured on the reference platform**, and every
+   document that carries it says so.
+2. **NFR-02: ≤ 5% average CPU is unchanged as a share**, but now on 4×A76 at
+   2.4 GHz instead of 4×A53 at 1.2 GHz. The same percentage buys roughly 3–4×
+   the work. That, not a raised percentage, is where headroom for higher
+   concurrency comes from.
+3. **The no-NumPy/pandas rule stands, on changed grounds.** 150 MB of RSS would
+   accommodate them; the rule is now a bundle-size, cold-start and
+   separation-of-concerns rule (ML is hub-side, ADR 0001), not an RSS rule. It
+   was rewritten rather than deleted precisely because its old justification
+   had expired and would have been the first thing someone argued away.
+4. **32-bit ARM is out of scope.** The Pi 5 is arm64-only, so the supported
+   matrix is Linux amd64, Linux arm64 (Pi 5 or better), Windows amd64. This
+   closed a standing open question in
+   `docs/theory/probes/probe-to-backend-transport-theory.md` §7 — "mTLS
+   overhead on ARMv7 is unmeasured" — because ARMv8 is now the whole matrix and
+   the A76 carries the ARMv8 crypto extensions, making the cited ARMv8
+   benchmarks applicable rather than an optimistic bound. The residual open
+   question was narrowed to handshake cost at this probe's metric rate, on any
+   platform.
+5. **Research gates R1–R3 re-baselined, none closed.** They change platform and
+   lose most of their risk; they still require measurement on real hardware.
+   R1's ceiling was re-derived from 15% of one A53 core to 5% of one A76 core
+   for identical work, with a note that a result between the two is a finding
+   to record rather than an automatic failure. R2 narrows from "is BPF usable
+   on this kernel at all" to "is `python3-bpfcc` packaged for this image",
+   since the Pi 5 runs kernel 6.6+ arm64 with BTF. R3 comes off SD-card I/O
+   onto NVMe over PCIe, and its ≤ 15 s cold-start budget is marked for
+   re-derivation downward, with storage type to be recorded alongside any
+   measurement.
+6. **The Go-versus-Python decision is confirmed, not reopened.** Its only
+   remaining pro-Go arguments were idle memory (~15 MB vs ~35 MB) and cold
+   start (<100 ms vs ~400 ms), both weighed against 1 GB of RAM and SD-card
+   I/O. On the new baseline they are further from binding, not closer.
+   `SUGGESTIONS.md` now says this explicitly so the hardware change is not
+   later misread as grounds to revisit the language.
+
+**Four code constants this invalidates — raised, not fixed.**
+
+Each was derived from Pi 3B capacity and is now under-sized. All four are
+listed in ADR 0012 §"Constants that must be revisited". I edited none of them,
+because three of the four sit inside the frozen S2-02 claim:
+
+| Location | Constant | Owner situation |
+|---|---|---|
+| `collector/utils/thread_pool.py` | `ThreadPoolExecutor(max_workers=2)`, hard-capped at module level with a 3B rationale in the comment | **Unclaimed.** Not configurable at all; on a 4-core A76 this is the tightest limit in the collector. Needs a `CollectorSettings` field and a re-derived default. |
+| `collector/config.py` | network semaphore default of 20 | Inside the frozen S2-02 scope. Already correctly a setting, with a comment anticipating exactly this change — only the default needs re-deriving. |
+| `collector/checks/__init__.py` | semaphore docstring citing the 3B | Inside the frozen S2-02 scope. Wording only. |
+| `collector/checks/net_icmp.py` | `ping()` docstring arguing against a thread-pool round trip on 3B CPU grounds | Inside the frozen S2-02 scope. Wording only. |
+
+**The S2-02 review finding survives this change.** The outstanding correction
+about hostname resolution inside a pool worker is *not* a CPU-capacity finding
+and does not dissolve when the pool grows: an executor future cannot be
+cancelled once running, so `asyncio.timeout` frees the coroutine while the
+worker thread keeps resolving. A larger pool makes starvation less acute, not
+absent, and the resolution still escapes its timeout budget. Both ADR 0012 and
+this entry say so, so that the hardware upgrade cannot be cited as having
+answered it.
+
+**Not a status decision.** Nothing here marks any work-board item `DONE`.
+S2-02, S3-01A, S4-01A, C2-03 and CK-BE-04A remain in `REVIEW` for their
+reviewers; S5-01 remains `QUEUED`.
+
+**Archive pass.** Re-applied the discharge-not-mention test recorded below
+under Archive Procedure: **nothing became archivable.** ADR 0012 is a live
+decision record, the gate documents it re-baselines are still open, and no
+task record it references has been marked `DONE` by a reviewer.
+
+**Gates.** None apply: no Python, Go, workflow or contract file is in this
+change. `git diff --stat` is confined to `docs/` and the `README.md` NFR line.
 
 ### A-DOCS-1 — Sonnet 5 collector-docs accuracy claim
 

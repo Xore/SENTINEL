@@ -32,7 +32,8 @@ The v2 collector:
 - Is a **Python 3.12 asyncio process**, packaged as a PyInstaller `--onefile` binary
 - Must capture only broadcast/multicast frames — **never unicast** (OT confidentiality)
 - Must inject **zero packets** into the network (fully passive)
-- Must have **minimal CPU overhead** on a Pi 3B (weakest supported target)
+- Must have **minimal CPU overhead** on a Raspberry Pi 5 (weakest supported target since
+  [ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md); previously a Pi 3B)
 - Uses `scapy==2.5.0` (already in `requirements.txt` for Phase C11)
 
 ---
@@ -100,13 +101,13 @@ if __name__ == "__main__":
 
 ## Research questions
 
-- [ ] Does `scapy==2.5.0` install cleanly inside the PyInstaller venv on Pi 3B (arm64 + arm32)?
+- [ ] Does the pinned `scapy` install cleanly inside the PyInstaller venv on a Pi 5? (arm64 only — the Pi 5 is 64-bit and armv7 is out of scope)
 - [ ] Is `CAP_NET_RAW` sufficient, or does scapy require full root on Pi OS?
 - [ ] Does PyInstaller correctly bundle scapy’s BPF/socket internals (`--collect-all scapy`)?
-- [ ] What is CPU overhead (% of one core) at 100 pps broadcast traffic on Pi 3B?
+- [ ] What is CPU overhead (% of one core) at 100 pps broadcast traffic on a Pi 5?
 - [ ] What is RSS memory overhead during a 30 s capture window with `store=False`?
 - [ ] Does `sniffer.stop()` reliably unblock within <1 s after the window ends?
-- [ ] Are there dropped packets (`sniffer.results` stats) at 100 pps on Pi 3B SD card I/O?
+- [ ] Are there dropped packets (`sniffer.results` stats) at 100 pps on Pi 5 storage?
 
 ---
 
@@ -163,10 +164,10 @@ Confirm the bundled binary runs and produces correct output.
 
 | Criterion | Requirement |
 |---|---|
-| Installs in PyInstaller venv on Pi 3B | Mandatory |
+| Installs in PyInstaller venv on Pi 5 (arm64) | Mandatory |
 | `CAP_NET_RAW` sufficient (no full root) | Mandatory |
 | Kernel BPF pre-filter (bcast/mcast only, no unicast) | Mandatory |
-| CPU overhead <15% of one core at 100 pps on Pi 3B | Mandatory |
+| CPU overhead <5% of one core at 100 pps on Pi 5 | Mandatory (re-derived from the old 15%-of-an-A53 figure) |
 | RAM overhead <30 MB during 30 s window (`store=False`) | Mandatory |
 | Fully passive (zero injected packets) | Mandatory |
 | PyInstaller bundle works (`--collect-all scapy`) | Mandatory |
@@ -177,7 +178,7 @@ Confirm the bundled binary runs and produces correct output.
 ## Deliverables
 
 1. **`prototype/net_bcast_proto.py`** — standalone Python file demonstrating the approach
-2. **Benchmark results** — CPU%, RSS, pkt/s on Pi 3B, recorded in this document under a `## Results` section
+2. **Benchmark results** — CPU%, RSS, pkt/s on a Pi 5, recorded in this document under a `## Results` section
 3. **Decision record** — update this file: confirmed approach or reasoned pivot
 4. **Capability grant documented** — exact `setcap` or systemd `AmbientCapabilities` line for `docs/guides/00-setup.md`
 5. **Exit criteria R1 checked off** in [`docs/gap-analysis/research-guide-for-gap-topics.md`](../gap-analysis/research-guide-for-gap-topics.md)

@@ -10,7 +10,10 @@
 
 The v2 collector is a **Python 3.12 asyncio process**, intended to ship as a PyInstaller
 single-file binary (packaging is designed, not yet built — see phase B1).
-It runs on any node (Linux amd64/arm64, Windows x64), collects telemetry locally, and pushes
+It runs on any node (Linux amd64/arm64, Windows x64) — minimum a Raspberry Pi 5, escalating
+to a small-form-factor x86-64 PC where that is not enough
+([ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)) — collects
+telemetry locally, and pushes
 all data to the aggregator hub via **OTLP/gRPC over mTLS**. There is no Flask dashboard
 and no Go binary on the collector node. It does keep a local SQLite database: the cold
 store below is the collector's own durable queue, which is what lets it survive a 24 h
@@ -91,14 +94,18 @@ these and should not be assumed admissible.
 ## Open research gates
 
 These gate the phases named below. They do **not** gate the project as a whole — phases 1
-through 4 were implemented without needing them. All three require a physical Raspberry Pi
-3B, which is why none has closed.
+through 4 were implemented without needing them. All three require physical hardware, which
+is why none has closed.
+
+All three were re-baselined from the Raspberry Pi 3B to the Raspberry Pi 5 on 2026-07-30
+([ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)). None closes as
+a result; each loses most of its risk, and R1's and R3's pass thresholds were re-derived.
 
 | # | Topic | Blocks | Research doc |
 |---|---|---|---|
-| R1 | `scapy.AsyncSniffer` CPU overhead on Pi 3B at OT rates (<100 pps) | Phase C11 | [`docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md`](../tasks/RESEARCH-BCAST-MCAST-GOPACKET.md) — exists; its Go-era filename and `gopacket` framing predate the Python decision |
-| R2 | `bcc` Python bindings on Raspberry Pi OS: kernel BPF support, `python3-bpfcc` availability | Phase C13 | **not written** — `docs/tasks/` contains only the R1 document |
-| R3 | PyInstaller `--onefile` startup time on Pi 3B: acceptable for systemd `ExecStartPre`? | Phase B1 | **not written** |
+| R1 | `scapy.AsyncSniffer` CPU overhead on the reference Pi 5 at OT rates (<100 pps) | Phase C11 | [`docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md`](../tasks/RESEARCH-BCAST-MCAST-GOPACKET.md) — exists; its Go-era filename and `gopacket` framing predate the Python decision |
+| R2 | `bcc` Python bindings on Raspberry Pi OS for the Pi 5: `python3-bpfcc` availability (kernel BPF support is no longer in doubt on 6.6+ arm64) | Phase C13 | **not written** — `docs/tasks/` contains only the R1 document |
+| R3 | PyInstaller `--onefile` startup time on the reference Pi 5: acceptable for systemd `ExecStartPre`? | Phase B1 | **not written** |
 
 ---
 

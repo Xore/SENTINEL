@@ -53,8 +53,8 @@ The v2 collector is a **probe agent** running on Raspberry Pi nodes, OT edge dev
 
 | ID | Requirement |
 |---|---|
-| NFR-01 | Memory footprint ≤ 80 MB RSS on Raspberry Pi 3B (1 GB RAM) |
-| NFR-02 | CPU usage ≤ 5% average on Pi 3B (4-core ARM Cortex-A53 @ 1.2 GHz) |
+| NFR-01 | Memory footprint ≤ 150 MB RSS on the reference Raspberry Pi 5 (4 GB RAM) — under 4% of node memory. Was ≤ 80 MB on a Pi 3B; see [ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md). Proposal pending measurement per ADR 0008. |
+| NFR-02 | CPU usage ≤ 5% average on the reference Raspberry Pi 5 (4-core ARM Cortex-A76 @ 2.4 GHz). The share is unchanged from the Pi 3B figure; the absolute work it buys is roughly 3–4× greater. |
 | NFR-03 | PyInstaller binary size ≤ 25 MB |
 | NFR-04 | Check cycle ≤ 30 s wall-clock for full scan level 2 workload |
 | NFR-05 | Local buffer (lmdb) ≤ 200 MB on disk |

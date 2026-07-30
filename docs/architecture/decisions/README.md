@@ -17,3 +17,4 @@ coordination ledger records a blocking conflict.
 | [0009](0009-identity-tenancy-and-time.md) | Identity, tenancy, and time invariants | Accepted |
 | [0010](0010-database-migrations.md) | Database migration policy | Accepted |
 | [0011](0011-direct-probe-backend-routing.md) | Direct probe-to-backend routing | Accepted |
+| [0012](0012-collector-reference-hardware.md) | Collector reference hardware baseline (Pi 5 minimum) | Accepted |

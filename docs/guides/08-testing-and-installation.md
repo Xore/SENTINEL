@@ -3,7 +3,7 @@
 Acceptance checklist for the v2 collector. Two parts:
 
 - **Part A — Unit & integration tests** (run on the dev machine or CI).
-- **Part B — Field acceptance** on real hardware (Pi 3B/4B + amd64 lab laptop).
+- **Part B — Field acceptance** on real hardware (Raspberry Pi 5 + amd64 lab laptop; [ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)).
 
 Hardware reference:
 
@@ -90,7 +90,7 @@ docker buildx build \
 - [ ] Binary size ≤25 MB
 - [ ] `./analyselaptop-collector --version` prints version string
 - [ ] `./analyselaptop-collector --help` prints usage without error
-- [ ] Cold-start time on Pi 3B ≤15 s (research gate R3; record actual value)
+- [ ] Cold-start time on the reference Pi 5 (research gate R3; record actual value). The ≤15 s budget was set against Pi 3B SD-card I/O and should be re-derived downward — the Pi 5 boots from NVMe over PCIe.
 
 ---
 

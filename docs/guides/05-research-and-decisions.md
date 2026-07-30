@@ -24,7 +24,7 @@ references. Companion to
   scheduling) without the complexity of goroutine lifecycle management.
 
 **Trade-off accepted:** Python startup time is higher than Go. PyInstaller
-`--onefile` cold start on Pi 3B requires validation (research gate R3 in
+`--onefile` cold start on the reference Pi 5 requires validation (research gate R3 in
 [`docs/gap-analysis/research-guide-for-gap-topics.md`](../gap-analysis/research-guide-for-gap-topics.md)).
 
 ---
@@ -69,7 +69,7 @@ scheduler (`collector/scheduler.py`). No threads are used except where a library
 forces it (e.g. `scapy.AsyncSniffer`).
 
 **Rationale:**
-- A single asyncio event loop on a Pi 3B is more memory-efficient than one thread
+- A single asyncio event loop on a constrained node is more memory-efficient than one thread
   per check. At ~15–20 concurrent checks, thread stack overhead would add 30–40 MB
   of RSS unnecessarily.
 - Cooperative multitasking makes it straightforward to reason about which check is
@@ -113,7 +113,7 @@ forces it (e.g. `scapy.AsyncSniffer`).
   (`--collect-all scapy`).
 - Unicast frames are never received (OT confidentiality requirement: FR-02).
 
-**Open gate:** CPU overhead on Pi 3B at 100 pps must be validated before Phase C11
+**Open gate:** CPU overhead on the reference Pi 5 at 100 pps must be validated before Phase C11
 is merged. See research gate R1 in
 [`docs/gap-analysis/research-guide-for-gap-topics.md`](../gap-analysis/research-guide-for-gap-topics.md).
 

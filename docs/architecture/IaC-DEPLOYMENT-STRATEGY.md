@@ -415,7 +415,7 @@ services:
       resources:
         limits:
           memory: 256m    # Sufficient for Python + scapy + bcc + asyncio loop
-          cpus: "0.5"     # Conservative on Pi 3B / Pi 4
+          cpus: "0.5"     # Conservative reservation; the hub is not a Pi workload
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "3" }

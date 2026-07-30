@@ -985,8 +985,8 @@ These are hard limits from `COLLECTOR-V2-REFACTOR.md §2.2`. Every implementatio
 
 | NFR | Limit | Impact on implementation |
 |---|---|---|
-| Memory footprint | ≤ 80 MB RSS on Raspberry Pi 3B | No in-memory caching of raw packet data. Scapy top-talker window = 30s max. lmdb buffer size capped at 200 MB. |
-| CPU usage | ≤ 5% average on Pi 3B | All checks must be async. No blocking I/O. eBPF is kernel-side (no CPU cost in Python). scapy sniffer uses kernel BPF filter to drop non-matching packets before Python sees them. |
+| Memory footprint | ≤ 150 MB RSS on the reference Raspberry Pi 5 (4 GB) | No in-memory caching of raw packet data. Scapy top-talker window = 30s max. lmdb buffer size capped at 200 MB. Was ≤ 80 MB on a Pi 3B — see [ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md). |
+| CPU usage | ≤ 5% average on the reference Raspberry Pi 5 (4×A76 @ 2.4 GHz) | All checks must be async. No blocking I/O. eBPF is kernel-side (no CPU cost in Python). scapy sniffer uses kernel BPF filter to drop non-matching packets before Python sees them. |
 | Binary size | ≤ 25 MB PyInstaller bundle | Do not add heavy dependencies (NumPy, pandas) to the collector. ML is hub-side only. |
 | Check cycle | ≤ 30s wall-clock for full scan level 2 | All checks run concurrently via asyncio.TaskGroup. No sequential scan loop. |
 | Local buffer | ≤ 200 MB lmdb | Implement LRU eviction in `store/hot.py` when the 200 MB limit is approached. |
@@ -1020,7 +1020,7 @@ These are hard limits from `COLLECTOR-V2-REFACTOR.md §2.2`. Every implementatio
 | Installing `bcc` via pip in `requirements.txt` | `bcc` is kernel-version-matched; pip installs a generic wheel that may not match the running kernel's headers | Install via `apt install python3-bpfcc` on the node; use import guard in code |
 | Using `subprocess.run()` or `subprocess.Popen()` | Blocks the event loop | `await asyncio.create_subprocess_exec()` |
 | Hardcoding `wlan0` in `net_wifi_linux.py` | Interface name varies per node | Read from `config.wifi.interface` |
-| NumPy/pandas import in the collector | Adds 30–60 MB to the PyInstaller bundle; pushes memory over 80 MB on Pi 3B | ML is hub-side only. Collector does arithmetic in stdlib or simple list operations. |
+| NumPy/pandas import in the collector | Adds 30–60 MB to the PyInstaller bundle and to cold-start time. The rule stands on the Pi 5 baseline, but on bundle-size and separation-of-concerns grounds — 150 MB of RSS would accommodate them; the architecture still should not ([ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)) | ML is hub-side only. Collector does arithmetic in stdlib or simple list operations. |
 | Committing `.env` with real credentials | Exposes secrets in Git history | `.env` is in `.gitignore`. Only `.env.example` (with dummy values) is committed. |
 | Deleting or stubbing out a failing test | Hides real bugs; CI green does not mean working | Fix the code or fix the test to match corrected behaviour |
 | Using `git ls-files '*.py'` in pylint from a subdirectory | `git ls-files` returns repo-root-relative paths; running from a subdirectory makes them unresolvable | Run `pylint collector tests` directly from the package directory |

@@ -80,7 +80,9 @@ eBPF map reads, scapy packet parsing, and lmdb compaction can spike CPU. Use `ru
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-# Shared pool — 2 workers max (Pi 3B 5% CPU NFR; see OPUS-AGENT-GUIDE-V2 §8)
+# Shared pool — worker count belongs in CollectorSettings, defaulted for the
+# reference Pi 5. The literal 2 below came from the retired Pi 3B baseline and
+# is now the collector's tightest limit; see ADR 0012.
 _CPU_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="collector-cpu")
 
 async def run_in_thread(fn, *args):
@@ -108,7 +110,7 @@ async def run(self) -> CheckResult:
 
 ## 4. Semaphore: Cap Concurrent Outbound Connections
 
-Running 50+ probes simultaneously exhausts file descriptors on a Pi 3B. A shared semaphore caps total concurrent network operations across all checks.
+Running enough probes simultaneously exhausts file descriptors on any node. A shared semaphore caps total concurrent network operations across all checks. The count at which this bites moved up with the hardware baseline ([ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)), but the mechanism is unchanged — the cap exists to make the limit deliberate rather than discovered at runtime.
 
 ```python
 # collector/checks/__init__.py — add alongside BaseCheck
@@ -133,7 +135,7 @@ async def _run_one(task: CheckTask) -> CheckResult:
     ...
 ```
 
-**Rule:** Semaphore value 20 is correct for Pi 3B. On higher-spec nodes (Ubuntu x86) you may raise to 50, but do so in `CollectorSettings` as a configurable field, not hardcoded.
+**Rule:** the semaphore value must be a `CollectorSettings` field, never a hard-coded literal. The default of 20 was derived from the retired Pi 3B baseline and is due to be re-derived for the reference Pi 5 ([ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)). 50 was already the suggested value for higher-spec nodes, and the reference platform is now firmly in that class.
 
 ---
 

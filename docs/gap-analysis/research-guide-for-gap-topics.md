@@ -16,14 +16,21 @@ Work in gate order. Each section states:
 
 ---
 
-## R1 — scapy AsyncSniffer on Raspberry Pi 3B (blocks Phase C11)
+## R1 — scapy AsyncSniffer on the reference Raspberry Pi 5 (blocks Phase C11)
 
 **Context:** Phase C11 (`checks/net_bcast.py`) uses `scapy.AsyncSniffer` with a BPF filter
 `ether broadcast or ether multicast` over a 30 s capture window to snapshot broadcast/multicast
-top-talkers. The concern is CPU overhead on a Pi 3B at OT segment rates (typically <100 pps).
+top-talkers. The concern is CPU overhead at OT segment rates (typically <100 pps).
+
+> **Re-baselined 2026-07-30 ([ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)).**
+> This gate was written against a Raspberry Pi 3B. The minimum platform is now a Pi 5, so
+> the same work costs roughly a quarter of the CPU share, and the kernel BPF filter drops
+> non-matching frames before Python ever sees them. The gate is kept — the point is to
+> measure, not to assume — but its expected risk is low, and the pass thresholds below are
+> re-derived accordingly.
 
 ### Step R1.1 — Verify scapy install on Pi
-- Install `scapy==2.5.0` inside the collector venv on a Pi 3B.
+- Install the pinned `scapy` (see `collector/requirements.txt`) inside the collector venv on a Pi 5.
 - Confirm `from scapy.all import AsyncSniffer` imports without error.
 - Confirm `CAP_NET_RAW` is available to the service account (or document the capability grant needed).
 
@@ -36,13 +43,16 @@ top-talkers. The concern is CPU overhead on a Pi 3B at OT segment rates (typical
 ### Step R1.3 — Stress test at target OT rate
 - If live traffic is <10 pps, replay a synthetic bcast stream from another host
   (`python3 -c "from scapy.all import *; sendp([Ether(dst='ff:ff:ff:ff:ff:ff')/IP()/UDP()]*500, iface='eth0', inter=0.01)"`).
-- Confirm CPU overhead stays below **15% of one core** at 100 pps.
+- Confirm CPU overhead stays below **5% of one core** at 100 pps. The old ceiling was 15%
+  of one Cortex-A53 at 1.2 GHz; the equivalent share of a Cortex-A76 at 2.4 GHz is roughly
+  a quarter of that. If the measured figure lands between 5% and 15%, that is a finding
+  worth recording rather than an automatic failure.
 - Confirm the 30 s window completes and top-N=10 aggregation finishes in <1 s.
 
 ### Exit criteria — R1
-- [ ] `scapy==2.5.0` installs cleanly inside the PyInstaller venv on Pi 3B
+- [ ] pinned `scapy` installs cleanly inside the PyInstaller venv on a Pi 5 (arm64)
 - [ ] `CAP_NET_RAW` grant documented (capability or systemd `AmbientCapabilities`)
-- [ ] CPU overhead <15% of one core at 100 pps broadcast traffic
+- [ ] CPU overhead <5% of one core at 100 pps broadcast traffic (re-derived; see above)
 - [ ] 30 s capture + top-N aggregation completes within 1 s of window end
 - [ ] Results documented in `docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md`
 
@@ -85,11 +95,17 @@ C program for passive flow tracking. This requires `python3-bpfcc`, kernel BPF s
 
 ---
 
-## R3 — PyInstaller `--onefile` startup time on Pi 3B (blocks Phase B1)
+## R3 — PyInstaller `--onefile` startup time on the reference Pi 5 (blocks Phase B1)
 
-**Context:** The v2 collector ships as a PyInstaller `--onefile` binary. On slow ARM hardware
-(Pi 3B SD card), the self-extraction step at startup can take several seconds. This matters
-because the systemd unit uses `ExecStartPre` health checks with a short timeout.
+**Context:** The v2 collector ships as a PyInstaller `--onefile` binary. The self-extraction
+step at startup costs time, which matters because the systemd unit uses `ExecStartPre`
+health checks with a short timeout.
+
+> **Re-baselined 2026-07-30 ([ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)).**
+> The "several seconds" this gate was written to catch was largely an artifact of Pi 3B
+> SD-card I/O. The Pi 5 boots from NVMe over PCIe, so both the extraction and the timeout
+> budgets below should come out substantially lower. Measure on the storage the fleet
+> actually uses — an SD-card Pi 5 and an NVMe Pi 5 are different tests.
 
 ### Step R3.1 — Build a representative binary
 - Build the Phase 1 binary (`__main__.py` + `config.py` + `scheduler.py` + all Phase 2
@@ -98,7 +114,7 @@ because the systemd unit uses `ExecStartPre` health checks with a short timeout.
   then copied to Pi for timing).
 
 ### Step R3.2 — Measure cold and warm startup
-- Cold: `time ./collector --version` immediately after copy to Pi 3B SD card (extraction to `/tmp`).
+- Cold: `time ./collector --version` immediately after copying to the Pi 5 (extraction to `/tmp`). Record the storage type — NVMe or SD — with the number.
 - Warm: repeat 3 times (extraction cache in `/tmp` may help on subsequent runs).
 - Record: cold extraction time, warm time, `/tmp` disk space used by extracted bundle.
 
@@ -109,7 +125,7 @@ because the systemd unit uses `ExecStartPre` health checks with a short timeout.
   (no self-extraction, faster start, but multi-file distribution).
 
 ### Exit criteria — R3
-- [ ] Cold startup time measured on Pi 3B SD card
+- [ ] Cold startup time measured on the reference Pi 5, with storage type recorded
 - [ ] Warm startup time measured (3 runs)
 - [ ] Systemd `TimeoutStartSec` set to a value that comfortably exceeds cold startup
 - [ ] Decision (`--onefile` vs `--onedir`) documented with measured numbers
@@ -121,9 +137,17 @@ because the systemd unit uses `ExecStartPre` health checks with a short timeout.
 
 | Gate | Blocks phase | Primary test | Hardware needed |
 |---|---|---|---|
-| R1 — scapy/Pi CPU overhead | C11 (bcast/mcast) | CPU% at 100 pps bcast | Pi 3B |
-| R2 — bcc/Pi kernel + package | C13 (eBPF flows) | BPF load test; graceful fallback | Pi 3B (64-bit Bookworm) |
-| R3 — PyInstaller startup time | B1 (CI build) | Cold/warm startup timing | Pi 3B SD card |
+| R1 — scapy CPU overhead | C11 (bcast/mcast) | CPU% at 100 pps bcast | Pi 5 |
+| R2 — bcc kernel + package | C13 (eBPF flows) | BPF load test; graceful fallback | Pi 5 (arm64, kernel 6.6+) |
+| R3 — PyInstaller startup time | B1 (CI build) | Cold/warm startup timing | Pi 5, storage type recorded |
 
 All three gates require measurement on the **actual target hardware** — do not substitute
 cloud VM benchmarks or assume results transfer from x86.
+
+> **All three were re-baselined from the Raspberry Pi 3B on 2026-07-30**
+> ([ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)). None of
+> them closes as a result; each loses most of its risk. R2 in particular narrows from "is
+> BPF usable on this kernel at all" to "is `python3-bpfcc` packaged for this image", since
+> the Pi 5 runs a 64-bit kernel 6.6 or newer with BTF. Where a Pi 5 still proves
+> insufficient, the deployment escalates to a small-form-factor x86-64 PC rather than
+> dropping the feature — which is itself a reason not to over-tune these thresholds.

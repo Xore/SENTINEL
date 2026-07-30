@@ -4,7 +4,10 @@ This guide covers installing and bootstrapping the v2 Python collector on a new 
 The collector is a **Python 3.12 asyncio process** shipped as a PyInstaller single-file
 binary. It has no web UI of its own — all data is pushed to the hub via OTLP/gRPC.
 
-> **Target platforms:** Linux amd64, Linux arm64 (Raspberry Pi 3B/4B), Windows amd64.
+> **Target platforms:** Linux amd64, Linux arm64 (Raspberry Pi 5 or better), Windows amd64.
+> 32-bit ARM is out of scope — the Pi 5 is arm64-only. Where a Pi 5 lacks headroom for a
+> site's probe load, deploy a small-form-factor x86-64 PC instead
+> ([ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)).
 > **Full design:** [`docs/collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md)
 
 ---
