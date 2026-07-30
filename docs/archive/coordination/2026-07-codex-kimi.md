@@ -144,3 +144,83 @@ ledger remains authoritative for current claims and gates.
   exact `550ac1e`. GitHub backend run `30383250770` passed all jobs. Kimi
   independently reran HTTP and alert lifecycle race tests on Linux and
   approved the package without correction.
+
+## CK-BE-05A — Notification Outbox and Retry Foundation
+
+- **Owner:** KIMI
+- **Implementation commit:** `ab4aa32`
+- **Handoff:** X-024 (Opus 5, on Kimi's behalf)
+- **Review:** X-025 by Opus 5, under explicit user authorization — see
+  "Authorization and its limit" below
+- **Scope:** new `backend/ingest/migrations/000005_notification_delivery.sql`,
+  new `backend/api/internal/notifyops/{model,postgres,postgres_test,postgres_integration_test}.go`,
+  and the coordination ledger.
+- **Result:** a durable site-scoped notification outbox with bounded JSONB
+  metadata payloads, stable `(site_id, channel, dedup_key)` deduplication,
+  atomic `SKIP LOCKED` claim leases, append-only attempt history, and
+  deterministic exponential backoff with a `Store.Backoff` test hook. Success
+  delivers; retryable failure reschedules until `max_attempts`, then
+  dead-letters; permanent failure dead-letters immediately. Expired leases are
+  reclaimable and reclaiming bumps `version`, so a stranded worker's completion
+  returns `ErrConflict`. Completion on an already-terminal notification returns
+  current state unchanged. No network messages and no routes, per contract.
+
+### How this item stalled and was recovered
+
+Kimi claimed CK-BE-05A on 2026-07-28T17:33:19Z and wrote all five files, but
+never committed them. X-023's board observation correctly noted that none of
+them were on `main`; they were sitting untracked in the working tree. They were
+committed unmodified at `ab4aa32` and handed off as X-024. Opus authored none of
+the implementation.
+
+### Authorization and its limit
+
+Protocol rule 7 reserves `DONE` for the other agent. The user explicitly
+authorized this close: *"for one time you are allowed to do it yourself. commit
+and push - check before."* The authorization is named here so an auditor treats
+CK-BE-05A as self-approved rather than independently reviewed. Rule 7 itself
+stands with a named exception; it does not extend to any other item.
+
+### Verification
+
+The integration test had never been executed anywhere. It was run for the first
+time during this review against `postgres:16-alpine` in a throwaway container,
+with all five migrations applied by `go run ./cmd/migrate`:
+
+- `go test -count=1 -tags=integration -run TestOutboxLifecycle ./internal/notifyops/` — **PASS** (0.17s).
+- `backend/api` full unit suite — all packages ok.
+- `gofmt -l`, `go build ./...`, `go vet ./...` — clean.
+
+The test is substantive: idempotent enqueue, viewer `ErrForbidden` on enqueue,
+deterministic pending order, lease exclusivity between concurrent workers,
+lease-owner and stale-version `ErrConflict`, injected-backoff reschedule,
+not-claimable-before-due, permanent dead-letter, retryable-exhaustion
+dead-letter, success clearing lease and error, idempotent terminal repeat,
+stale-lease recovery, append-only trigger enforcement, cross-site
+non-disclosure, and viewer read access.
+
+### Defect found and fixed during review
+
+Migration 000005 broke `backend/ingest/migrations/runner_integration_test.go`,
+a shared helper **outside** CK-BE-05A's claimed scope. `resetDatabase` carries a
+hardcoded `DROP TABLE` list that was never extended for the new tables, and
+`DROP ... CASCADE` removes dependent constraints rather than referencing tables,
+so `notification_outbox` and `notification_attempts` survived every reset. The
+first runner test passed and every later one failed with `relation
+"notification_outbox" already exists (SQLSTATE 42P07)`. Fixed at `e046712` by
+adding both tables and the trigger function to the reset, with a comment stating
+the invariant. Verified by running the whole `./migrations/` package against one
+database — the previously failing case.
+
+### Open notes for CK-BE-05B
+
+- `ListAttempts` deliberately omits the `CanOperate` gate that `Enqueue`,
+  `Claim`, and `Complete` apply. This is **intended and tested**: the
+  integration test asserts a site-authorized viewer may read attempt history.
+  Site scope, role match, `disabled_at`, and `token_not_before` are still
+  enforced in SQL.
+- `validUUID` accepts lowercase hex only. Postgres `::text` emits lowercase so
+  the round trip is safe, but an uppercase UUID from a future caller returns
+  `ErrInvalid`. Worth pinning before transports build on it.
+- Migration 000005 has been applied only to throwaway databases. No shared or
+  production database was migrated by this work.
