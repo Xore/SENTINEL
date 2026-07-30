@@ -1,5 +1,10 @@
 # Topic 6: Passive eBPF RTT Layer (Collector Phase 2)
 
+
+> **Language note (2026-07-30):** this research note predates the 2026-07-25 decision to
+> write the v2 collector in Python (`docs/collector/SUGGESTIONS.md` §2). File names below
+> are the Python modules; the findings themselves are language-independent.
+
 **Status:** Literature reviewed (Sundberg 2024). Compatibility matrix populated from known fleet versions. Prototype requires live Raspberry Pi access — pending.
 
 ---
@@ -12,7 +17,7 @@
 - Attaches a BPF program at the **TC (Traffic Control) egress hook** on the monitored interface
 - Matches outgoing ICMP Echo Request packets, records `{flow_id, seq, timestamp}` in a **BPF hash map**
 - On incoming ICMP Echo Reply, computes RTT = `reply_timestamp - stored_request_timestamp`
-- Exports RTT samples via BPF ring buffer → userspace Go reader (`cilium/ebpf`)
+- Exports RTT samples via BPF ring buffer → userspace Python reader (`bcc` bindings; `cilium/ebpf` was the Go-era choice)
 - Does NOT inject traffic — purely passive observation of existing probe traffic
 
 ### Hook Choice: TC vs. XDP
@@ -120,7 +125,7 @@ This fallback must be covered by a unit test that mocks the capability check fun
 1. Clone epping source (Apache-2.0): `git clone https://github.com/csperkins/epping`
 2. Vendor the BPF C source into `collector/ebpf/epping.bpf.c`
 3. Compile: `clang -target bpf -O2 -c epping.bpf.c -o epping.bpf.o`
-4. Load via `cilium/ebpf` in a throwaway `cmd/ebpf-test/main.go`
+4. Load via `bcc` in a throwaway standalone script
 5. Run `ping 8.8.8.8` in background; verify epping ring buffer emits RTT samples
 6. Confirm RTT samples match active ICMP probe RTT within ±2ms
 7. Test graceful fallback: run as unprivileged user, confirm log warning not crash
@@ -137,4 +142,4 @@ This fallback must be covered by a unit test that mocks the capability check fun
 
 ## Next Implementation Step
 
-Complete prototype on Raspberry Pi (Step 6.3). Then integrate into `collector/main.go` behind the capability-check fallback gate. Create `collector/ebpf/` package with the BPF C source vendored.
+Complete prototype on Raspberry Pi (Step 6.3). Then integrate into `collector/__main__.py` behind the capability-check fallback gate. Create a `collector/checks/ebpf/` package with the BPF C source vendored. Note that `bcc` is installed via `apt install python3-bpfcc`, not pip, and is not PyInstaller-bundlable.

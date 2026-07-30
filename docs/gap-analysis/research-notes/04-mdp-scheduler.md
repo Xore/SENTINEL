@@ -1,5 +1,10 @@
 # Topic 4: MDP Adaptive Scheduler (Collector Phase 4)
 
+
+> **Language note (2026-07-30):** this research note predates the 2026-07-25 decision to
+> write the v2 collector in Python (`docs/collector/SUGGESTIONS.md` §2). File names below
+> are the Python modules; the findings themselves are language-independent.
+
 **Status:** Literature reviewed (Zabala et al. 2023). Dataset extraction query written. Threshold validation and backtest require live SQLite data — pending.
 
 ---
@@ -120,4 +125,4 @@ Only ship Phase 4 if mean improvement > 0% and missed outage count = 0.
 
 ## Next Implementation Step
 
-Run `scripts/mdp_backtest.py` against the live `monitor.db`. Then implement `collector/scheduler_mdp.go` using the validated thresholds from `config/mdp-profiles.toml`.
+Run `scripts/mdp_backtest.py` against the live `monitor.db`. Then implement the adaptive-interval layer in `collector/scheduler.py` using the validated thresholds from `config/mdp-profiles.toml`. The scheduler exists today as a priority queue with a fixed per-check `interval_s`; this note supplies the adaptation on top of it, not a second scheduler.

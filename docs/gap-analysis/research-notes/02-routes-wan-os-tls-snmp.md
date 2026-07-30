@@ -1,5 +1,10 @@
 # Topic 2: Route Table, WAN Checks, OS Health, TLS, SNMP (Collector Phase 1)
 
+
+> **Language note (2026-07-30):** this research note predates the 2026-07-25 decision to
+> write the v2 collector in Python (`docs/collector/SUGGESTIONS.md` §2). File names below
+> are the Python modules; the findings themselves are language-independent.
+
 Status: Research complete per `../research-guide-for-gap-topics.md` §2.
 
 ## Standards Reviewed
@@ -9,7 +14,7 @@ Status: Research complete per `../research-guide-for-gap-topics.md` §2.
 
 ## Platform Compatibility Findings
 
-- `ip -j route` (JSON output) requires iproute2 ≥ v4.12. Older Raspberry Pi OS "Legacy"/Buster-era images may ship an older iproute2 and silently fail JSON parsing — flagged as an open compatibility risk that must be verified against the actual fleet's `iproute2 -V` before relying on `-j` in `net_routes.go`.
+- `ip -j route` (JSON output) requires iproute2 ≥ v4.12. Older Raspberry Pi OS "Legacy"/Buster-era images may ship an older iproute2 and silently fail JSON parsing — flagged as an open compatibility risk that must be verified against the actual fleet's `iproute2 -V` before relying on `-j` in `checks/net_routes.py`.
 - Windows equivalent (`route print -4`) has no JSON mode; text parsing of the `0.0.0.0` default line remains necessary.
 - `Get-NetAdapterStatistics` (Windows) and `/proc/net/dev` (Linux) both confirmed to work without elevation.
 
@@ -31,4 +36,4 @@ Status: Research complete per `../research-guide-for-gap-topics.md` §2.
 
 ## Next Implementation Step
 
-Implement `collector/net_routes.go`, `collector/net_wan.go`, `collector/os_health.go` (+ `_linux`/`_windows` variants), `collector/tls_check.go`, and `collector/ot_snmp.go` per the file layout already defined in `docs/collector/SUGGESTIONS.md` §5, gated on the soak test above before merging to production use.
+Implement `collector/checks/net_routes.py`, `collector/checks/net_wan.py`, `collector/checks/net_tls.py`, and `collector/checks/net_snmp.py` per the file layout in `docs/collector/SUGGESTIONS.md` §5. The OS-health portion is already built as the seven `collector/checks/host_*.py` modules (Linux only; no Windows variant yet), gated on the soak test above before merging to production use.

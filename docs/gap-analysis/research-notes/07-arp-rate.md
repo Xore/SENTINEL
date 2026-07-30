@@ -1,5 +1,10 @@
 # Topic 7: ARP-Rate / Broadcast-Storm Thresholds (Collector Phase 3)
 
+
+> **Language note (2026-07-30):** this research note predates the 2026-07-25 decision to
+> write the v2 collector in Python (`docs/collector/SUGGESTIONS.md` §2). File names below
+> are the Python modules; the findings themselves are language-independent.
+
 **Status:** Literature reviewed (Brügge & Simon 2024). Baseline collection query written. Threshold derivation requires 7+ days of live ARP data — pending.
 
 ---
@@ -77,7 +82,7 @@ print(f'ARP anomaly threshold: {threshold_N:.1f} ARP replies/min')
 print(f'(mean={mean_rate:.1f}, std={std_rate:.1f}, 7-day baseline)')
 ```
 
-This threshold value is what gets hard-coded into `collector/net_arp_watch.go` — **not an arbitrary constant**.
+This threshold value is what gets hard-coded into `collector/checks/net_arp_watch.py` — **not an arbitrary constant**.
 
 ---
 
@@ -100,8 +105,8 @@ Document actual measured baselines per segment after 7-day collection.
 - [ ] Per-segment mean and standard deviation computed
 - [ ] Anomaly threshold N = mean + 3σ calculated and documented per segment
 - [ ] Threshold validated against known-busy periods (game server sessions, backup runs)
-- [ ] Threshold N committed to `collector/net_arp_watch.go` with derivation comment referencing this document
+- [ ] Threshold N committed to `collector/checks/net_arp_watch.py` with derivation comment referencing this document
 
 ## Next Implementation Step
 
-Extend `scripts/l2-health.sh` to log ARP counts with timestamps. After 7-day collection, run the derivation script above. Then implement `collector/net_arp_watch.go` using the derived threshold.
+Extend `scripts/l2-health.sh` to log ARP counts with timestamps. After 7-day collection, run the derivation script above. Then implement `collector/checks/net_arp_watch.py` using the derived threshold.

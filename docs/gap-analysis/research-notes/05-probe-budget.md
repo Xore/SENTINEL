@@ -1,5 +1,10 @@
 # Topic 5: Frank-Wolfe Probe-Budget Allocation (Collector Phase 5)
 
+
+> **Language note (2026-07-30):** this research note predates the 2026-07-25 decision to
+> write the v2 collector in Python (`docs/collector/SUGGESTIONS.md` §2). File names below
+> are the Python modules; the findings themselves are language-independent.
+
 **Status:** Literature reviewed (Amjad et al. 2021). Small-N simulation design ready. Simulation requires historical RTT data from Step 4.2 — depends on Topic 4 dataset extraction.
 
 ---
@@ -95,4 +100,4 @@ Constraint: `allocation[i] >= 1` (every target gets at least 1 probe per cycle).
 
 ## Next Implementation Step
 
-Run `scripts/welford_variance_sim.py` using the RTT dataset from `scripts/mdp_backtest.py`. If simulation shows benefit, implement `collector/scheduler_probe_budget.go`. If not, document the finding and skip Phase 5 for this deployment scale.
+Run `scripts/welford_variance_sim.py` using the RTT dataset from `scripts/mdp_backtest.py`. If simulation shows benefit, implement `collector/scheduler_probe_budget.py`. If not, document the finding and skip Phase 5 for this deployment scale.

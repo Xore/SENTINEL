@@ -1,6 +1,6 @@
 # v2 Collector — Implementation Status
 
-> **Updated:** 2026-07-26
+> **Updated:** 2026-07-30
 > **Scope:** Implementation status of the v2 Python collector (`collector/`) phases defined in
 > [`docs/collector/ROADMAP.md`](../collector/ROADMAP.md) and
 > [`docs/collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md).
@@ -8,93 +8,122 @@
 
 ## Architecture overview
 
-The v2 collector is a **Python 3.12 asyncio process** packaged as a PyInstaller single-file binary.
+The v2 collector is a **Python 3.12 asyncio process**, intended to ship as a PyInstaller
+single-file binary (packaging is designed, not yet built — see phase B1).
 It runs on any node (Linux amd64/arm64, Windows x64), collects telemetry locally, and pushes
-all data to the aggregator hub via **OTLP/gRPC over mTLS**. There is no Flask dashboard,
-no Go binary, and no SQLite on the collector node.
+all data to the aggregator hub via **OTLP/gRPC over mTLS**. There is no Flask dashboard
+and no Go binary on the collector node. It does keep a local SQLite database: the cold
+store below is the collector's own durable queue, which is what lets it survive a 24 h
+backend outage.
 
-| Layer | Technology |
-|---|---|
-| Runtime | Python 3.12 + `asyncio` |
-| Transport | OTLP/gRPC (`opentelemetry-exporter-otlp-proto-grpc`) |
-| Security | mTLS — `grpc.ssl_channel_credentials()` + PKI auto-enroll/renew |
-| Scheduling | asyncio priority-queue MDP scheduler (`collector/scheduler.py`) |
-| Buffering | `lmdb` hot ring buffer (30 min) + `sqlite3` cold store (24 h) |
-| Distribution | PyInstaller `--onefile`; Docker multi-arch builds (amd64 + arm64) |
+| Layer | Technology | Built? |
+|---|---|---|
+| Runtime | Python 3.12 + `asyncio` | yes — `collector/__main__.py` |
+| Transport | OTLP/gRPC (`opentelemetry-exporter-otlp-proto-grpc`) | yes — `collector/transport/otlp.py` |
+| Security | mTLS — `grpc.ssl_channel_credentials()` + PKI auto-enroll/renew | enroll yes (`pki/enroll.py`), auto-renew no |
+| Scheduling | asyncio priority-queue MDP scheduler (`collector/scheduler.py`) | priority queue with fixed per-check `interval_s`, yes; MDP interval *adaptation* is not implemented — see [`04-mdp-scheduler.md`](research-notes/04-mdp-scheduler.md) |
+| Buffering | `lmdb` hot ring buffer (30 min) + `sqlite3` cold store (24 h) | cold store yes (`store/sqlite_queue.py`); hot ring buffer not written |
+| Distribution | PyInstaller `--onefile`; Docker multi-arch builds (amd64 + arm64) | no — no spec file and no collector Dockerfile exist yet |
 
 ---
 
 ## Phase implementation status
 
-| Phase | Description | Status |
-|---|---|---|
-| **1** | Core bootstrap: config, asyncio loop, OTLP export, mTLS, PKI enroll | 🔲 Pending |
-| **2** | Core probes: ICMP, TCP, HTTP, DNS, RTT histogram | 🔲 Pending |
-| **3** | OS health: CPU/mem/disk/uptime (Linux `/proc`; Windows `psutil`), systemd unit state | 🔲 Pending |
-| **4** | Store & retry: `lmdb` hot buffer, `sqlite3` cold store, exponential backoff retry | 🔲 Pending |
-| **5** | PKI auto-renew + health score (0.0–1.0 gauge) | 🔲 Pending |
-| **C4** | Wi-Fi health: RSSI, link speed, AP change detection (Linux `iw`; Windows `netsh`) | 🔲 Pending |
-| **C6** | MTR hop-tracing: native ICMP TTL-exceeded, no external binary, `CAP_NET_RAW` | 🔲 Pending |
-| **C8** | SNMP v2c/v3 GET/WALK (`pysnmp` asyncio) | 🔲 Pending |
-| **C9** | ARP watch: `/proc/net/arp` polling, new-entry detection | 🔲 Pending |
-| **C10** | Modbus TCP passive monitoring (`pymodbus`, Linux only) | 🔲 Pending |
-| **C11** | Broadcast/multicast top-talker: `scapy.AsyncSniffer`, 30 s window, top-N=10 | 🔲 Pending — research gate (see below) |
-| **C13** | eBPF flow tracking: `bcc` Python bindings, `CAP_BPF + CAP_PERFMON` (Linux 5.8+) | 🔲 Pending — research gate (see below) |
-| **B1/B2** | PyInstaller build pipeline + GitHub Actions CI | 🔲 Pending |
+> **What "Built" means here.** This column describes what exists in the tree, nothing
+> more. It is *not* the work board. A phase can be fully written and still have its
+> work item sitting in `REVIEW`, because only the reviewing agent marks an item `DONE`.
+> The authoritative per-item state is the Active Work Board in
+> [`AGENT-COORDINATION.md`](../guides/AGENT-COORDINATION.md); where the two disagree,
+> the work board wins on *item status* and this table wins on *what code exists*.
+
+| Phase | Description | Built | Work item |
+|---|---|---|---|
+| **1** | Core bootstrap: config, asyncio loop, OTLP export, mTLS, PKI enroll | ✅ `config.py`, `scheduler.py`, `transport/otlp.py`, `transport/mtls.py`, `pki/enroll.py`, `__main__.py` | S0-01/S1-01/S1-02/S2-01 `DONE` |
+| **2** | Core probes: ICMP, TCP, HTTP, DNS, RTT histogram | ✅ all five `checks/net_*.py` | S2-02 `REVIEW` — not approved, 3 corrections outstanding |
+| **3** | OS health: CPU/mem/disk/uptime (Linux `/proc`; Windows `psutil`), systemd unit state | ◐ seven Linux `checks/host_*.py` modules exist; metric emission and runtime registration are not wired, and there is no Windows implementation | S3-01A `REVIEW`; S3-01B `QUEUED` (Codex) |
+| **4** | Store & retry: `lmdb` hot buffer, `sqlite3` cold store, exponential backoff retry | ◐ cold store built (`store/envelope.py`, `store/sqlite_queue.py`); `store/hot.py` and `transport/retry.py` not written | S4-01A `REVIEW`; S4-01B `QUEUED` (Codex) |
+| **5** | PKI auto-renew + health score (0.0–1.0 gauge) | 🔲 `pki/renew.py` and `health/score.py` absent; `health/` holds only `loop_watchdog.py` | S5-01 `QUEUED`, gated on 2/3/4 `DONE` |
+| **C4** | Wi-Fi health: RSSI, link speed, AP change detection (Linux `iw`; Windows `netsh`) | 🔲 | unqueued |
+| **C6** | MTR hop-tracing: native ICMP TTL-exceeded, no external binary, `CAP_NET_RAW` | 🔲 | unqueued |
+| **C8** | SNMP v2c/v3 GET/WALK (`pysnmp` asyncio) | 🔲 — `pysnmp` is already pinned | unqueued |
+| **C9** | ARP watch: `/proc/net/arp` polling, new-entry detection | 🔲 | unqueued |
+| **C10** | Modbus TCP passive monitoring (`pymodbus`, Linux only) | 🔲 — `pymodbus` is already pinned | unqueued |
+| **C11** | Broadcast/multicast top-talker: `scapy.AsyncSniffer`, 30 s window, top-N=10 | 🔲 — research gate R1 (see below) | unqueued |
+| **C13** | eBPF flow tracking: `bcc` Python bindings, `CAP_BPF + CAP_PERFMON` (Linux 5.8+) | 🔲 — research gate R2 (see below) | unqueued |
+| **B1** | PyInstaller build pipeline (`--onefile`, amd64 + arm64) | 🔲 no `.spec` file and no collector Dockerfile in the tree; `pyinstaller` is a dev dependency only | unqueued; research gate R3 |
+| **B2** | GitHub Actions CI | ◐ `collector.yml`, `backend.yml`, `pylint.yml`, `codeql.yml`, `integration-test.yml`, `container-supply-chain.yml` all exist and run; no binary-artifact job | C1-01/C1-03/C1-04 `DONE`, C1-02 `IN_PROGRESS`, C2-03 `REVIEW` |
+
+Legend: ✅ built · ◐ partially built · 🔲 not started.
 
 ---
 
 ## Feature coverage by phase
 
-### Metrics produced when all phases ship
+### Metrics
 
-| Category | Metrics |
-|---|---|
-| ICMP reachability | `icmp_rtt_ms`, `icmp_loss_pct` per target |
-| TCP connectivity | `tcp_connect_ms`, `tcp_connect_ok` per target:port |
-| HTTP/HTTPS | `http_status_code`, `http_rtt_ms`, `http_tls_expiry_days` |
-| DNS | `dns_resolve_ms`, `dns_ok` |
-| OS health | `cpu_utilization_pct`, `mem_used_bytes`, `disk_used_bytes`, `uptime_seconds` |
-| Systemd | `systemd_unit_active{unit}` |
-| Wi-Fi | `wifi_rssi_dbm`, `wifi_link_speed_mbps`, `wifi_ap_changes_total` |
-| MTR hops | `mtr_hop_rtt_ms{hop,hop_ip}`, `mtr_hop_loss_pct{hop,hop_ip}` |
-| SNMP | `snmp_sysuptime_seconds`, `snmp_if_oper_status{ifindex}` |
-| ARP | `arp_new_entries_total`, `arp_table_size` |
-| Modbus | `modbus_coil_value{address}`, `modbus_register_value{address}` |
-| Bcast/mcast | `bcast_top_talker_bytes_total`, `bcast_top_talker_pkts_total`, `bcast_segment_rate_pps` |
-| eBPF flows | `ebpf_flow_bytes_total{src,dst,proto}`, `ebpf_flow_rtt_ms{src,dst}` |
-| Health | `collector_health_score` (0.0–1.0) |
+**[`docs/contracts/METRICS.md`](../contracts/METRICS.md) is the authority.** Names are not
+repeated here, because the sketch that used to sit in this section had drifted away from
+the contract on every axis that matters: it dropped the `sentinel_` prefix, used `_ms`
+and `_pct` where the contract mandates base units (`_seconds`, `_ratio`), and carried
+free-form labels — `{src,dst}`, `{address}`, `{hop_ip}`, `{unit}` — of exactly the
+unbounded-cardinality kind the contract's bounded-label policy forbids. Implementing from
+that list would have produced a non-conforming collector.
+
+Shipped today, all under §"Core probe families" of the contract, all `target_id`-labelled
+and cardinality-capped: `sentinel_collector_icmp_rtt_seconds`,
+`sentinel_collector_icmp_loss_ratio`, `sentinel_collector_tcp_connect_seconds`,
+`sentinel_collector_http_response_seconds`, `sentinel_collector_dns_resolve_seconds`,
+`sentinel_collector_latency_{rtt,jitter}_seconds`,
+`sentinel_collector_latency_loss_ratio`, plus the runtime families
+(`heartbeat_total`, `check_runs_total`, `check_duration_seconds`,
+`export_failures_total`, `cycle_duration_seconds`, `event_loop_lag_seconds`).
+
+**Not yet contract-defined:** host health (phase 3), Wi-Fi, MTR, SNMP, ARP, Modbus,
+broadcast/multicast, eBPF flows, and `collector_health_score`. Each needs families added
+to `METRICS.md` *before* its phase is implemented, and each needs a bounded label chosen
+deliberately — the open cases are recorded as Q-13 (multi-mount disk) in
+[`AGENT-COORDINATION.md`](../guides/AGENT-COORDINATION.md). Per-flow and per-address
+identifiers (eBPF `{src,dst}`, Modbus `{address}`, MTR `{hop_ip}`) are the hardest of
+these and should not be assumed admissible.
 
 ---
 
-## Open research gates (must close before coding phase)
+## Open research gates
+
+These gate the phases named below. They do **not** gate the project as a whole — phases 1
+through 4 were implemented without needing them. All three require a physical Raspberry Pi
+3B, which is why none has closed.
 
 | # | Topic | Blocks | Research doc |
 |---|---|---|---|
-| R1 | `scapy.AsyncSniffer` CPU overhead on Pi 3B at OT rates (<100 pps) | Phase C11 | [`docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md`](../tasks/RESEARCH-BCAST-MCAST-GOPACKET.md) |
-| R2 | `bcc` Python bindings on Raspberry Pi OS: kernel BPF support, `python3-bpfcc` availability | Phase C13 | TBD — `docs/tasks/RESEARCH-EBPF-BCC-RPI.md` |
-| R3 | PyInstaller `--onefile` startup time on Pi 3B: acceptable for systemd `ExecStartPre`? | Phase B1 | TBD — `docs/tasks/RESEARCH-PYINSTALLER-RPI.md` |
+| R1 | `scapy.AsyncSniffer` CPU overhead on Pi 3B at OT rates (<100 pps) | Phase C11 | [`docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md`](../tasks/RESEARCH-BCAST-MCAST-GOPACKET.md) — exists; its Go-era filename and `gopacket` framing predate the Python decision |
+| R2 | `bcc` Python bindings on Raspberry Pi OS: kernel BPF support, `python3-bpfcc` availability | Phase C13 | **not written** — `docs/tasks/` contains only the R1 document |
+| R3 | PyInstaller `--onefile` startup time on Pi 3B: acceptable for systemd `ExecStartPre`? | Phase B1 | **not written** |
 
 ---
 
-## Dependency snapshot (all phases)
+## Dependencies
 
-```
-opentelemetry-sdk==1.25.0
-opentelemetry-exporter-otlp-proto-grpc==1.25.0
-grpcio==1.64.1
-grpcio-status==1.64.1
-pydantic==2.7.4
-pydantic-settings==2.3.4
-structlog==24.2.0
-cryptography==42.0.8
-aiohttp==3.9.5
-dnspython==2.6.1
-psutil==5.9.8
-lmdb==1.4.7
-pysnmp==6.2.5
-pymodbus==3.6.9
-scapy==2.5.0
-```
+**[`collector/requirements.txt`](../../collector/requirements.txt) is the single source of
+truth.** Pins are deliberately not copied here.
 
-> Full rationale for each dependency in [`docs/collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md).
+The snapshot this section used to carry had drifted on all eleven shared pins, omitted
+`PyYAML` and `uvloop`, and listed `psutil` — which is not a collector dependency; the
+Linux host modules read `/proc` and `os.statvfs` directly. Worse, it published a
+combination that **cannot be installed**: `opentelemetry-sdk==1.25.0` pulls
+`opentelemetry-proto`, which requires `protobuf<5.0`, while `grpcio-status==1.64.1`
+requires `protobuf>=5.26.1`. `requirements.txt` records that conflict and pins a resolved
+pair instead. Anyone following the old block hit a resolver failure on their first
+`pip install`.
+
+Two dependencies are deliberately not in `requirements.txt`:
+
+- **`bcc`** (eBPF, phase C13) — installed via the OS package manager
+  (`apt install python3-bpfcc`), not pip, and guarded by an import check. It is not
+  PyInstaller-bundlable.
+- **`uvloop`** is present but conditional (`sys_platform == "linux"`) and soft; see
+  [`ASYNCIO-OPTIMIZATION.md`](../guides/ASYNCIO-OPTIMIZATION.md) §7 and the import guard
+  in `collector/__main__.py`.
+
+> Rationale for each dependency choice is in
+> [`docs/collector/COLLECTOR-V2-REFACTOR.md`](../collector/COLLECTOR-V2-REFACTOR.md).

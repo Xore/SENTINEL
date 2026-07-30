@@ -1,5 +1,10 @@
 # Topic 3: OT Protocol Checks (Modbus, S7, BACnet, OPC-UA)
 
+
+> **Language note (2026-07-30):** this research note predates the 2026-07-25 decision to
+> write the v2 collector in Python (`docs/collector/SUGGESTIONS.md` §2). File names below
+> are the Python modules; the findings themselves are language-independent.
+
 **Status:** Research literature reviewed. Simulator prototype design ready. Hard safety gate (controls-owner sign-off) not yet obtained — this is a required pre-condition before any live OT query.
 
 ---
@@ -117,4 +122,4 @@ Typical PLC connection-table limits:
 
 ## Next Implementation Step
 
-Create `collector/ot_modbus.go`, `collector/ot_s7.go`, `collector/ot_bacnet.go`, `collector/ot_opcua.go` with read-only enforcement as specified above. Gate merge on simulator test pass + controls-owner sign-off.
+Create `collector/checks/ot_modbus.py`, `collector/checks/ot_s7.py`, `collector/checks/ot_bacnet.py`, `collector/checks/ot_opcua.py` with read-only enforcement as specified above. Gate merge on simulator test pass + controls-owner sign-off.

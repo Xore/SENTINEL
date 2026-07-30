@@ -1411,7 +1411,8 @@ not speak to the finding above, because no gate exercises a slow resolver.
 ### A-DOCS-1 — Sonnet 5 collector-docs accuracy claim
 
 - **Timestamp:** 2026-07-30T13:48:34Z.
-- **Status:** IN_PROGRESS.
+- **Status:** COMPLETE — all three defects corrected; claim released. No file
+  outside the claimed documentation set was touched.
 - **Why:** every collector *coding* scope is currently frozen (S2-02, S3-01A,
   S4-01A in `REVIEW`), owned by Codex (S3-01B, S4-01B, C1-02), or gated
   (S5-01). What is not frozen is the collector's own roadmap documentation,
@@ -1452,6 +1453,56 @@ not speak to the finding above, because no gate exercises a slow resolver.
   what exists in the tree. It does not mark any work-board item `DONE`, and
   the phase table will say so explicitly where an item is still in `REVIEW`.
 - **Exit:** one pushed commit, then remote read-back.
+
+**Results.**
+
+1. **Status table rebuilt against the tree.** Phases 1 and 2 are built, 3 and 4
+   are half-built (Linux `host_*` modules with no metric wiring; cold store
+   without `store/hot.py` or `transport/retry.py`), 5 and C4–C13 are not
+   started, B1 is not started and B2 is largely built. The table now carries a
+   `Work item` column and an explicit note that "built" describes the tree and
+   never implies `DONE` — that distinction is what made the old table
+   dangerous to read either way.
+2. **Two unsatisfiable pin blocks removed.** `ROADMAP.md` §Phase 1 and the
+   status doc's dependency snapshot both published `opentelemetry-sdk==1.25.0`
+   with `grpcio-status==1.64.1`, which cannot resolve (`protobuf<5.0` against
+   `protobuf>=5.26.1`). `collector/requirements.txt` had already found and
+   fixed this; only the docs still shipped the broken pair. Both blocks are now
+   pointers to `requirements.txt` rather than copies, which is what stops the
+   drift recurring. The snapshot was also stale on all eleven shared pins,
+   omitted `PyYAML` and `uvloop`, and listed `psutil`, which is not a
+   dependency — the Linux host modules read `/proc` and `os.statvfs` directly.
+3. **Go-era prescriptions corrected in seven research notes.** They named
+   `collector/net_icmp.go`, `net_interfaces.go`, `net_routes.go`, `net_wan.go`,
+   `os_health.go`, `tls_check.go`, `ot_snmp.go`, `ot_modbus.go`, `ot_s7.go`,
+   `ot_bacnet.go`, `ot_opcua.go`, `scheduler_mdp.go`, `scheduler_probe_budget.go`,
+   `net_arp_watch.go`, `cmd/ebpf-test/main.go` and `collector/main.go`, plus a
+   `cilium/ebpf` userspace reader. Each is now its Python module path, each note
+   carries a dated language banner, and the eBPF note records that `bcc` comes
+   from `apt`, not pip, and is not PyInstaller-bundlable.
+
+**Two findings raised rather than fixed, both outside this claim:**
+
+- The status doc's metric sketch violated `METRICS.md` on every axis — no
+  `sentinel_` prefix, `_ms`/`_pct` instead of `_seconds`/`_ratio`, and
+  free-form `{src,dst}`, `{address}`, `{hop_ip}`, `{unit}` labels of exactly
+  the unbounded kind the contract forbids. Implementing from it would have
+  produced a non-conforming collector. The section now defers to the contract
+  and marks host, Wi-Fi, MTR, SNMP, ARP, Modbus, bcast and eBPF families as
+  *not yet contract-defined*, flagging per-flow and per-address identifiers as
+  the hard label cases. **No contract file was edited** — adding those families
+  is contract work, and Q-13 already has one such case open.
+- `research-notes/09-sqlite-tsdb.md` still points at `monitor/db/db.go` and a
+  Go flush goroutine. That is the **v1 standalone monitor**, not the v2
+  collector, and `monitor/` does not exist in this repository — so it is a
+  different question from the drift above and needs a decision (retarget, or
+  archive as v1 history) rather than a rename. Left untouched; not claimed.
+  Similarly `docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md` keeps its Go-era
+  filename, and research gates R2 and R3 cite documents that were never
+  written — the status doc now says so instead of implying they exist.
+
+**Gates.** None apply: no Python, Go, workflow or contract file is in this
+change. `git diff --stat` is confined to `docs/`.
 
 ### C2-03 — Live probe metric workflow assertion
 
@@ -1725,9 +1776,46 @@ When an item becomes `DONE`, the reviewer:
 1. appends assignment, claim, handoff, review, results, decisions, and SHAs to
    `docs/archive/coordination/YYYY-MM-agent.md`;
 2. removes its active claim and detailed exchange here;
-3. updates the completed reference;
-4. commits and pushes archive plus compact ledger together;
-5. fetches and reads both files back from `origin/main`.
+3. **moves the documents that item consumed and fully discharged** into
+   `docs/archive/`, updating every inbound link in the same commit (see the
+   qualification test below);
+4. updates the completed reference;
+5. commits and pushes archive plus compact ledger together;
+6. fetches and reads both files back from `origin/main`.
+
+### Which documents move (user instruction, 2026-07-30)
+
+The standing instruction is to keep `docs/` lean by archiving the documents a
+finished task referenced. The qualification test is **discharge, not mention**:
+
+- A document moves when every action it prescribes is complete and nothing
+  live still depends on it — a task record, a closed research note, a
+  superseded design.
+- A document stays when it retains an open action item, an unticked exit
+  criterion, or an unresolved question, *even if the task that cited it is
+  `DONE`*. A research note whose implementation shipped but whose validation
+  checkbox is still open has not been discharged.
+- **Contracts never move while any queued work consumes them.**
+  `docs/contracts/**` is implementation authority for future phases;
+  `COLLECTOR-UPDATE-MANIFEST-V1.md` is cited by `QUEUED` S5-01 and stays
+  active regardless of C5-01 being `DONE`.
+
+Applying the test on 2026-07-30 (A-DOCS-1): **nothing qualifies yet.** Every
+work-board item is `REVIEW`, `QUEUED` or `IN_PROGRESS`; the completed items are
+already archived; and each of the nine research notes still carries an open
+next action. The documents that become archivable the moment their items reach
+`DONE`, so the reviewer does not have to re-derive the list:
+
+| When this is `DONE` | Move |
+|---|---|
+| S2-02 | `research-notes/01-baseline-parity.md`, once its ±1-sample validation against the standalone monitor is ticked |
+| S3-01A + S3-01B | the OS-health portion of `research-notes/02-routes-wan-os-tls-snmp.md`; the rest stays until routes/WAN/TLS/SNMP ship |
+| S4-01A + S4-01B | `research-notes/09-sqlite-tsdb.md` |
+| S5-01 | the S5 gate section here; **not** `contracts/COLLECTOR-UPDATE-MANIFEST-V1.md` |
+| C1-02 | the C1 exchanges here |
+
+`SONNET-5-WORK-QUEUE.md` moves only when S2-02, S3-01A and S4-01A are all
+`DONE` — it is still the cited authority for two items in `REVIEW`.
 
 Git history is the lossless source for verbose earlier ledger states. Monthly
 history is the readable durable index.

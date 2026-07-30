@@ -1,7 +1,13 @@
 # Collector v2 — Roadmap
 
 > **Language:** Python 3.12 (PyInstaller single-file binary)  
-> **Updated:** 2026-07-25 — Language changed from Go to Python. go.mod replaced with requirements.txt.
+> **Updated:** 2026-07-30 — Deliverable paths corrected to the modules that were actually
+> built, stale/unsatisfiable pin blocks replaced by a pointer to `requirements.txt`, and
+> metric sketches replaced by a pointer to the Metrics Contract.
+> Language changed from Go to Python on 2026-07-25; `go.mod` replaced with `requirements.txt`.
+>
+> Current build status per phase is in
+> [`gap-analysis-collector-vs-standalone.md`](../gap-analysis/gap-analysis-collector-vs-standalone.md).
 
 See [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md) for the full implementation design and phased plan.
 
@@ -22,17 +28,15 @@ See [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md) for the full implemen
 - `collector/transport/mtls.py` — `grpc.ssl_channel_credentials()` + cert loading
 - `collector/pki/enroll.py` — PKI enrollment: POST /pki/enroll, write collector.key + collector.crt
 
-### `requirements.txt` (at Phase 1)
-```
-opentelemetry-sdk==1.25.0
-opentelemetry-exporter-otlp-proto-grpc==1.25.0
-grpcio==1.64.1
-grpcio-status==1.64.1
-pydantic==2.7.4
-pydantic-settings==2.3.4
-structlog==24.2.0
-cryptography==42.0.8
-```
+### Dependencies
+
+Pins live in [`collector/requirements.txt`](../../collector/requirements.txt) and are not
+duplicated here. The block this section used to carry — `opentelemetry-sdk==1.25.0` with
+`grpcio-status==1.64.1` — is **unsatisfiable**: `opentelemetry-proto` requires
+`protobuf<5.0` and `grpcio-status` requires `protobuf>=5.26.1`. `requirements.txt` records
+the conflict and pins the resolved pair. Phase 1's dependency set is: OTLP SDK + gRPC
+exporter, `grpcio`/`grpcio-status`, `pydantic`/`pydantic-settings`, `PyYAML`, `structlog`,
+`cryptography`, and `uvloop` on Linux only.
 
 ---
 
@@ -47,11 +51,9 @@ cryptography==42.0.8
 - `checks/net_dns.py` — `dnspython` asyncio DNS resolution
 - `checks/net_latency.py` — RTT histogram + jitter (wraps net_icmp)
 
-### `requirements.txt` additions
-```
-aiohttp==3.9.5
-dnspython==2.6.1
-```
+### Dependencies added
+
+`aiohttp` (HTTP probing) and `dnspython` (DNS probing) — both already pinned in `requirements.txt`.
 
 ---
 
@@ -60,14 +62,21 @@ dnspython==2.6.1
 **Goal:** Bundle all host metrics natively. No `node_exporter` dependency.
 
 ### Deliverables
-- `os_health/linux.py` — `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/proc/uptime`, `os.statvfs`
-- `os_health/windows.py` — `psutil` / WMI for Windows host metrics
-- `os_health/processes.py` — `subprocess(['systemctl', 'show', ...])` for Linux; `win32service` for Windows
 
-### `requirements.txt` additions
-```
-psutil==5.9.8   # Windows host metrics fallback
-```
+Built as seven per-family modules under `checks/`, not the single `os_health/` package
+originally sketched, so each host family is a `Check` like every probe and goes through
+the same scheduler and timeout path:
+
+- `checks/host_cpu.py`, `checks/host_memory.py`, `checks/host_load.py` — `/proc/stat`, `/proc/meminfo`, `os.getloadavg`
+- `checks/host_disk.py` — `os.statvfs`
+- `checks/host_network.py` — `/proc/net/dev`
+- `checks/host_process.py`, `checks/host_service.py` — process counts; `systemctl show` for unit state
+- Windows equivalents (`psutil` / WMI / `win32service`) — not written
+
+### Dependencies added
+
+None on Linux: the host modules read `/proc` and `os.statvfs` directly, so `psutil` was
+never added. A Windows implementation would need it; none exists yet.
 
 ---
 
@@ -76,14 +85,15 @@ psutil==5.9.8   # Windows host metrics fallback
 **Goal:** 24 h offline resilience.
 
 ### Deliverables
-- `store/hot.py` — `lmdb` ring buffer: last 30 min of metric samples
-- `store/cold.py` — `sqlite3` (stdlib): historical samples, WAL mode
-- `transport/retry.py` — exponential backoff queue; spills to lmdb on backend unreachable
+- `store/envelope.py` — immutable versioned envelope with checksum (built)
+- `store/sqlite_queue.py` — `sqlite3` (stdlib) cold queue, WAL mode (built; replaces the sketched `store/cold.py`)
+- `store/hot.py` — `lmdb` ring buffer: last 30 min of metric samples (not written)
+- `transport/retry.py` — exponential backoff queue; spills to lmdb on backend unreachable (not written)
 
-### `requirements.txt` additions
-```
-lmdb==1.4.7
-```
+### Dependencies added
+
+`lmdb` — already pinned. The cold store (`store/sqlite_queue.py`) uses stdlib `sqlite3`
+and needs nothing extra; `lmdb` is for the hot ring buffer, which is not written yet.
 
 ---
 
@@ -102,9 +112,10 @@ lmdb==1.4.7
 - `checks/net_wifi_windows.py` — `subprocess(['netsh', 'wlan', 'show', 'interfaces'])`
 
 ### Metrics added
-```
-wifi_rssi_dbm, wifi_link_speed_mbps, wifi_ap_changes_total
-```
+
+Wi-Fi RSSI, link speed, and an AP-change counter. Exact family names, units, and bounded
+labels must be added to [`METRICS.md`](../contracts/METRICS.md) before implementation —
+the contract mandates base units (`_seconds`, `_bytes`, `_ratio`) and capped labels.
 
 ---
 
@@ -114,9 +125,9 @@ wifi_rssi_dbm, wifi_link_speed_mbps, wifi_ap_changes_total
 - `checks/net_mtr.py` — raw ICMP TTL-exceeded tracing; no external binary; `CAP_NET_RAW`
 
 ### Metrics added
-```
-mtr_hop_rtt_ms{hop, hop_ip}, mtr_hop_loss_pct{hop, hop_ip}
-```
+
+Per-hop RTT and loss. Not yet in [`METRICS.md`](../contracts/METRICS.md), and the label
+choice is the hard part: a raw `hop_ip` is unbounded and the contract forbids it.
 
 ---
 
@@ -125,10 +136,9 @@ mtr_hop_rtt_ms{hop, hop_ip}, mtr_hop_loss_pct{hop, hop_ip}
 ### Deliverables
 - `checks/net_snmp.py` — `pysnmp` asyncio SNMP v2c/v3 GET/WALK
 
-### `requirements.txt` additions
-```
-pysnmp==6.2.5
-```
+### Dependencies added
+
+`pysnmp` — already pinned.
 
 ---
 
@@ -144,10 +154,9 @@ pysnmp==6.2.5
 ### Deliverables
 - `checks/net_modbus.py` — `pymodbus` TCP passive monitoring (Linux only)
 
-### `requirements.txt` additions
-```
-pymodbus==3.6.9
-```
+### Dependencies added
+
+`pymodbus` — already pinned.
 
 ---
 
@@ -158,15 +167,15 @@ Research task: [`../tasks/RESEARCH-BCAST-MCAST-GOPACKET.md`](../tasks/RESEARCH-B
 ### Deliverables
 - `checks/net_bcast.py` — `scapy.AsyncSniffer`; BPF filter `ether broadcast or ether multicast`; 30 s window; top-N=10
 
-### `requirements.txt` additions
-```
-scapy==2.5.0
-```
+### Dependencies added
+
+`scapy` — already pinned.
 
 ### Metrics added
-```
-bcast_top_talker_bytes_total, bcast_top_talker_pkts_total, bcast_segment_rate_pps
-```
+
+Top-talker bytes/packets and a segment rate. Not yet in
+[`METRICS.md`](../contracts/METRICS.md); top-N=10 bounds the talker label, which is what
+makes this family admissible at all.
 
 ---
 
