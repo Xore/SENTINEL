@@ -107,15 +107,19 @@ site-server/
 
 ## 4. Open Questions
 
-| # | Question | Status |
+Moved to GitHub Issues on 2026-07-30 and folded into the phase that has to
+answer them, so a question is closed by the work that resolves it rather than
+lingering in this table.
+
+| # | Question | Now tracked as |
 |---|---|---|
-| Q1 | PyInstaller bundle reproducibility: are builds bit-for-bit reproducible for signed binary distribution? | Open — test with `--reproducible` flag (PyInstaller 6.x) |
-| Q2 | `bcc` on Raspberry Pi OS: `python3-bpfcc` package available? Kernel BPF enabled? | Open — needs hardware validation |
-| Q3 | scapy + CAP_NET_RAW on Raspberry Pi OS Lite (minimal install): any additional packages needed? | Open |
-| Q4 | Windows: PyInstaller `--onefile` startup time on Windows Defender real-time scan enabled? May need signing. | Open |
-| Q5 | lmdb on Windows: lmdb 1.4.x supports Windows; validate under PyInstaller bundle. | Open |
-| Q6 | pysnmp v6 async API: confirm asyncio compatibility with `asyncio.get_event_loop()` patterns in pysnmp 6.x. | Open |
-| Q7 | Federation agent: Python service in Docker Compose alongside `analyse`? Or separate systemd unit on site server? | **Decision: Docker Compose service** — consistent with `analyse`; same Python base image. |
+| Q1 | PyInstaller bundle reproducibility: are builds bit-for-bit reproducible for signed binary distribution? | [#46](https://github.com/Xore/SENTINEL/issues/46) (Phase B1) |
+| Q2 | `bcc` on Raspberry Pi OS: `python3-bpfcc` package available? Kernel BPF enabled? | [#44](https://github.com/Xore/SENTINEL/issues/44) (research gate R2) |
+| Q3 | scapy + `CAP_NET_RAW` on Raspberry Pi OS Lite: any additional packages needed? | [#42](https://github.com/Xore/SENTINEL/issues/42) (research gate R1) |
+| Q4 | Windows `--onefile` startup with Defender real-time scan enabled; may need signing | [#46](https://github.com/Xore/SENTINEL/issues/46) (Phase B1) |
+| Q5 | lmdb 1.4.x on Windows: validate under a PyInstaller bundle | [#35](https://github.com/Xore/SENTINEL/issues/35) (hot ring buffer) |
+| Q6 | pysnmp v6 async API: confirm asyncio compatibility | [#39](https://github.com/Xore/SENTINEL/issues/39) (Phase C8) |
+| Q7 | Federation agent: Compose service or separate systemd unit on the site server? | **Decided: Docker Compose service** — consistent with `analyse`; same Python base image. |
 
 ---
 

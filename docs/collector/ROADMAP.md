@@ -11,6 +11,31 @@
 
 See [`COLLECTOR-V2-REFACTOR.md`](COLLECTOR-V2-REFACTOR.md) for the full implementation design and phased plan.
 
+## Where the open work lives
+
+This file describes *what each phase is*. **What is still open, and who is on it,
+is tracked in [GitHub Issues](https://github.com/Xore/SENTINEL/issues?q=is%3Aissue+is%3Aopen+label%3Acollector)** —
+one issue per open phase, research gate, and design question. Phases with no
+issue below are complete.
+
+| Phase | Open work | Issue |
+|---|---|---|
+| 3 | Host-health metrics contract, configuration and runtime registration | [#31](https://github.com/Xore/SENTINEL/issues/31) |
+| 3 | Windows host-health implementation | [#36](https://github.com/Xore/SENTINEL/issues/36) |
+| 4 | Durable export spool and replay integration | [#32](https://github.com/Xore/SENTINEL/issues/32) |
+| 4 | `store/hot.py` lmdb ring buffer | [#35](https://github.com/Xore/SENTINEL/issues/35) |
+| 5 | Signed updater verifier and installer foundation | [#33](https://github.com/Xore/SENTINEL/issues/33) |
+| 5 | PKI auto-renew + collector health score | [#34](https://github.com/Xore/SENTINEL/issues/34) |
+| C4 | Wi-Fi health | [#37](https://github.com/Xore/SENTINEL/issues/37) |
+| C6 | MTR hop-tracing | [#38](https://github.com/Xore/SENTINEL/issues/38) |
+| C8 | SNMP | [#39](https://github.com/Xore/SENTINEL/issues/39) |
+| C9 | ARP watch | [#40](https://github.com/Xore/SENTINEL/issues/40) |
+| C10 | Passive Modbus | [#41](https://github.com/Xore/SENTINEL/issues/41) |
+| C11 | Broadcast/multicast top-talker | [#43](https://github.com/Xore/SENTINEL/issues/43) |
+| C13 | eBPF flow tracking | [#45](https://github.com/Xore/SENTINEL/issues/45) |
+| B1 | PyInstaller build pipeline | [#46](https://github.com/Xore/SENTINEL/issues/46) |
+| B2 | CI: binary artifacts, tag path, canary, rollback | [#48](https://github.com/Xore/SENTINEL/issues/48) |
+
 ---
 
 ## Phase 1 — Core Bootstrap (Weeks 1–2)
@@ -205,8 +230,10 @@ CAP_BPF + CAP_PERFMON (Linux 5.8+)
 
 ## Open Research Tasks
 
-| # | Task | Doc |
-|---|---|---|
-| R1 | scapy AsyncSniffer on the reference Pi 5: CPU overhead at OT rates (<100 pps) | `docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md` (scapy replaces gopacket; re-baselined off the Pi 3B by [ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)) |
-| R2 | bcc Python bindings on Raspberry Pi OS for the Pi 5: is `python3-bpfcc` packaged? (kernel BPF itself is no longer in doubt on 6.6+ arm64) | TBD |
-| R3 | PyInstaller --onefile startup time on the reference Pi 5: acceptable for systemd `ExecStartPre` health check? | TBD |
+All three require physical hardware, which is why none has closed.
+
+| # | Task | Issue | Doc |
+|---|---|---|---|
+| R1 | scapy AsyncSniffer on the reference Pi 5: CPU overhead at OT rates (<100 pps) | [#42](https://github.com/Xore/SENTINEL/issues/42) | `docs/tasks/RESEARCH-BCAST-MCAST-GOPACKET.md` (scapy replaces gopacket; re-baselined off the Pi 3B by [ADR 0012](../architecture/decisions/0012-collector-reference-hardware.md)) |
+| R2 | bcc Python bindings on Raspberry Pi OS for the Pi 5: is `python3-bpfcc` packaged? (kernel BPF itself is no longer in doubt on 6.6+ arm64) | [#44](https://github.com/Xore/SENTINEL/issues/44) | not written |
+| R3 | PyInstaller --onefile startup time on the reference Pi 5: acceptable for systemd `ExecStartPre` health check? | folded into [#46](https://github.com/Xore/SENTINEL/issues/46) | not written |

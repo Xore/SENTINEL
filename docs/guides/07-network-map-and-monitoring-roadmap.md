@@ -71,14 +71,22 @@ Hub endpoint **`GET /api/v2/map`** returns one graph document:
 
 ## Build phases
 
-### Phase A — Hub graph assembler `GET /api/v2/map`
+Each phase is tracked as a GitHub issue: [Phase A #61](https://github.com/Xore/SENTINEL/issues/61), [Phase B #62](https://github.com/Xore/SENTINEL/issues/62), [Phase C #63](https://github.com/Xore/SENTINEL/issues/63), [Phase D #64](https://github.com/Xore/SENTINEL/issues/64), [Phase E #65](https://github.com/Xore/SENTINEL/issues/65). This document is the
+design; the issues are the work list.
+
+None can be fed until the collector phases that produce their metrics exist —
+ARP watch ([#40](https://github.com/Xore/SENTINEL/issues/40)), MTR
+([#38](https://github.com/Xore/SENTINEL/issues/38)) and SNMP
+([#39](https://github.com/Xore/SENTINEL/issues/39)) are all unstarted.
+
+### Phase A — Hub graph assembler `GET /api/v2/map` ([#61](https://github.com/Xore/SENTINEL/issues/61))
 
 Hub ingest service consumes OTLP metric streams from enrolled collectors and
 assembles the node/edge model above. ARP watch metrics seed the host list;
 ICMP metrics drive `status`; MTR hop metrics build L3 edges; SNMP metrics
 provide vendor/interface detail.
 
-### Phase B — SvelteKit "Network Map" view
+### Phase B — SvelteKit "Network Map" view ([#62](https://github.com/Xore/SENTINEL/issues/62))
 
 New route `/map` in the hub SvelteKit frontend. **Hierarchical top-down layout**
 (Internet → WAN gateway → subnet clouds → devices), computed in-browser from
@@ -86,7 +94,7 @@ New route `/map` in the hub SvelteKit frontend. **Hierarchical top-down layout**
 (green/red/gray/amber), curved bézier edges, **connection legend**.
 Auto-refresh on a configurable interval; diff-in-place, no full redraw.
 
-### Phase C — Device classification
+### Phase C — Device classification ([#63](https://github.com/Xore/SENTINEL/issues/63))
 
 Infer `kind` for each node at hub ingest time:
 
@@ -96,13 +104,13 @@ Infer `kind` for each node at hub ingest time:
 - Role heuristics: default-gateway IP → firewall/router; Wi-Fi RSSI source → AP.
 - Manual tag override stored in hub DB (mirrors Auvik's Manage Tags).
 
-### Phase D — Map view modes + search/filter
+### Phase D — Map view modes + search/filter ([#64](https://github.com/Xore/SENTINEL/issues/64))
 
 - **View modes**: Hybrid / Layer 1 / Layer 2 / Layer 3 — filter edges by `layer`.
 - **Map search** over node fields (name, kind, status, vendor, subnet, IP, MAC).
 - Filter by status / kind / subnet; export map as SVG/PNG.
 
-### Phase E — Monitoring & inventory around the map (later)
+### Phase E — Monitoring & inventory around the map (later) ([#65](https://github.com/Xore/SENTINEL/issues/65))
 
 Lower priority: alert badges on map nodes, inventory tables, hardware/lifecycle
 status. These require hub-side alerting rules on top of the OTLP metric store.

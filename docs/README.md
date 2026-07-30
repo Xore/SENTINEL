@@ -4,10 +4,18 @@ This page is the front door for current project documentation. Start with the
 architecture, then use the contracts and implementation guide for the area you
 are changing. Completed task records live under [`archive/`](archive/README.md).
 
+**Open work is tracked in [GitHub Issues](https://github.com/Xore/SENTINEL/issues),
+not in these documents.** Every unstarted phase, research gate, and undecided
+design question has an issue; the documents here describe *what* each thing is
+and *why*, and the coordination ledgers carry the live claims and reviews for
+whatever is being worked on right now. If you are looking for something to pick
+up, start with the issue list.
+
 ## Start here
 
 | Need | Document |
 |---|---|
+| Something to work on | [Open issues](https://github.com/Xore/SENTINEL/issues) |
 | Target system design | [Extended architecture](architecture/ARCHITECTURE-V2-EXTENDED.md) |
 | Implementation order and ownership | [Sonnet implementation guide](guides/SONNET-5-IMPLEMENTATION-GUIDE.md) |
 | Current Codex/Sonnet work | [Agent coordination](guides/AGENT-COORDINATION.md) |
@@ -41,3 +49,5 @@ are changing. Completed task records live under [`archive/`](archive/README.md).
    architecture, ADRs, or contracts.
 5. A task document moves to `archive/` only after independent review marks the
    task `DONE`; unresolved or future work stays active.
+6. GitHub Issues are the backlog. A document states scope once; the issue links
+   it. When the two disagree about *what is still open*, the issue wins.

@@ -17,6 +17,8 @@ Read sections 1–3 first (context, constraints, repository map). Then follow se
 
 **When in doubt, read the source design doc first.** Every design decision is explained in one of the docs listed in section 2. Do not invent architecture — implement what is specified.
 
+**This guide tells you how to build; [GitHub Issues](https://github.com/Xore/SENTINEL/issues) tell you what is left.** Every unstarted phase, research gate, and undecided design question has an issue carrying its scope and exit criteria. Labels: `collector`, `backend`, `ci`, `network-map`, `research`, `design-question`, and `agent:*` for ownership. Before writing code, find the issue, publish an exact file claim in [`AGENT-COORDINATION.md`](AGENT-COORDINATION.md) naming it, and reference it in every commit (`Refs #NN`). Where this guide's phase list and an issue disagree about what is still open, the issue is right — this document is not updated on every landing.
+
 ---
 
 ## 1. Project Context

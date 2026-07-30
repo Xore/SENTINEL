@@ -6,6 +6,26 @@
 > **Purpose:** Implement the complete system in safe, testable vertical slices, including the single-site baseline and every extended feature.
 > **Important:** Treat repository inspection as the authority for what already exists. The `[EXISTS]` and `[CREATE]` labels in older guides are snapshots and may be stale.
 > **Multi-agent coordination:** Before planning or coding, read `docs/guides/AGENT-COORDINATION.md`. Codex and Sonnet 5 use that file as their durable handoff channel.
+> **Work list:** [GitHub Issues](https://github.com/Xore/SENTINEL/issues). Every open phase, research gate, and design question has one; the issue holds the scope and exit criteria.
+
+---
+
+## 0. Picking up work
+
+1. Choose from [the open issues](https://github.com/Xore/SENTINEL/issues) —
+   filter by `agent:sonnet` for what is already yours, `collector` /
+   `backend` / `ci` for area, `research` for hardware gates, and
+   `design-question` for decisions that must land before the code they gate.
+2. Read the issue. It carries the scope, the exact permitted file boundary
+   where one exists, and the exit criteria. Do not re-derive scope from the
+   design documents — they describe the *what and why*, the issue describes
+   *this piece of work*.
+3. Publish an exact file claim in `AGENT-COORDINATION.md` before editing
+   anything, naming the issue number.
+4. Reference the issue in every commit (`Refs #NN`) and in the `REVIEW`
+   handoff. The reviewer closes it when the item goes `DONE`.
+
+This guide's phase order still governs *sequence*; the issues govern *state*.
 
 ---
 

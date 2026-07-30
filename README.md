@@ -53,6 +53,11 @@ lacks headroom the deployment escalates to a small-form-factor x86-64 PC
 
 ### Design documents
 
+Open work — unstarted phases, research gates, undecided design questions — is
+tracked in [GitHub Issues](https://github.com/Xore/SENTINEL/issues). The
+documents below describe what each part of the system is and why; the issues
+say what is left to build.
+
 | Document | Contents |
 |---|---|
 | [`docs/architecture/ARCHITECTURE-V2-EXTENDED.md`](docs/architecture/ARCHITECTURE-V2-EXTENDED.md) | **Primary v2 design.** Single-site baseline, federation, HA, cross-site correlation, federated ML, OT isolation, RBAC, evidence |

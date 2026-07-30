@@ -32,6 +32,12 @@ The Sonnet coordination ledger remains separate:
    claim/exchange/review record to
    `docs/archive/coordination/YYYY-MM-codex-kimi.md`, leaving one summary row and
    links to the authoritative contract and implementation.
+9. **Every board item has a GitHub issue** — see the `Issue` column below and
+   [the issue list](https://github.com/Xore/SENTINEL/issues?q=is%3Aissue+is%3Aopen+label%3Abackend).
+   The issue carries the work-package contract; this file carries the live
+   claims, exchanges, and reviews. Name the issue in the claim, the commit
+   message, and the handoff (`Refs #NN`), and close it from the review that
+   marks the item `DONE`.
 
 ## Product Invariants
 
@@ -48,22 +54,22 @@ The Sonnet coordination ledger remains separate:
 
 ## Active Work Board
 
-| ID | Work item | Owner | Status | Prerequisites | Scope |
-|---|---|---|---|---|---|
-| CK-00 | Remove WireGuard and establish direct-routing invariant | CODEX | DONE | none | [July history](../archive/coordination/2026-07-codex-kimi.md) |
-| CK-BE-03A | Fleet operations PostgreSQL projection foundation | KIMI | DONE | none | [July history](../archive/coordination/2026-07-codex-kimi.md) |
-| CK-BE-01 | Maintenance-window contract, persistence, and API | CODEX | DONE | CK-00 REVIEW | [July history](../archive/coordination/2026-07-codex-kimi.md) |
-| CK-BE-02A | Alert lifecycle PostgreSQL foundation | KIMI | DONE | CK-BE-01 REVIEW | [July history](../archive/coordination/2026-07-codex-kimi.md) |
-| CK-BE-02B | Alert lifecycle HTTP integration | CODEX | DONE | CK-BE-02A DONE | [July history](../archive/coordination/2026-07-codex-kimi.md) |
-| CK-BE-03B | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
-| CK-BE-04A | Deterministic evidence bundle foundation | CODEX | REVIEW | none | X-020 correction; Sonnet second opinion X-023 says it discharges X-018 — awaiting Kimi's `DONE` |
-| CK-BE-04B | Audited evidence export integration | UNASSIGNED | QUEUED | CK-BE-04A DONE, CK-BE-06A DONE, CK-BE-06B DONE | exact claim required |
-| CK-BE-05A | Notification outbox and retry foundation | KIMI | DONE | CK-BE-02A REVIEW | [July history](../archive/coordination/2026-07-codex-kimi.md) — closed under user authorization, X-025 |
-| CK-BE-05B | Webhook/SMTP transports and operations integration | UNASSIGNED | QUEUED | CK-BE-05A DONE | exact claim required |
-| CK-BE-06A | Operational audit query foundation | KIMI | QUEUED | CK-BE-02A DONE | exact new-file scope below |
-| CK-BE-06B | Operational audit HTTP integration | KIMI | QUEUED | CK-BE-06A DONE | exact integration scope below |
-| CK-BE-07A | Maintenance suppression decision foundation | CODEX | READY | CK-BE-01 DONE | exact new-file scope below |
-| CK-BE-07B | Alert/notification suppression integration | CODEX | QUEUED | CK-BE-05A DONE, CK-BE-07A DONE | exact claim required |
+| ID | Issue | Work item | Owner | Status | Prerequisites | Scope |
+|---|---|---|---|---|---|---|
+| CK-00 | — | Remove WireGuard and establish direct-routing invariant | CODEX | DONE | none | [July history](../archive/coordination/2026-07-codex-kimi.md) |
+| CK-BE-03A | — | Fleet operations PostgreSQL projection foundation | KIMI | DONE | none | [July history](../archive/coordination/2026-07-codex-kimi.md) |
+| CK-BE-01 | — | Maintenance-window contract, persistence, and API | CODEX | DONE | CK-00 REVIEW | [July history](../archive/coordination/2026-07-codex-kimi.md) |
+| CK-BE-02A | — | Alert lifecycle PostgreSQL foundation | KIMI | DONE | CK-BE-01 REVIEW | [July history](../archive/coordination/2026-07-codex-kimi.md) |
+| CK-BE-02B | — | Alert lifecycle HTTP integration | CODEX | DONE | CK-BE-02A DONE | [July history](../archive/coordination/2026-07-codex-kimi.md) |
+| CK-BE-03B | [#52](https://github.com/Xore/SENTINEL/issues/52) | Fleet operations HTTP integration | UNASSIGNED | QUEUED | CK-BE-03A DONE, CK-BE-01 DONE | exact claim required |
+| CK-BE-04A | [#53](https://github.com/Xore/SENTINEL/issues/53) | Deterministic evidence bundle foundation | CODEX | REVIEW | none | X-020 correction; Sonnet second opinion X-023 says it discharges X-018 — awaiting Kimi's `DONE` |
+| CK-BE-04B | [#54](https://github.com/Xore/SENTINEL/issues/54) | Audited evidence export integration | UNASSIGNED | QUEUED | CK-BE-04A DONE, CK-BE-06A DONE, CK-BE-06B DONE | exact claim required |
+| CK-BE-05A | [#55](https://github.com/Xore/SENTINEL/issues/55) | Notification outbox and retry foundation | KIMI | DONE | CK-BE-02A REVIEW | [July history](../archive/coordination/2026-07-codex-kimi.md) — closed under user authorization, X-025 |
+| CK-BE-05B | [#56](https://github.com/Xore/SENTINEL/issues/56) | Webhook/SMTP transports and operations integration | UNASSIGNED | QUEUED | CK-BE-05A DONE | exact claim required |
+| CK-BE-06A | [#57](https://github.com/Xore/SENTINEL/issues/57) | Operational audit query foundation | KIMI | QUEUED | CK-BE-02A DONE | exact new-file scope in the issue |
+| CK-BE-06B | [#58](https://github.com/Xore/SENTINEL/issues/58) | Operational audit HTTP integration | KIMI | QUEUED | CK-BE-06A DONE | exact integration scope in the issue |
+| CK-BE-07A | [#59](https://github.com/Xore/SENTINEL/issues/59) | Maintenance suppression decision foundation | CODEX | READY | CK-BE-01 DONE | exact new-file scope in the issue |
+| CK-BE-07B | [#60](https://github.com/Xore/SENTINEL/issues/60) | Alert/notification suppression integration | CODEX | QUEUED | CK-BE-05A DONE, CK-BE-07A DONE | exact claim required |
 
 `UNASSIGNED` rows are not claims. Codex or Kimi may claim them only after their
 prerequisites are satisfied and after publishing the exact file boundary.
@@ -78,155 +84,35 @@ prerequisites are satisfied and after publishing the exact file boundary.
 
 ## Work Package Contracts
 
-### CK-BE-03B — Fleet operations HTTP integration
+**Moved to GitHub Issues on 2026-07-30.** Each open package's contract — intended
+outcome, exact allowed file scope, mandatory properties, and required tests —
+now lives in its issue, so the scope is stated in exactly one place and closes
+with the work.
 
-Intended outcome: integrate the reviewed fleet summary and collector-detail
-projections into bounded, versioned HTTP endpoints with role enforcement and
-non-disclosing not-found behavior.
+| Package | Contract |
+|---|---|
+| CK-BE-03B | [#52 — fleet operations HTTP integration](https://github.com/Xore/SENTINEL/issues/52) |
+| CK-BE-04A | [#53 — deterministic evidence bundle foundation](https://github.com/Xore/SENTINEL/issues/53) |
+| CK-BE-04B | [#54 — audited evidence export integration](https://github.com/Xore/SENTINEL/issues/54) |
+| CK-BE-05A | `DONE` — [#55](https://github.com/Xore/SENTINEL/issues/55), record in [July history](../archive/coordination/2026-07-codex-kimi.md) |
+| CK-BE-05B | [#56 — webhook/SMTP transports and operations integration](https://github.com/Xore/SENTINEL/issues/56) |
+| CK-BE-06A | [#57 — operational audit query foundation](https://github.com/Xore/SENTINEL/issues/57) |
+| CK-BE-06B | [#58 — operational audit HTTP integration](https://github.com/Xore/SENTINEL/issues/58) |
+| CK-BE-07A | [#59 — maintenance suppression decision foundation](https://github.com/Xore/SENTINEL/issues/59) |
+| CK-BE-07B | [#60 — alert/notification suppression integration](https://github.com/Xore/SENTINEL/issues/60) |
 
-### CK-BE-04A — Deterministic evidence bundle foundation
+Two boundaries that span packages, kept here because no single issue owns them:
 
-Codex owns the exact active claim above. Implement a pure Go package that
-creates and verifies deterministic gzip-compressed tar evidence bundles from
-caller-supplied metadata and allow-listed byte entries. Require canonical safe
-relative paths, stable ordering and manifest JSON, per-entry and total byte
-caps, entry-count caps, SHA-256 digests, fixed archive metadata, duplicate and
-unknown-entry rejection, and fail-closed verification.
+- CK-BE-06B owns the general audit-list route. CK-BE-04B consumes the reviewed
+  audit query foundation and evidence bundle package to implement authorized
+  export orchestration and to audit the export itself; it must **not** duplicate
+  the audit-list store or route.
+- CK-BE-07B integrates the suppression decision into alert raising and
+  notification enqueue/claim. The ML contamination-mask integration stays a
+  separate analysis-service package.
 
-The bundle contract must make site/tenant scope, bundle/schema version, capture
-window, generation time, producer version, media type, size, and digest
-explicit. The same validated input must produce identical bytes. No database,
-HTTP, filesystem crawl, secret discovery, or live export is part of this slice.
-
-### CK-BE-04B — Audited evidence export integration
-
-Intended outcome: authorized evidence export orchestration using the reviewed
-CK-BE-04A bundle package and CK-BE-06A audit projection. Database/HTTP
-authorization, explicit entry allow-listing, capture-window and export
-timeouts, response-size bounds, and an append-only audit record of the export
-itself are mandatory. CK-BE-06B owns the general audit-list route.
-
-### CK-BE-05A — Notification outbox and retry foundation
-
-Kimi may claim this after CK-BE-02A reaches `REVIEW`; CK-BE-02A files then
-freeze. The exact allowed scope is:
-
-- new `backend/ingest/migrations/000005_notification_delivery.sql`;
-- new `backend/api/internal/notifyops/model.go`;
-- new `backend/api/internal/notifyops/postgres.go`;
-- new `backend/api/internal/notifyops/postgres_test.go`;
-- new `backend/api/internal/notifyops/postgres_integration_test.go`;
-- this ledger.
-
-Implement a durable site-scoped notification outbox with bounded payload
-metadata, stable deduplication keys, atomic claim leases, attempt history,
-exponential-backoff scheduling with a deterministic test hook, success,
-retryable failure, permanent failure/dead-letter transitions, stale-lease
-recovery, optimistic concurrency, and deterministic pending ordering. Do not
-store endpoint credentials or raw secrets in payloads, errors, or audit
-details.
-
-This slice does not send network messages and does not add routes. Do not edit
-earlier migrations/packages, workflows, contracts, module dependencies, or
-collector files. CK-BE-05B will add bounded webhook/SMTP transports against the
-reviewed outbox contract.
-
-### CK-BE-05B — Delivery transports and operations integration
-
-Intended outcome: webhook and SMTP delivery with strict destination allow-lists,
-timeouts, TLS validation, secret redaction, rate limits, retry/deduplication,
-and operator-visible delivery state.
-
-### CK-BE-06A — Operational audit query foundation
-
-Kimi may claim this immediately after CK-BE-05A has a pushed `REVIEW` handoff.
-The handed-off notification files then freeze. The exact allowed scope is new
-files only:
-
-- `backend/api/internal/auditops/model.go`;
-- `backend/api/internal/auditops/postgres.go`;
-- `backend/api/internal/auditops/postgres_test.go`;
-- `backend/api/internal/auditops/postgres_integration_test.go`;
-- this ledger.
-
-Implement a read-only PostgreSQL projection over the existing append-only
-`operational_audit_log`. It must revalidate current user/site access, intersect
-that access with token site scope, and support bounded filters for site,
-action, resource type, resource ID, actor, and inclusive UTC time window.
-Pagination uses an opaque, versioned cursor over deterministic descending
-`(occurred_at, audit_id)` order; page size has a safe default and hard maximum.
-Return canonical audit metadata and bounded JSON details without interpreting
-or expanding caller-controlled fields. Invalid filters/cursors fail closed;
-inaccessible sites are indistinguishable from empty results; all queries use
-the configured timeout.
-
-Do not add a migration, route, contract edit, evidence bundle, notification
-change, dependency, or write path. Unit tests must cover normalization, cursor
-round-trip/tampering/version rejection, SQL argument construction, scope
-intersection, and stable page boundaries. PostgreSQL integration tests must
-cover current-access revocation, multi-site isolation, every filter,
-same-timestamp UUID tie-breaking, no duplicates/gaps across pages, timeout
-mapping, and proof that this package cannot mutate the audit table.
-
-### CK-BE-06B — Operational audit HTTP integration
-
-After CK-BE-06A is independently approved `DONE`, Kimi may claim exactly:
-
-- `docs/contracts/API.md`;
-- `backend/api/internal/httpapi/router.go`;
-- `backend/api/internal/httpapi/router_test.go`;
-- `backend/api/cmd/api/main.go`;
-- this ledger.
-
-Publish and implement `GET /api/v1/audit-events` using the reviewed
-`auditops.Store`. Access is restricted to authenticated operator/admin roles.
-The endpoint must expose only the foundation's allow-listed filters and opaque
-cursor, reject unknown/duplicate/empty query parameters, preserve
-non-disclosing site authorization, return a stable next cursor, and map
-invalid/unavailable errors without database or secret disclosure. Add
-contract-parity and production-wiring tests. This slice is query-only: it must
-not add audit mutations, evidence export, notification delivery, migrations,
-dependencies, or frontend work.
-
-CK-BE-04B is narrowed by these packages: it consumes the reviewed audit query
-foundation and evidence bundle package to implement authorized evidence export
-orchestration and audit the export itself; it must not duplicate the audit-list
-store or route.
-
-### CK-BE-07A — Maintenance suppression decision foundation
-
-Codex may claim this immediately. The exact allowed scope is new files only:
-
-- `backend/api/internal/alertpolicy/model.go`;
-- `backend/api/internal/alertpolicy/postgres.go`;
-- `backend/api/internal/alertpolicy/postgres_test.go`;
-- `backend/api/internal/alertpolicy/postgres_integration_test.go`;
-- this ledger.
-
-Implement a bounded read-only decision service over the reviewed
-`maintenance_windows` authority. Given a validated site and UTC evaluation
-time, it returns a deterministic decision stating whether alert delivery and
-ML-training eligibility are suppressed, plus the matching window ID/version
-and bounded end time/reason needed for operator-visible rationale. A window is
-active only when it has started, has not ended early, and its half-open end is
-after the evaluation time. Invalid input and database failure are distinct
-fail-closed errors; every query uses the configured timeout.
-
-Unit and PostgreSQL integration tests must cover boundary instants, scheduled/
-active/expired/ended windows, site isolation, impossible overlap defense,
-timeout/unavailable mapping, current schema compatibility, and read-only
-behavior. Do not edit migrations, maintenance or alert packages, notification
-files, HTTP routes, contracts, dependencies, workflows, or collector files.
-
-### CK-BE-07B — Alert/notification suppression integration
-
-After CK-BE-05A and CK-BE-07A are independently `DONE`, integrate the reviewed
-decision service into alert raising and notification enqueue/claim behavior.
-Alerts remain durably visible during maintenance, but outbound delivery is
-held with an operator-visible suppression reason and resumes idempotently when
-the window ends. ML contamination-mask integration remains a separate analysis
-service package. The future claim must enumerate every shared alert,
-notification, wiring, migration/contract, and test file before editing.
+`UNASSIGNED` rows are not claims. Codex or Kimi may claim one only after its
+prerequisites are satisfied and after publishing the exact file boundary here.
 
 ## Active Exchanges
 

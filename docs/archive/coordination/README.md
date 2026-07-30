@@ -15,7 +15,10 @@ Discharged work packages:
 | Sonnet 5 work queue — S2-01, S2-02, S3-01A, S4-01A, S5-00, all `DONE` 2026-07-30 | [SONNET-5-WORK-QUEUE.md](SONNET-5-WORK-QUEUE.md) |
 
 The queue never specified S5-01; that gate stays in the active Codex/Sonnet
-ledger, along with the S3-01B and S4-01B forward packages.
+ledger, along with the S3-01B and S4-01B forward packages. All three are now
+tracked as issues [#33](https://github.com/Xore/SENTINEL/issues/33),
+[#31](https://github.com/Xore/SENTINEL/issues/31), and
+[#32](https://github.com/Xore/SENTINEL/issues/32).
 
 The active ledgers are:
 

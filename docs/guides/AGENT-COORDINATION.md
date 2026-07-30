@@ -43,6 +43,13 @@ Rules:
 11. Use UTC ISO 8601 timestamps and actual command results.
 12. Keep this file small: active work/claims/questions/exchanges only; archive
     completed work after review.
+13. **The backlog lives in [GitHub Issues](https://github.com/Xore/SENTINEL/issues),
+    not in this file.** Every open roadmap point — unstarted phase, research
+    gate, design question — has an issue. This ledger carries only what is
+    *being worked on now*: the active board, live file claims, and the review
+    exchanges that go with them. Do not re-describe an issue's scope here;
+    link it. Name the issue in the claim, the commit message, and the handoff
+    (`Refs #NN`), and close it from the review that marks the item `DONE`.
 
 Required synchronization:
 
@@ -65,13 +72,18 @@ The revisions must match; the final command is required remote read-back.
 
 ## Active Work Board
 
-| ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
-|---|---:|---|---|---|---|---|
-| S3-01B | 3 | Host-health metrics and runtime integration | CODEX | READY | ~~S2-02~~, ~~S3-01A~~ — all met | forward package below; **unblocked, Codex may start** |
-| S4-01B | 4 | Durable export spool and replay integration | CODEX | READY | ~~S2-02~~, ~~S4-01A~~ — all met | forward package below; **unblocked, Codex may start** |
-| S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | READY | ~~S2-02~~, ~~S3-01A~~, ~~S4-01A~~, ~~C5-01~~ — all met | exact scope in S5-01 gate; **unblocked** |
-| C1-02 | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
-| C2-03 | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 DONE | Sonnet review below: not approved, 3 corrections |
+| ID | Issue | Phase | Work item | Owner | Status | Prerequisites | Write scope |
+|---|---|---:|---|---|---|---|---|
+| S3-01B | [#31](https://github.com/Xore/SENTINEL/issues/31) | 3 | Host-health metrics and runtime integration | CODEX | READY | ~~S2-02~~, ~~S3-01A~~ — all met | scope in the issue; **unblocked, Codex may start** |
+| S4-01B | [#32](https://github.com/Xore/SENTINEL/issues/32) | 4 | Durable export spool and replay integration | CODEX | READY | ~~S2-02~~, ~~S4-01A~~ — all met | scope in the issue; **unblocked, Codex may start** |
+| S5-01 | [#33](https://github.com/Xore/SENTINEL/issues/33) | 5 | Signed updater verifier and installer foundation | SONNET5 | READY | ~~S2-02~~, ~~S3-01A~~, ~~S4-01A~~, ~~C5-01~~ — all met | exact scope in S5-01 gate; **unblocked** |
+| C1-02 | [#48](https://github.com/Xore/SENTINEL/issues/48) | 1–13 | GitHub Actions CI/CD foundations | CODEX | IN_PROGRESS | C0-02 | `.github/**`, CI-only build/validation files |
+| C2-03 | [#47](https://github.com/Xore/SENTINEL/issues/47) | 2 | Live probe metric workflow assertion | CODEX | REVIEW | S2-02 DONE | Sonnet review below: not approved, 3 corrections |
+
+Unqueued collector phases (C4, C6, C8–C13, B1) and the research gates R1–R3
+are **not** listed here. They live in
+[GitHub Issues](https://github.com/Xore/SENTINEL/issues) and enter this board
+only when an agent is about to claim one.
 
 Completed: C0-01, C0-02, S0-01, S1-01, S1-02, S2-01, **S2-02**, **S3-01A**,
 **S4-01A**, S5-00, C1-01, C1-03, C1-04, C2-01, C2-02, C5-01. See
@@ -86,6 +98,7 @@ scopes and gates live in this document (S5-01 Gate, Forward Probe Packages).
 
 | Timestamp (UTC) | Agent | Work ID | Files/directories |
 |---|---|---|---|
+| 2026-07-30T17:34:00Z | SONNET5 | A-ISSUES-1 | documentation only, directed by the user: this ledger, `docs/guides/CODEX-KIMI-COORDINATION.md`, `docs/guides/SONNET-5-IMPLEMENTATION-GUIDE.md`, `docs/guides/OPUS-AGENT-GUIDE-V2.md`, `docs/guides/07-network-map-and-monitoring-roadmap.md`, `docs/collector/ROADMAP.md`, `docs/collector/SUGGESTIONS.md`, `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`, `docs/archive/coordination/README.md`, `docs/README.md`, `README.md`. **No file under `collector/`, `backend/`, `.github/`, `deploy/`, or `docs/contracts/` is edited, and no work item changes status.** Edits to `CODEX-KIMI-COORDINATION.md` are structural only — an `Issue` column, one new protocol rule, and replacing the Work Package Contracts prose with pointers to the issues that now carry it verbatim. No live Codex or Kimi claim is altered. |
 | 2026-07-30T16:39:11Z | SONNET5 | A-ARCHIVE-1 | archive move only, under the user's standing rule ("when any task is done, move the referenced documents to the archive folder"): `docs/guides/SONNET-5-WORK-QUEUE.md` → `docs/archive/coordination/`, plus the inbound links the archive policy requires be fixed in the same commit — `docs/archive/coordination/README.md`, `docs/README.md` if it links the queue, this ledger, and **one docstring line each** in `collector/checks/host_{cpu,disk,load,memory,network,process,service}.py`. Those seven are text-only pointer corrections inside a module docstring: **no code, no behaviour, no test change.** S3-01A is `DONE` and unfrozen as of 16:32Z. |
 | 2026-07-30T16:32:51Z | SONNET5 | REVIEW-S3-01A/S4-01A | independent review of both items on the user's explicit authorization ("continue with the rest — you are allowed to review them yourself"), Codex having not picked either up. Read-only over `42262a4..e81cdaf` (S3-01A) and `0dc7f5d` (S4-01A). Write scope is narrow and covers **only** what the review found: `collector/store/sqlite_queue.py` and `collector/tests/store/test_sqlite_queue.py` (the `_write_transaction` COMMIT-failure defect and its regression test — nothing else in either file), plus this ledger. **No `collector/checks/host_*.py` file or its test is edited**: the S3-01A review found no defect requiring one. |
 | 2026-07-30T16:12:48Z | SONNET5 | S2-02 | **takeover from CODEX** of the row below, on the user's explicit authorization to close S2-02 so S3-01B/S4-01B/S5-01 stop being gated. Codex's claim has been idle since `0e254b0` (2026-07-28T17:47Z) and Codex has since moved to backend CK-BE-05A. Narrowed to the three outstanding corrections only: `collector/checks/net_icmp.py`, `collector/checks/net_latency.py`, `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_latency.py`, plus `collector/checks/__init__.py` and `collector/config.py` (**stale Pi 3B comments/docstrings only — no behaviour, and `max_concurrent_probes` keeps its value**), and this ledger. Items 1–4 of Codex's review are already addressed and are not reopened. |
@@ -216,6 +229,8 @@ inventory are preserved in history.
 
 ## S5-01 Gate
 
+Tracked as [#33](https://github.com/Xore/SENTINEL/issues/33).
+
 S5-00 and C5-01 are `DONE`. The release-side authority is
 [`COLLECTOR-UPDATE-MANIFEST-V1.md`](../contracts/COLLECTOR-UPDATE-MANIFEST-V1.md);
 cross-language golden inputs are under
@@ -234,71 +249,33 @@ workflows, backend runtime, or earlier collector scopes.
 
 ## Open Questions
 
-### Q-12 — Home for the shared bounded-identifier validator (Sonnet 5, 2026-07-30)
+All three open questions were moved to GitHub Issues on 2026-07-30 under rule
+13; the issues carry the full statement, the proposal, and the decision when
+it lands. Recorded here only so the ledger names what is undecided.
 
-S3-01A's corrections need a DNS-label-style `target_id` validator and bounded
-interface/name validation in three host modules, but both natural homes are
-frozen: `collector/config.py` and `collector/checks/__init__.py` are inside the
-active S2-02 claim. Following S4-01A's precedent for `envelope.py`, the
-correction duplicates a module-private validator rather than importing a
-private symbol across a frozen claim boundary. Proposal for S3-01B, which owns
-config and registration: consolidate one shared validator (config-level for
-configured values, `checks/__init__.py` for construction-time assertions) and
-delete the duplicates. Codex decision requested; not blocking the correction.
+| # | Question | Issue | Decide before |
+|---|---|---|---|
+| Q-12 | Home for the shared bounded-identifier validator | [#49](https://github.com/Xore/SENTINEL/issues/49) | S3-01B consolidates it |
+| Q-13 | Bounded label for a multi-mount disk family | [#50](https://github.com/Xore/SENTINEL/issues/50) | S3-01B defines the host metric contract |
+| Q-14 | Should the cold queue offer a delivery lease? | [#51](https://github.com/Xore/SENTINEL/issues/51) | S4-01B builds replay on `peek()` |
 
-### Q-13 — Bounded label for a multi-mount disk family (Sonnet 5, 2026-07-30)
-
-`host_disk` emits no label today, so a second configured mount would be
-indistinguishable, and a raw mount path is a forbidden label. `METRICS.md` has
-no host families yet. Proposal: give the disk family an operator-assigned
-`target_id` when S3-01B defines the host metric contract, rather than deriving
-a label from the path. Out of this correction's scope; recorded so the choice
-is not made silently.
-
-### Q-14 — Should the cold queue offer a delivery lease? (Sonnet 5, 2026-07-30)
-
-`SqliteQueue.peek()` returns rows without claiming them, so two concurrent
-senders can observe and transmit the same envelope before either acknowledges
-it. That is consistent with at-least-once delivery and leaves dedup to the
-receiver, and S4-01A's concurrency tests now state it explicitly rather than
-papering over it. If the export path is instead expected to guarantee
-single-flight per envelope, the queue needs a lease (`leased_until`,
-`lease_owner`, expiry sweep), which is a contract-level addition rather than a
-review correction. Codex decision requested before S4-01B builds the replay
-integration on top of this API.
+All three are Codex decisions. None blocks a correction already in flight.
 
 ---
 
 ## Forward Probe Packages
 
-### S3-01B — Host-health metrics and runtime integration
+Both packages' foundations (S2-02, S3-01A, S4-01A) are `DONE` as of
+2026-07-30T16:32Z, so both are unblocked and Codex may start either.
 
-S2-02 and S3-01A are both `DONE` (2026-07-30T16:32Z), so this package is
-unblocked. Publish an exact claim for the Phase 3 metrics contract, bounded host-check configuration, registration and
-lifecycle wiring, the seven host modules only where reviewed adapter changes
-are required, and focused tests. Define canonical `sentinel_` metric names,
-types, units, and cardinality budgets before emission. Process and service
-families use validated `target_id`; interface identifiers are bounded; raw
-process/service/path values never become labels. Prove disabled families are
-not constructed, first-sample baselines emit nothing misleading, instruments
-are reused, and Windows degrades only for genuinely unsupported checks.
+| Package | Issue | What it does |
+|---|---|---|
+| S3-01B | [#31](https://github.com/Xore/SENTINEL/issues/31) | Host-health metrics contract, configuration, registration and lifecycle wiring |
+| S4-01B | [#32](https://github.com/Xore/SENTINEL/issues/32) | Async adapter over the reviewed SQLite queue, transport integration, replay |
 
-### S4-01B — Durable export spool and replay integration
-
-S2-02 and S4-01A are both `DONE` (2026-07-30T16:32Z), so this package is
-unblocked. Publish an exact claim for an async adapter around the reviewed SQLite queue, transport integration,
-configuration, runtime wiring, canonical queue telemetry, and focused tests.
-Failed exports must be durably enqueued before acknowledgement; reconnect
-drains deterministic oldest-first batches with bounded exponential backoff and
-jitter; duplicates remain idempotent; poison/corrupt/expired records cannot
-wedge replay; blocking SQLite work never runs on the event loop; cancellation
-and shutdown leave no task or envelope in an ambiguous state. Enforce the
-24-hour/200-MB bounds and test restart, outage, recovery, concurrent enqueue/
-drain, redaction, and live backend replay.
-
-Both packages are deliberately queued behind their reviewed foundations. Their
-future claims must not overlap Sonnet's correction scopes or silently modify
-contracts outside the enumerated files.
+The issues hold the scope and the exit criteria. Publish an exact file claim
+here before editing. Neither claim may overlap Sonnet's correction scopes or
+silently modify contracts outside the enumerated files.
 
 ---
 
@@ -1627,6 +1604,38 @@ satisfied — S2-02, S3-01A and S4-01A are all `DONE`. S3-01B and S4-01B are
 Codex's to pick up. C2-03's three corrections remain open and are also Codex's;
 they were not part of this authorization and are untouched.
 
+### A-ISSUES-1 — the backlog moves to GitHub Issues
+
+- **Timestamp:** 2026-07-30T17:34:00Z. Directed by the user: *"please move the
+  open roadmap points to the github issues — when not enabled — enable the
+  github issues. clean the documents and reference the issues to work on for
+  the agent documentations."*
+- **Issues were disabled** on `Xore/SENTINEL` (`has_issues: false`). Enabled on
+  the user's explicit instruction, then ten labels created: `collector`,
+  `backend`, `network-map`, `ci`, `research`, `design-question`,
+  `agent:codex`, `agent:sonnet`, `agent:kimi`, `unassigned`.
+- **35 issues opened, [#31](https://github.com/Xore/SENTINEL/issues/31)–[#65](https://github.com/Xore/SENTINEL/issues/65)**, covering every open
+  roadmap point found in the tree: the unfinished collector phases (3, 4, 5,
+  C4, C6, C8–C13, B1/B2), the three research gates, this ledger's Q-12/Q-13/
+  Q-14, C1-02 and C2-03, the nine open Codex/Kimi backend packages, and the
+  five network-map phases. `docs/collector/SUGGESTIONS.md`'s Q1–Q6 were folded
+  into the phase that has to answer each of them rather than opened separately;
+  Q7 was already decided.
+- **Documents cleaned, not merely annotated.** Where a scope was stated twice,
+  the issue keeps it and the document links it: this ledger's Forward Probe
+  Packages and Open Questions collapsed to pointer tables, and
+  `CODEX-KIMI-COORDINATION.md`'s Work Package Contracts section did too. Both
+  boards gained an `Issue` column. `ROADMAP.md`, the gap analysis,
+  `SUGGESTIONS.md`, `07-network-map-and-monitoring-roadmap.md`, `docs/README.md`,
+  the root `README.md`, and both agent guides now point at the issue list for
+  *what is open*, and keep only the design rationale.
+- **New protocol rule 13** and Codex/Kimi rule 9: the backlog lives in Issues,
+  this ledger carries only live claims and reviews, and every claim, commit,
+  and handoff names its issue (`Refs #NN`). The reviewer closes the issue when
+  the item goes `DONE`.
+- **Nothing under `collector/`, `backend/`, `.github/`, or `deploy/` was
+  touched**, and no contract document was edited. No work item changed status.
+
 ### A-ARCHIVE-1 — the Sonnet work queue is discharged and archived
 
 - **Timestamp:** claim 2026-07-30T16:39:11Z (`e33d244`, published before any
@@ -1948,6 +1957,9 @@ change. `git diff --stat` is confined to `docs/`.
 
 ### C2-03 — Live probe metric workflow assertion
 
+- **Issue:** [#47](https://github.com/Xore/SENTINEL/issues/47) — the three
+  outstanding corrections are restated there; this section keeps the review
+  record they came from.
 - **Status:** REVIEW; claim published 2026-07-28T18:00:46Z.
 - **Start gate:** S2-02 has a pushed REVIEW handoff that emits at least one
   canonical core probe family through the real collector.
@@ -2115,6 +2127,9 @@ passing run does not exercise.
 
 ### C1-02 — CI/CD checkpoint
 
+- **Issue:** [#48](https://github.com/Xore/SENTINEL/issues/48) — what is still
+  open (binary artifacts, the unexecuted tag path, canary and rollback). The
+  list below is the record of what has already landed and passed.
 - Commits `8417066` and `4a7cf25`: backend gofmt/vet/race/build,
   empty-PostgreSQL migration validation, corrected action versions, Go CodeQL.
 - Passing runs: backend `30196549053`; CodeQL `30196596608`; collector/Pylint at
