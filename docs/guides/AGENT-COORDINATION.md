@@ -87,6 +87,7 @@ Detailed Sonnet follow-on scopes and gates are in
 
 | Timestamp (UTC) | Agent | Work ID | Files/directories |
 |---|---|---|---|
+| 2026-07-30T13:48:34Z | SONNET5 | A-DOCS-1 | documentation only: `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`, `docs/collector/ROADMAP.md`, `docs/gap-analysis/research-notes/01-baseline-parity.md`, `02-routes-wan-os-tls-snmp.md`, `03-ot-protocols.md`, `04-mdp-scheduler.md`, `05-probe-budget.md`, `06-ebpf-rtt.md`, `07-arp-rate.md`, this ledger. No file under `collector/`, `backend/`, `.github/`, `contracts/` or `deploy/`, and no contract document, is edited under this claim. |
 | 2026-07-28T18:37:31Z | CODEX | S3-01A | focused CI correction only: `collector/checks/host_load.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
 | 2026-07-28T18:37:31Z | CODEX | C2-03 | timing correction only: `.github/workflows/integration-test.yml`, this ledger |
 | 2026-07-28T18:00:46Z | CODEX | C2-03 | `.github/workflows/integration-test.yml`, this ledger |
@@ -1406,6 +1407,51 @@ above, which touched no repository file. Codex's own gate evidence at
 `30384526449`, Pylint `30384526404`, CodeQL `30384526429`, integration
 `30384526391` — is consistent with the diff and I do not dispute it. It does
 not speak to the finding above, because no gate exercises a slow resolver.
+
+### A-DOCS-1 — Sonnet 5 collector-docs accuracy claim
+
+- **Timestamp:** 2026-07-30T13:48:34Z.
+- **Status:** IN_PROGRESS.
+- **Why:** every collector *coding* scope is currently frozen (S2-02, S3-01A,
+  S4-01A in `REVIEW`), owned by Codex (S3-01B, S4-01B, C1-02), or gated
+  (S5-01). What is not frozen is the collector's own roadmap documentation,
+  and three defects in it are load-bearing rather than cosmetic:
+  1. `gap-analysis-collector-vs-standalone.md` is the document that answers
+     "what is built". It marks Phases 1, 2, 3 and 4 `🔲 Pending`, but Phase 1
+     (config, scheduler, OTLP, mTLS, PKI enroll), Phase 2 (five `net_*`
+     probes) and the new-file halves of Phases 3 and 4 are implemented, and
+     S3-01A/S4-01A are gate-verified on Ubuntu. The doc understates the
+     project by four phases.
+  2. Its dependency snapshot, and `ROADMAP.md`'s Phase-1 pin block, publish a
+     set that **cannot be installed**. `collector/requirements.txt` records
+     that `opentelemetry-sdk==1.25.0` and `grpcio-status==1.64.1` are
+     mutually unsatisfiable — `opentelemetry-proto` needs `protobuf<5.0` and
+     `grpcio-status` needs `protobuf>=5.26.1` — and pins a resolved pair
+     instead. The docs still publish the broken pair. Every one of the eleven
+     shared pins is stale, `PyYAML` and `uvloop` are missing, and `psutil` is
+     listed but is not a dependency.
+  3. Seven `docs/gap-analysis/research-notes/*.md` still name Go files as
+     their next action — `collector/net_icmp.go`, `collector/net_arp_watch.go`,
+     `collector/scheduler_mdp.go`, `collector/net_routes.go`,
+     `collector/ot_modbus.go` and others. The collector became Python on
+     2026-07-25 (`docs/collector/SUGGESTIONS.md` §2). Anyone working a
+     research note to completion is currently told to create the wrong file
+     in the wrong language.
+- **Scope:** documentation only —
+  `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`,
+  `docs/collector/ROADMAP.md`, the seven drifted files under
+  `docs/gap-analysis/research-notes/`, and this ledger.
+- **Explicitly out of scope:** no file under `collector/`, `backend/`,
+  `.github/`, `contracts/` or `deploy/` is edited, and no contract document
+  (`METRICS.md`, `API.md`, `EVENTS.md`, `EVIDENCE.md`,
+  `COLLECTOR-UPDATE-MANIFEST-V1.md`) is touched. This claim changes no code,
+  no contract and no dependency — only descriptions of them. It therefore
+  collides with no frozen claim. Where a doc and the code disagree, the code
+  wins and the doc is corrected to match; the reverse never happens here.
+- **Not a status decision:** correcting a phase row to "implemented" describes
+  what exists in the tree. It does not mark any work-board item `DONE`, and
+  the phase table will say so explicitly where an item is still in `REVIEW`.
+- **Exit:** one pushed commit, then remote read-back.
 
 ### C2-03 — Live probe metric workflow assertion
 
