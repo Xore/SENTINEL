@@ -69,7 +69,7 @@ The revisions must match; the final command is required remote read-back.
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Codex takeover below |
 | S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | corrections handed off at `e81cdaf`; needs Ubuntu gates |
-| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | IN_PROGRESS | S3-01A REVIEW | Sonnet correction claim A-S4-01A-2 below |
+| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | correction handoff below; commit `0dc7f5d` |
 | S3-01B | 3 | Host-health metrics and runtime integration | CODEX | QUEUED | S2-02 DONE, S3-01A DONE | forward package below |
 | S4-01B | 4 | Durable export spool and replay integration | CODEX | QUEUED | S2-02 DONE, S4-01A DONE | forward package below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
@@ -106,15 +106,22 @@ Plan updated after the user assigned S2-02 corrections to Codex while Sonnet is
 unavailable. Sonnet must keep every S2-02 file frozen until Codex publishes a
 new REVIEW handoff.
 
-0. **Active (2026-07-30):** S3-01A's four review-1 correction groups are done
-   and handed off at `e81cdaf` (A-S3-01A-2 below); it is now `REVIEW` and only
-   needs Ubuntu gate evidence plus a non-Sonnet review. `fec75f1`'s S3 host
-   portion was independently verified in that handoff, which also fixed the
-   `host_load` catch-narrowing defect it introduced. **Now active:** S4-01A's
-   six correction groups, claimed under A-S4-01A-2 below — one queue item at a
-   time. Independent review of Codex-implemented work (S2-02 `0e254b0`, C2-03
-   `dc571f8`/`fec75f1` workflow portion) is authorized by the user and follows
-   S4-01A.
+0. **Status (2026-07-30):** both Sonnet correction items are handed off and
+   awaiting a non-Sonnet review.
+   - S3-01A — four review-1 groups done at `e81cdaf` (A-S3-01A-2 below); now
+     `REVIEW`, needing only Ubuntu gate evidence plus review. `fec75f1`'s S3
+     host portion was independently verified in that handoff, which also fixed
+     the `host_load` catch-narrowing defect it introduced.
+   - S4-01A — six review-1 groups done at `0dc7f5d` (A-S4-01A-2 below); now
+     `REVIEW`, needing only Ubuntu gate evidence plus review. One deliberate
+     deviation from the claimed plan is flagged in that handoff (group 5), and
+     Q-14 records the lease question it raised.
+   - **Next:** the independent reviews of Codex-implemented work the user
+     authorized — S2-02 (`4e18ad8..0e254b0`) and C2-03 (`278e49f..dc571f8`
+     plus the workflow portion of `21502d9..fec75f1`). No new implementation
+     claim until those are published.
+   - S5-01 stays `QUEUED`: it gates on S2-02, S3-01A, and S4-01A all being
+     `DONE`, and only Codex may mark them so.
 1. Keep S1-02/S2-01 and every S2-02/S4-01A file frozen. S5-00 is approved
    and archived; do not claim S5-01 before its explicit gate is satisfied.
 2. Codex owns the still-active exact S2-02 claim and will address only the five
@@ -199,6 +206,18 @@ no host families yet. Proposal: give the disk family an operator-assigned
 `target_id` when S3-01B defines the host metric contract, rather than deriving
 a label from the path. Out of this correction's scope; recorded so the choice
 is not made silently.
+
+### Q-14 — Should the cold queue offer a delivery lease? (Sonnet 5, 2026-07-30)
+
+`SqliteQueue.peek()` returns rows without claiming them, so two concurrent
+senders can observe and transmit the same envelope before either acknowledges
+it. That is consistent with at-least-once delivery and leaves dedup to the
+receiver, and S4-01A's concurrency tests now state it explicitly rather than
+papering over it. If the export path is instead expected to guarantee
+single-flight per envelope, the queue needs a lease (`leased_until`,
+`lease_owner`, expiry sweep), which is a contract-level addition rather than a
+review correction. Codex decision requested before S4-01B builds the replay
+integration on top of this API.
 
 ---
 
@@ -966,7 +985,8 @@ Implementation commit: `d9bef65`.
 #### A-S4-01A-2 — Sonnet 5 correction claim
 
 - **Timestamp:** 2026-07-30T12:58:44Z.
-- **Status:** IN_PROGRESS. Answers Codex review 1's six blocking groups.
+- **Status:** COMPLETE — see the correction handoff below. Answered Codex
+  review 1's six blocking groups.
 - **Scope:** exactly the 2026-07-30 File Claims row — `collector/store/`'s
   three modules, the two store test modules, and this ledger. No config,
   entry-point, contract, dependency, workflow, `pyproject.toml`, or
@@ -1013,6 +1033,126 @@ Implementation commit: `d9bef65`.
 - **Exit:** one correction implementation commit, all four collector gates on
   Windows and (when `.33` is reachable) Ubuntu, adversarial multi-instance
   repetitions, then a separate pushed `REVIEW` handoff.
+
+##### S4-01A Sonnet 5 correction handoff
+
+- **Timestamp:** 2026-07-30T14:22:09Z.
+- **Status:** REVIEW. Implementation commit `0dc7f5d`, pushed to `origin/main`.
+- **Scope honored:** exactly the 2026-07-30T12:58:44Z File Claims row —
+  `collector/store/__init__.py`, `collector/store/envelope.py`,
+  `collector/store/sqlite_queue.py`, `collector/tests/store/test_envelope.py`,
+  `collector/tests/store/test_sqlite_queue.py`, and this ledger (separate
+  commit). No config, entry-point, contract, dependency, workflow,
+  `pyproject.toml`, or S2/S3/S5 file was touched. S3-01A is in `REVIEW` and its
+  files stayed frozen.
+
+**Group 1 — the size caps are hard.** `enqueue()`'s "insert it anyway when the
+queue is empty" branch is gone: an envelope larger than `max_bytes` raises the
+new `QueueCapacityError` and nothing is stored, so the cap is a bound rather
+than a hint. `QueueCapacityError` is exported from `collector.store`. Eviction
+is centralized in `_make_room()`, which frees space oldest-first until both
+caps admit the incoming record. The invariant is now asserted after *every*
+individual mutation in `test_caps_hold_after_every_single_enqueue`, not once at
+the end of a run, and a rejected oversize record is proven not to have evicted
+anything on its way out.
+
+**Group 1b — an attempt increment is a capacity event.** `attempt_count` 9→10
+adds a byte to the serialized blob, so `mark_attempt()` makes room the same
+oldest-first way `enqueue()` does (excluding the row being updated) and raises
+`QueueCapacityError` with the row untouched only when the *updated record
+alone* would exceed `max_bytes`. Both branches are tested, including that the
+failed transaction rolls back to `attempt_count == 9`. Refusing the increment
+instead was rejected: attempt counts drive backoff and drop decisions, and
+they would then become unrecordable exactly when the queue is at cap.
+
+**Group 2 — one serialized transaction per operation.** The connection moves to
+`isolation_level=None`, and every mutating operation runs inside a
+`_write_transaction()` context manager that issues `BEGIN IMMEDIATE` *before*
+its first read and rolls back on any `BaseException` (so an interrupt between
+statements cannot commit a half-applied operation). `peek()` is included
+because quarantining is a mutation. The defect was real and is now measured:
+with the `mark_attempt()` read moved back outside the transaction, four
+instances doing ten increments each land on `attempt_count == 10` instead of
+`40` — 30 lost updates. Downgrading `BEGIN IMMEDIATE` to `BEGIN DEFERRED`
+fails both concurrency tests with `database is locked`, because SQLite cannot
+retry a deferred read-to-write lock upgrade. A third test wraps the connection
+in a proxy that fails the INSERT and proves the eviction that insert forced is
+undone by the rollback.
+
+**Group 3 — a row is trusted only if it agrees with its own blob.** The
+indexed columns are derived data, so `peek()` and `mark_attempt()` re-derive
+`event_id`, `created_at`, `expires_at`, and `byte_size` from the canonical
+envelope and quarantine any disagreement instead of returning the row. Each
+column has its own test naming the concrete harm: a mismatched `event_id`
+hands the caller an ID it cannot acknowledge, a drifted `created_at` silently
+reorders retries, a drifted `expires_at` drops live data or keeps dead data
+forever, and an understated `byte_size` defeats the cap arithmetic.
+
+**Group 4 — exact-integer `attempt_count` and `version`.** `bool` is an `int`
+subclass and JSON has a single numeric type, so `True` and `1.0` both compared
+equal to `1` and round-tripped as non-canonical bytes (`true`, `1.0`) with the
+checksum consequences that implies. `_validate_exact_int()` now gates both
+fields at construction, and `from_bytes` checks `version` exactly before the
+equality gate. Related fix found while testing: `from_bytes` was re-wrapping
+precise `EnvelopeError`s as `"malformed envelope field: ..."`, because
+`EnvelopeError` subclasses `ValueError`; an `except EnvelopeError: raise`
+clause now precedes the broader handlers, and a test pins that behaviour.
+
+**Group 5 — real simultaneous producer/consumer coverage.** Producers and
+consumers now run at the same time rather than in sequential phases, both as
+threads sharing one instance and as separate instances against the same file,
+with the drained set compared against the produced set. **Deviation from the
+claimed plan, flagged deliberately:** the plan said "accounted for exactly
+once", but `peek()` is not a lease — two consumers can legitimately observe
+the same row before either acknowledges it. Asserting exactly-once observation
+would assert a property this API does not offer, so the tests assert what it
+does offer: nothing lost, nothing invented, a clean drain to
+`count() == 0` and `quarantined_count() == 0`. Whether the cold queue should
+grow a lease/claim is recorded as Q-14 in Open Questions rather than decided here.
+
+**Group 6 — bounded quarantine.** Quarantine has its own validated
+`max_quarantine_records`/`max_quarantine_bytes` caps (defaults 1 000 and
+10 MiB) enforced after each insertion with deterministic oldest-first
+`(quarantined_at, event_id)` cleanup, a `quarantined_bytes()` accessor, and a
+`byte_size` column plus an ordering index. A reason string is truncated to 500
+characters because a deserialization message can quote the offending blob. A
+blob larger than the whole quarantine cap is dropped rather than kept over it —
+it is already-unusable data, and the cap exists precisely so corruption cannot
+consume unbounded disk. A database whose quarantine table predates the
+`byte_size` column is migrated on open (`ALTER TABLE` + backfill from
+`length(raw_blob)`) so pre-existing rows still count toward the cap; that path
+is tested.
+
+**Also hardened while in the file:** `max_records`, `max_bytes`,
+`busy_timeout_ms`, and both quarantine caps are validated as exact positive
+integers, since the group-1 guarantee is only as exact as the numbers it
+compares against.
+
+**Gates (Windows 11, Python 3.14.5, `collector/`):**
+
+- `python -m ruff check .` → `All checks passed!`
+- `python -m mypy .` → `Success: no issues found in 55 source files`
+- `python -m pylint collector tests` → `10.00/10`
+- `python -m pytest -q` → `649 passed, 8 skipped` (skips are POSIX-permission
+  and POSIX-only cases on a Windows host)
+- Adversarial repetitions: the multi-instance transaction and
+  producer/consumer classes were run 25 further times, 0 failures. Both
+  concurrency tests were also confirmed to *fail* under the pre-correction
+  behaviour, so they are load-bearing rather than decorative.
+- **Ubuntu `.33` gate still outstanding:** `ssh` to `192.168.50.33` timed out
+  again at handoff time (`Connection timed out`), so the Linux run of the four
+  gates has not happened. Not claimed as passing. The store module is pure
+  stdlib `sqlite3` with no platform-specific code, but the WAL/locking
+  behaviour under contention is exactly the kind of thing that deserves a
+  second OS, so this should be re-run before S4-01A is marked `DONE`.
+
+**Review requested from Codex.** Suggested focus: (a) whether evicting other
+records to fit an attempt increment is the right trade against refusing the
+increment; (b) whether `peek()` taking the write lock is acceptable for the
+cold tier, or whether the quarantine decision should be deferred to a separate
+sweep so `peek()` can stay a reader; (c) the group-5 deviation above and
+Q-14; (d) whether dropping an over-cap corrupt blob entirely is preferable to
+truncating it for forensics.
 
 ### C2-03 — Live probe metric workflow assertion
 
