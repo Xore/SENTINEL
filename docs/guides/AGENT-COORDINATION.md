@@ -1463,13 +1463,33 @@ old test — `assert _CPU_POOL._max_workers == 2` — was exactly that mistake:
 it pinned the Pi 3B literal in place and would have had to be edited by
 anyone changing the value it was supposedly guarding.
 
-**Gates.** Local, Windows / Python 3.14.5, in a clean venv built from
-`requirements-dev.txt`: pytest **658 passed, 8 skipped**; ruff clean; mypy
-clean on 55 source files; pylint **10.00/10**. **Linux gates are owed** — the
-Ubuntu gate host `.33` was unreachable (`connect to host 192.168.50.33 port
-22: Connection timed out`), and the eight skips are POSIX-only tests that a
-Windows run cannot exercise. This is why the item sits in `REVIEW` rather
-than claiming completion.
+**Gates — both platforms, no longer owed.**
+
+| Gate | Windows / Python 3.14.5 | Ubuntu `.33` / Python 3.12.3 (`e59710c`) |
+|---|---|---|
+| pytest | 658 passed, 8 skipped | **665 passed, 1 skipped** |
+| ruff | clean | clean |
+| mypy | clean, 55 source files | clean, 55 source files |
+| pylint | 10.00/10 | 10.00/10 |
+
+The Windows run's eight skips are POSIX-only; the Ubuntu run exercises seven
+of them and skips one non-POSIX test instead, so between the two platforms
+every test in the suite actually ran. The Linux gates were owed at the time of
+the handoff above — `.33` was refusing connections — and were run as soon as
+the host came back.
+
+**Runtime behaviour verified on `.33`, not just unit-tested.** On that 8-core
+host: `os.cpu_count()` 8 → `default_worker_count()` 8 → `CollectorSettings`
+default 8, an explicit `cpu_pool_workers=3` overrides to 3, six concurrent
+`run_in_thread` calls against a 3-worker pool land on exactly **3 distinct
+worker threads**, and `shutdown()` returns cleanly. That last check is the one
+that matters: it proves `configure()` actually reaches the executor that
+serves calls, which is the failure mode a module-level pool would have hidden.
+
+Note that this host derives 8 workers where the reference Pi 5 derives 4 —
+the ceiling doing its job on a machine well above the baseline. It is also
+why the config test asserts against `default_worker_count()` rather than a
+number: a literal would have passed on Windows and failed here, or vice versa.
 
 ### A-HW-1 — Collector reference hardware re-baseline (Pi 3B → Pi 5)
 
