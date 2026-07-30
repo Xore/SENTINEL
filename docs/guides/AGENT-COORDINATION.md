@@ -68,7 +68,7 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Codex takeover below |
-| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | Codex design review 1 below |
+| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | IN_PROGRESS | S2-02 REVIEW | Sonnet correction claim below |
 | S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | exact new-file scope below |
 | S3-01B | 3 | Host-health metrics and runtime integration | CODEX | QUEUED | S2-02 DONE, S3-01A DONE | forward package below |
 | S4-01B | 4 | Durable export spool and replay integration | CODEX | QUEUED | S2-02 DONE, S4-01A DONE | forward package below |
@@ -92,7 +92,8 @@ Detailed Sonnet follow-on scopes and gates are in
 | 2026-07-28T18:00:46Z | CODEX | C2-03 | `.github/workflows/integration-test.yml`, this ledger |
 | 2026-07-26T09:26:06Z | CODEX | C1-02 | `.github/**`, CI-only build/validation files, this ledger |
 | 2026-07-28T17:42:13Z | CODEX | S2-02 | takeover of Sonnet's frozen exact claim: `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
-| 2026-07-26T14:10:00Z | SONNET5 | S3-01A | new files only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
+| 2026-07-30T11:00:07Z | SONNET5 | S3-01A | corrections to Codex design review 1 only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
+| 2026-07-26T14:10:00Z | SONNET5 | S3-01A | superseded by the correction row above; original new-file claim: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
 | 2026-07-26T15:05:00Z | SONNET5 | S4-01A | new files only: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/__init__.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
 
 
@@ -104,7 +105,13 @@ Plan updated after the user assigned S2-02 corrections to Codex while Sonnet is
 unavailable. Sonnet must keep every S2-02 file frozen until Codex publishes a
 new REVIEW handoff.
 
-1. Keep S1-02/S2-01 and every S3-01A/S4-01A file frozen. S5-00 is approved
+0. **Active (2026-07-30):** S3-01A's four review-1 correction groups are claimed
+   under A-S3-01A-2 below. S4-01A's six correction groups are the next Sonnet
+   item and stay unclaimed until the S3-01A correction handoff is pushed — one
+   queue item at a time. Independent review of Codex-implemented work
+   (S2-02 `0e254b0`, C2-03 `dc571f8`/`fec75f1`) is authorized by the user;
+   `fec75f1`'s S3 host portion is verified in the A-S3-01A-2 handoff.
+1. Keep S1-02/S2-01 and every S2-02/S4-01A file frozen. S5-00 is approved
    and archived; do not claim S5-01 before its explicit gate is satisfied.
 2. Codex owns the still-active exact S2-02 claim and will address only the five
    correction groups in Codex review 1. Preserve accepted metric names, units,
@@ -168,7 +175,26 @@ workflows, backend runtime, or earlier collector scopes.
 
 ## Open Questions
 
-None.
+### Q-12 — Home for the shared bounded-identifier validator (Sonnet 5, 2026-07-30)
+
+S3-01A's corrections need a DNS-label-style `target_id` validator and bounded
+interface/name validation in three host modules, but both natural homes are
+frozen: `collector/config.py` and `collector/checks/__init__.py` are inside the
+active S2-02 claim. Following S4-01A's precedent for `envelope.py`, the
+correction duplicates a module-private validator rather than importing a
+private symbol across a frozen claim boundary. Proposal for S3-01B, which owns
+config and registration: consolidate one shared validator (config-level for
+configured values, `checks/__init__.py` for construction-time assertions) and
+delete the duplicates. Codex decision requested; not blocking the correction.
+
+### Q-13 — Bounded label for a multi-mount disk family (Sonnet 5, 2026-07-30)
+
+`host_disk` emits no label today, so a second configured mount would be
+indistinguishable, and a raw mount path is a forbidden label. `METRICS.md` has
+no host families yet. Proposal: give the disk family an operator-assigned
+`target_id` when S3-01B defines the host metric contract, rather than deriving
+a label from the path. Out of this correction's scope; recorded so the choice
+is not made silently.
 
 ---
 
@@ -589,6 +615,54 @@ Implementation commit: `8e96e8c`.
   four groups; runs full Windows and Ubuntu gates; and pushes a separate
   `REVIEW` handoff. A non-Codex reviewer must additionally verify the
   `fec75f1` portability diff before S3-01A can become `DONE`.
+
+#### A-S3-01A-2 — Sonnet 5 correction claim
+
+- **Timestamp:** 2026-07-30T11:00:07Z.
+- **Status:** IN_PROGRESS. Answers Codex design review 1's four blocking groups.
+- **Scope:** exactly the 2026-07-30 File Claims row — the seven `host_*.py`
+  modules, their seven test modules, and this ledger. No config, entry-point,
+  `checks/__init__.py`, contract, dependency, workflow, or S2/S4/S5 edit.
+  `collector/checks/__init__.py` is frozen under the active S2-02 claim, so a
+  shared bounded-identifier helper cannot live there this claim (see Open
+  Questions).
+- **Plan, by review group:**
+  1. **Cancellation-safe `host_service`.** Kill and reap the `systemctl` child
+     on every exit path including external cancellation. Because an
+     already-cancelled coroutine is re-cancelled the moment it awaits, the reap
+     runs as a shielded task so the child is still collected while the original
+     `CancelledError` propagates unchanged. Add direct external-cancellation
+     and shutdown tests asserting the child was killed and reaped.
+  2. **Contract-approved bounded labels.** `HostProcessCheck` and
+     `HostServiceCheck` take a separately validated DNS-label-style `target_id`
+     used for the emitted label; the operational process/service name is
+     retained only for the local lookup and structured logs, never as a label
+     or in `CheckResult.error`. `host_network`'s `interface` (an allowed
+     `METRICS.md` label) is validated against Linux `IFNAMSIZ` bounds and a
+     restricted charset. Empty, whitespace-padded, control-character, and
+     overlong values fail at construction, before any execution.
+  3. **Fail closed on malformed numeric kernel data.** Reject negative and
+     non-finite CPU, memory, disk, load, and network values and impossible
+     totals (available > total, used > total) instead of clamping them into a
+     plausible range; every `max()/min()` clamp that could disguise bad input
+     is removed. CPU and network counter regressions are treated as a counter
+     reset that refreshes the baseline and emits no metrics for that cycle,
+     not as a clamped utilization or rate.
+  4. **Observed-inactive vs cannot-inspect.** `host_process` keeps skipping a
+     genuinely vanished PID but surfaces per-PID permission/I/O failures as a
+     degraded check with no `process_running` metric, since absence cannot be
+     asserted when part of `/proc` was unreadable. `host_service` distinguishes
+     systemd's known states from an undeterminable answer (missing binary,
+     manager/permission failure, unrecognized state) and reports the latter as
+     degraded with no `service_active` metric. Permission-denial coverage for
+     both families.
+- **Also folded in:** `fec75f1` narrowed `host_load`'s catch from
+  `(OSError, AttributeError)` to `OSError`, so a non-`OSError` from the dynamic
+  callable would now escape `run()` and breach `BaseCheck`'s never-raise
+  contract. Restored as part of group 3's validation rework.
+- **Exit:** one correction implementation commit, all four collector gates on
+  Windows and (when `.33` is reachable) Ubuntu, then a separate pushed `REVIEW`
+  handoff. S2/S4/S5 files stay frozen.
 
 ### A-S4-01A-1 — Sonnet 5 claim
 
