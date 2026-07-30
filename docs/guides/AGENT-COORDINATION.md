@@ -68,8 +68,8 @@ The revisions must match; the final command is required remote read-back.
 | ID | Phase | Work item | Owner | Status | Prerequisites | Write scope |
 |---|---:|---|---|---|---|---|
 | S2-02 | 2 | Core network probe activation and hardening | CODEX | REVIEW | S2-01 DONE | Sonnet review below: not approved, 3 corrections |
-| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | corrections handed off at `e81cdaf`; needs Ubuntu gates |
-| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | correction handoff below; commit `0dc7f5d` |
+| S3-01A | 3 | Linux host-health new-file foundation | SONNET5 | REVIEW | S2-02 REVIEW | `e81cdaf`; Ubuntu gates pass, awaiting review only |
+| S4-01A | 4 | Envelope and SQLite cold queue foundation | SONNET5 | REVIEW | S3-01A REVIEW | `0dc7f5d`; Ubuntu gates pass, awaiting review only |
 | S3-01B | 3 | Host-health metrics and runtime integration | CODEX | QUEUED | S2-02 DONE, S3-01A DONE | forward package below |
 | S4-01B | 4 | Durable export spool and replay integration | CODEX | QUEUED | S2-02 DONE, S4-01A DONE | forward package below |
 | S5-01 | 5 | Signed updater verifier and installer foundation | SONNET5 | QUEUED | S2-02, S3-01A, S4-01A DONE; C5-01 DONE | exact scope in S5-01 gate |
@@ -111,13 +111,18 @@ new REVIEW handoff.
 0. **Status (2026-07-30):** both Sonnet correction items are handed off and
    awaiting a non-Sonnet review.
    - S3-01A — four review-1 groups done at `e81cdaf` (A-S3-01A-2 below); now
-     `REVIEW`, needing only Ubuntu gate evidence plus review. `fec75f1`'s S3
-     host portion was independently verified in that handoff, which also fixed
-     the `host_load` catch-narrowing defect it introduced.
+     `REVIEW`. `fec75f1`'s S3 host portion was independently verified in that
+     handoff, which also fixed the `host_load` catch-narrowing defect it
+     introduced.
    - S4-01A — six review-1 groups done at `0dc7f5d` (A-S4-01A-2 below); now
-     `REVIEW`, needing only Ubuntu gate evidence plus review. One deliberate
-     deviation from the claimed plan is flagged in that handoff (group 5), and
-     Q-14 records the lease question it raised.
+     `REVIEW`. One deliberate deviation from the claimed plan is flagged in
+     that handoff (group 5), and Q-14 records the lease question it raised.
+   - **The Ubuntu gate debt on both is cleared (A-GATES-1, 13:44Z).** `.33`
+     answered again, and both exact commits pass all four gates there —
+     S3-01A `612 passed, 1 skipped`, S4-01A `656 passed, 1 skipped`, Ruff and
+     mypy clean and Pylint `10.00/10` on each, plus 25/25 clean repetitions of
+     the cold queue's concurrency classes on Linux. Neither item is waiting on
+     anything now except a non-Sonnet review.
    - **Both authorized reviews are published (A-REVIEW-1, now COMPLETE):**
      S2-02 not approved, three corrections, the load-bearing one being that
      the hostname resolution added under review item 4 sits inside the capped
@@ -1199,7 +1204,8 @@ truncating it for forensics.
 ### A-GATES-1 — Sonnet 5 Ubuntu gate-evidence claim
 
 - **Timestamp:** 2026-07-30T13:36:40Z.
-- **Status:** IN_PROGRESS.
+- **Status:** COMPLETE — results below, `.33` returned to `main` at `0895375`
+  with a clean tree. The claim on the gate host is released.
 - **Why:** the S3-01A (`e81cdaf`) and S4-01A (`0dc7f5d`) correction handoffs
   both went to `REVIEW` with Ubuntu gate evidence owed — `.33` was unreachable
   at 11:16Z and 11:34Z. It answers again as of 13:33Z, so the owed evidence
@@ -1210,6 +1216,61 @@ truncating it for forensics.
   and the fix goes back to the owning correction claim.
 - **Exit:** one pushed ledger commit carrying both commits' Ubuntu results,
   pass or fail, and `.33` returned to `main`.
+
+#### Ubuntu gate evidence for S3-01A and S4-01A
+
+- **Timestamp:** 2026-07-30T13:44:05Z.
+- **Host:** `.33` (`MGPNetworkAnalayses02`), Ubuntu 24.04, kernel
+  `7.0.0-28-generic`, Python 3.12.3, `collector/.venv`. The working copy was
+  clean at `fec75f1` before the run and was detached onto each exact
+  implementation commit, verified by `git rev-parse HEAD` and an empty
+  `git status --short` each time.
+- **S3-01A at exact `e81cdaf5b8ba5967cd0830c8f38d6a83ce0d47b1` — all four
+  gates pass.** Ruff: `All checks passed!`. Mypy: `Success: no issues found in
+  55 source files`. Pylint: `10.00/10`. Pytest: `612 passed, 1 skipped` in
+  7.46s, the single skip being `tests/test_config.py:383: non-POSIX only`.
+  This is the evidence the S3-01A correction handoff owed. Note what it
+  settles: the seven host-check modules are Linux-native, so Windows was never
+  the platform that mattered for them — the 19 Windows failures Codex reported
+  as "confined to frozen S3 modules" in the S2-02 handoff do not reproduce
+  here, and `host_load.py`'s `os.getloadavg` mypy blocker is Windows-only.
+- **S4-01A at exact `0dc7f5d32a58b6fcd1f56b3a6a87f71978e0e19c` — all four
+  gates pass.** Ruff: `All checks passed!`. Mypy: `Success: no issues found in
+  55 source files`. Pylint: `10.00/10`. Pytest: `656 passed, 1 skipped` in
+  7.75s, same single POSIX skip. Windows at the same commit reported
+  `649 passed, 8 skipped`; the difference is entirely the seven POSIX-only
+  tests that skip there and run here.
+- **Cold-queue concurrency, repeated.** `TestConcurrentProducerConsumer`,
+  `TestSimultaneousProducersAndConsumers`, `TestTransactionIsolation`, and
+  `TestBusyLockedDatabase` were run 25 consecutive times on Linux:
+  `failed repetitions: 0 / 25`. This is the run that mattered — SQLite's WAL
+  and `busy_timeout` locking behave differently on Linux than on the Windows
+  box where the 25 repetitions were originally done, and `BEGIN IMMEDIATE` is
+  the property those tests exist to pin.
+- **Both items therefore have no outstanding gate.** S3-01A and S4-01A remain
+  `REVIEW`, now blocked only on independent review, which Sonnet cannot
+  perform on its own implementation.
+
+#### S2-02 resolver finding, reproduced on Ubuntu
+
+- **Timestamp:** 2026-07-30T13:44:05Z.
+- The S2-02 review's measurement was Windows-only when published. Repeated on
+  `.33` at exact `0e254b0`, same method — only `socket.gethostbyname` replaced
+  by a 2.0s-then-fail stand-in, nothing else patched:
+
+```
+1) single probe, timeout_s=0.01 -> 2.00s wall
+2) both awaiting coroutines cancelled after 0.05s
+3) unrelated probe at 1.0s: TimeoutError (1.05s wall)
+4) unrelated probe finished at 2.00s (PermissionError)
+```
+
+- Identical to the Windows figures. Line 4's `PermissionError` is just the
+  unprivileged raw-socket open on the lab host, and it lands at 2.00s — the
+  moment a pool worker is freed by the cancelled resolution, which is the
+  point being measured. The finding is a property of `run_in_thread` and
+  `run_in_executor` cancellation semantics, not of either platform's resolver,
+  and S2-02 correction 1 stands unchanged.
 
 #### S2-02 Sonnet 5 independent review
 
