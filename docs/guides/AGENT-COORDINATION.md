@@ -1410,6 +1410,67 @@ above, which touched no repository file. Codex's own gate evidence at
 `30384526391` — is consistent with the diff and I do not dispute it. It does
 not speak to the finding above, because no gate exercises a slow resolver.
 
+### A-HW-2 — CPU thread-pool worker count becomes configuration
+
+- **Timestamp:** claim 2026-07-30T16:02:51Z (`b6e3b35`, published before any
+  edit); implementation `eb2518f`.
+- **Status:** REVIEW — awaiting Codex. I do not mark this `DONE`.
+- **Why:** the user directed it. ADR 0012 listed four constants derived from
+  retired Pi 3B capacity; this is the first and the worst of them —
+  `ThreadPoolExecutor(max_workers=2)` hard-capped at module level, not
+  configurable by any means, and on a 4-core Cortex-A76 the tightest limit in
+  the collector. Six modules route blocking work through it
+  (`host_cpu`, `host_disk`, `host_memory`, `host_network`, `host_process`,
+  `net_icmp`), so two workers serialize the entire host-health phase.
+
+**What changed.**
+
+1. `cpu_pool_workers` is now a `CollectorSettings` field, applied at startup by
+   `thread_pool.configure()`. The pool is built **lazily on first use**, which
+   is what makes startup configuration authoritative — a module-level
+   executor is constructed at import time, before any settings exist.
+2. **The default is derived, not another literal:**
+   `min(8, max(2, os.cpu_count() or 2))`. On the reference Pi 5 that is 4 —
+   twice the retired figure, which is the shape of the NFR-02 headroom the
+   faster cores bought. Bounded at the top so a 32-core SFF PC does not take
+   32 workers against a 5% average-CPU NFR, and at the bottom so a host whose
+   `cpu_count()` returns `None` still overlaps two blocking reads. A
+   **proposal pending measurement** on the reference platform, per ADR 0008.
+3. `shutdown()` disposes the pool at exit instead of leaving worker threads to
+   process death; `configure()` replaces a live pool with `wait=False`, so
+   reconfiguration cannot deadlock behind an in-flight call.
+
+**Deliberate scope limits.**
+
+- `config.py` and `__main__.py` carry live S2-02 claims. I added one new
+  top-level settings field and the configure/shutdown lines in `main()`.
+  **No target section, no change to `max_concurrent_probes`, no change to
+  check registration or `_build_checks`.**
+- ADR 0012 is **not** edited. It is immutable after acceptance, and this is
+  the work it asked for rather than a revision of it. The remaining three
+  constants it lists stay open; all three are wording or defaults inside the
+  frozen S2-02 scope and belong to whoever closes S2-02.
+- **`cpu_pool_workers` is not re-applied on SIGHUP.** Neither is
+  `max_concurrent_probes` — the reload callback only logs. I left the
+  asymmetry alone rather than fixing half of it under a claim scoped to the
+  thread pool; it is worth a work item of its own.
+
+**A test-design note worth stating.** The config test asserts the default
+against `thread_pool.default_worker_count()`, not against a number. Asserting
+`== 4` would have re-introduced the constant the change exists to remove, and
+would fail on any machine whose core count differs from the CI runner's. The
+old test — `assert _CPU_POOL._max_workers == 2` — was exactly that mistake:
+it pinned the Pi 3B literal in place and would have had to be edited by
+anyone changing the value it was supposedly guarding.
+
+**Gates.** Local, Windows / Python 3.14.5, in a clean venv built from
+`requirements-dev.txt`: pytest **658 passed, 8 skipped**; ruff clean; mypy
+clean on 55 source files; pylint **10.00/10**. **Linux gates are owed** — the
+Ubuntu gate host `.33` was unreachable (`connect to host 192.168.50.33 port
+22: Connection timed out`), and the eight skips are POSIX-only tests that a
+Windows run cannot exercise. This is why the item sits in `REVIEW` rather
+than claiming completion.
+
 ### A-HW-1 — Collector reference hardware re-baseline (Pi 3B → Pi 5)
 
 - **Timestamp:** claim authored 2026-07-30T14:04:22Z, published
