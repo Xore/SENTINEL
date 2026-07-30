@@ -2,7 +2,7 @@
 
 > **Status:** Open research / implementation guide  
 > **Scope:** `collector/` → `monitor/` export pipeline on intermittent Wi-Fi  
-> **Related:** `docs/research-guide-for-gap-topics.md` §8, `ROADMAP.md` §Open Research Questions
+> **Related:** `docs/gap-analysis/research-guide-for-gap-topics.md` §8, `ROADMAP.md` §Open Research Questions
 
 ---
 

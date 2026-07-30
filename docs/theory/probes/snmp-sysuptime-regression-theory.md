@@ -41,7 +41,7 @@ Where available, `hrSystemUptime` (`.1.3.6.1.2.1.25.1.1.0`) measures actual host
 | `sysUpTime` decreases, `hrSystemUptime` (if present) also decreases | Genuine device reboot |
 | `snmpEngineTime` or `hrSystemUptime` OID absent (`noSuchObject`) | Fall back to the rollover-arithmetic check in Part 3; do not treat absence as an error |
 
-This table operationalizes the informal Cisco-community guidance into a deterministic classifier suitable for `collector/ot_snmp.go` / the roadmapped Phase 1e SNMP module.
+This table operationalizes the informal Cisco-community guidance into a deterministic classifier suitable for `collector/checks/ot_snmp.py` (new) / the roadmapped Phase 1e SNMP module.
 
 ---
 

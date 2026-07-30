@@ -1,7 +1,7 @@
 # Root Cause Analysis: Causal Inference vs Correlation
 ## Academic Research for `monitor/rca/`
 
-> **Status:** Research document — feeds into `monitor/rca/graph.py` and `monitor/rca/engine.py`  
+> **Status:** Research document — feeds into `backend/analyse/rca/graph.py` and `monitor/rca/engine.py`  
 > **Priority:** High — the current naive Bayes DAG assumes conditional independence between symptoms, which is a known weakness. This document provides the theoretical grounding and practical fixes.
 
 ---
@@ -160,7 +160,7 @@ For the current DAG with pre-defined cause nodes and no latent confounders, this
 
 ## 5. Updated DAG: Fixing the Conditional Independence Violations
 
-The following changes are needed in `monitor/rca/graph.py` to fix the three main conditional independence violations identified above:
+The following changes are needed in `backend/analyse/rca/graph.py` to fix the three main conditional independence violations identified above:
 
 ### 5a. Split CONGESTION from WAN_CONGESTION
 
@@ -284,11 +284,11 @@ def fuse_collector_beliefs(collector_results: list[dict]) -> dict:
 | Item | File | Status |
 |---|---|---|
 | CIRCA distribution-shift scoring (KS test) | `monitor/rca/circa.py` | **New file — create** |
-| Intermediate CONGESTION node in DAG | `monitor/rca/graph.py` | **Missing — add** |
-| NTP_FAILURE cause node | `monitor/rca/graph.py` | **Missing — add** |
-| COLLECTOR_OVERLOAD cause node | `monitor/rca/graph.py` | **Missing — add** |
+| Intermediate CONGESTION node in DAG | `backend/analyse/rca/graph.py` | **Missing — add** |
+| NTP_FAILURE cause node | `backend/analyse/rca/graph.py` | **Missing — add** |
+| COLLECTOR_OVERLOAD cause node | `backend/analyse/rca/graph.py` | **Missing — add** |
 | Dempster-Shafer multi-collector fusion | `monitor/rca/fusion.py` | **New file — create** |
-| Symptom→symptom edges removed | `monitor/rca/graph.py` | Check — verify none exist |
+| Symptom→symptom edges removed | `backend/analyse/rca/graph.py` | Check — verify none exist |
 | Cross-collector discriminator in decision tree | `monitor/rca/engine.py` | Partially spec’d in ROADMAP |
 
 ---

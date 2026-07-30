@@ -11,12 +11,19 @@ and *why*, and the coordination ledgers carry the live claims and reviews for
 whatever is being worked on right now. If you are looking for something to pick
 up, start with the issue list.
 
+The full requirement set — all 18 phases, not just the collector — is
+[`architecture/REQUIREMENTS-TRACEABILITY.md`](architecture/REQUIREMENTS-TRACEABILITY.md).
+Every row that is not complete links its issue. The theory notes under
+[`theory/`](theory/) are not background reading only: most end in a checklist of
+concrete items, and the outstanding ones are tracked as issues labelled `theory`.
+
 ## Start here
 
 | Need | Document |
 |---|---|
 | Something to work on | [Open issues](https://github.com/Xore/SENTINEL/issues) |
 | Target system design | [Extended architecture](architecture/ARCHITECTURE-V2-EXTENDED.md) |
+| What is required, and what is built | [Requirements traceability](architecture/REQUIREMENTS-TRACEABILITY.md) |
 | Implementation order and ownership | [Sonnet implementation guide](guides/SONNET-5-IMPLEMENTATION-GUIDE.md) |
 | Current Codex/Sonnet work | [Agent coordination](guides/AGENT-COORDINATION.md) |
 | Current Codex/Kimi backend work | [Backend coordination](guides/CODEX-KIMI-COORDINATION.md) |

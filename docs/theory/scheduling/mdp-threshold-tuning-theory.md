@@ -1,5 +1,5 @@
 # MDP Adaptive Scheduler: State-Transition Threshold Tuning
-## Research Backlog Item — Gap #2 from `docs/gap-analysis-collector-vs-standalone.md`
+## Research Backlog Item — Gap #2 from `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`
 
 > **Status:** Research document. Addresses how to set and validate the STABLE/SUSPECT/DEGRADED/DOWN transition thresholds in `docs/mdp-adaptive-scheduling-theory.md` without a network-specific reward function to optimize against.
 > **Scope:** Why exact MDP/POMDP reward-based threshold optimization is unlikely to be tractable for a single small network, what the adaptive-polling and control-theory literature offers instead, and a concrete hysteresis-based tuning procedure grounded in this project's own historical data.
@@ -32,7 +32,7 @@ Across both control theory and the adaptive-polling literature, the well-known f
 
 ## Part 3 — Concrete Tuning and Validation Procedure
 
-Since no literature-derived threshold values transfer directly to an arbitrary network (Part 1), thresholds must be tuned empirically against this project's own historical data, following the same validation pattern already used for the anomaly-detection EWMA parameters and the Phase 4 MDP backtest referenced in `docs/research-guide-for-gap-topics.md` §4.2:
+Since no literature-derived threshold values transfer directly to an arbitrary network (Part 1), thresholds must be tuned empirically against this project's own historical data, following the same validation pattern already used for the anomaly-detection EWMA parameters and the Phase 4 MDP backtest referenced in `docs/gap-analysis/research-guide-for-gap-topics.md` §4.2:
 
 1. **Define the cost trade-off explicitly, even if subjectively**, before tuning: pick a target maximum acceptable detection latency for a genuine outage (e.g., "a DOWN target must be detected within 60 seconds") and a target maximum acceptable false-alarm rate (e.g., "no more than 1 spurious SUSPECT transition per target per day under normal conditions"). This makes the otherwise-implicit reward function explicit and auditable, even without solving a formal POMDP.
 2. **Add hysteresis to every state transition** (§2.3): specify separate up-thresholds and down-thresholds for each STABLE→SUSPECT→DEGRADED→DOWN boundary, with the down-threshold set looser (i.e., requiring a larger improvement to step back down) than the up-threshold.
@@ -47,7 +47,7 @@ Since no literature-derived threshold values transfer directly to an arbitrary n
 |---|---|
 | `docs/anomaly-detection-theory.md` | The hysteresis/smoothing approach recommended here (§2.3) should reuse the same EWMA/CUSUM machinery and tuning process already specified there, rather than introducing an independently-tuned smoothing parameter for the MDP scheduler. |
 | `docs/probe-budget-small-n-theory.md` | Both documents converge on the same underlying recommendation: prefer a simple, exactly-computable or explicitly-thresholded mechanism over full optimal-control machinery (POMDP value iteration here; Frank-Wolfe there) at this project's scale, and validate empirically against historical data rather than relying on literature-derived closed-form values. |
-| `docs/research-guide-for-gap-topics.md` §4.2 | This document's Part 3 tuning procedure is the concrete instantiation of the MDP backtest that guide already scoped, with the added hysteresis and explicit cost-tradeoff steps this document contributes. |
+| `docs/gap-analysis/research-guide-for-gap-topics.md` §4.2 | This document's Part 3 tuning procedure is the concrete instantiation of the MDP backtest that guide already scoped, with the added hysteresis and explicit cost-tradeoff steps this document contributes. |
 
 ---
 

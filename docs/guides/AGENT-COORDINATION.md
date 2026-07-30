@@ -98,6 +98,7 @@ scopes and gates live in this document (S5-01 Gate, Forward Probe Packages).
 
 | Timestamp (UTC) | Agent | Work ID | Files/directories |
 |---|---|---|---|
+| 2026-07-30T18:41:00Z | SONNET5 | A-ISSUES-2 | documentation only, directed by the user after they asked whether every `docs/` file had actually been checked (it had not): `docs/architecture/REQUIREMENTS-TRACEABILITY.md` (adds an `Issue` column and a header note), `docs/gap-analysis/gap-analysis-collector-vs-standalone.md` (one scope note), `docs/README.md`, `docs/guides/SONNET-5-IMPLEMENTATION-GUIDE.md`, this ledger, and **file-path corrections only** across 19 files under `docs/theory/`. The theory edits rewrite Go-era and v1-era backticked paths (`collector/checks/icmp.go` → `collector/checks/net_icmp.py`, `monitor/detector.py` → `backend/analyse/detector.py`, and similar) to the v2 layout; no analysis, threshold, citation or recommendation is altered. **No file under `collector/`, `backend/`, `.github/`, `deploy/`, or `docs/contracts/` is edited, and no work item changes status.** |
 | 2026-07-30T17:34:00Z | SONNET5 | A-ISSUES-1 | documentation only, directed by the user: this ledger, `docs/guides/CODEX-KIMI-COORDINATION.md`, `docs/guides/SONNET-5-IMPLEMENTATION-GUIDE.md`, `docs/guides/OPUS-AGENT-GUIDE-V2.md`, `docs/guides/07-network-map-and-monitoring-roadmap.md`, `docs/collector/ROADMAP.md`, `docs/collector/SUGGESTIONS.md`, `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`, `docs/archive/coordination/README.md`, `docs/README.md`, `README.md`. **No file under `collector/`, `backend/`, `.github/`, `deploy/`, or `docs/contracts/` is edited, and no work item changes status.** Edits to `CODEX-KIMI-COORDINATION.md` are structural only — an `Issue` column, one new protocol rule, and replacing the Work Package Contracts prose with pointers to the issues that now carry it verbatim. No live Codex or Kimi claim is altered. |
 | 2026-07-30T16:39:11Z | SONNET5 | A-ARCHIVE-1 | archive move only, under the user's standing rule ("when any task is done, move the referenced documents to the archive folder"): `docs/guides/SONNET-5-WORK-QUEUE.md` → `docs/archive/coordination/`, plus the inbound links the archive policy requires be fixed in the same commit — `docs/archive/coordination/README.md`, `docs/README.md` if it links the queue, this ledger, and **one docstring line each** in `collector/checks/host_{cpu,disk,load,memory,network,process,service}.py`. Those seven are text-only pointer corrections inside a module docstring: **no code, no behaviour, no test change.** S3-01A is `DONE` and unfrozen as of 16:32Z. |
 | 2026-07-30T16:32:51Z | SONNET5 | REVIEW-S3-01A/S4-01A | independent review of both items on the user's explicit authorization ("continue with the rest — you are allowed to review them yourself"), Codex having not picked either up. Read-only over `42262a4..e81cdaf` (S3-01A) and `0dc7f5d` (S4-01A). Write scope is narrow and covers **only** what the review found: `collector/store/sqlite_queue.py` and `collector/tests/store/test_sqlite_queue.py` (the `_write_transaction` COMMIT-failure defect and its regression test — nothing else in either file), plus this ledger. **No `collector/checks/host_*.py` file or its test is edited**: the S3-01A review found no defect requiring one. |
@@ -1603,6 +1604,55 @@ The skip counts differ by platform guard, not coverage. `.33` was returned to
 satisfied — S2-02, S3-01A and S4-01A are all `DONE`. S3-01B and S4-01B are
 Codex's to pick up. C2-03's three corrections remain open and are also Codex's;
 they were not part of this authorization and are untouched.
+
+### A-ISSUES-2 — the first issue sweep was incomplete; the rest of `docs/` is now covered
+
+- **Timestamp:** 2026-07-30T18:41:00Z. Directed by the user, who asked whether every
+  document under `docs/` had actually been checked for missing features and missing
+  architecture functions.
+- **The honest answer was no.** A-ISSUES-1 read 8 of 85 markdown files — the ones that
+  already looked like a backlog. `docs/architecture/`, `docs/contracts/`, `docs/theory/`
+  (26 files), `docs/ml/`, `docs/security/` and the research notes were never scanned.
+  Recording this because the same failure mode will recur: a sweep that samples only the
+  documents *named* like roadmaps will always miss work that is specified inside design
+  and theory documents.
+- **What the second pass found and filed — 67 further issues (#66–#132):**
+  - **#66–#120** — one issue per open row of
+    `docs/architecture/REQUIREMENTS-TRACEABILITY.md`, whose 75-row matrix spans all
+    18 phases. 19 rows already had issues from A-ISSUES-1 and were mapped, not
+    duplicated. The tiers that had **no** representation in the issue list at all were
+    the analysis tier (`ANA-*`), adaptive scheduling (`SCH-*`), ML (`MLT-*`), the
+    production API and UI (`API-01`, `UI-01`), production deployment (`DEP-01`,
+    `DEP-03`), federation and the global tier (`FED-*`, `COR-*`), federated learning
+    (`FML-*`), HA and scale (`HA-*`, `SCL-*`), air-gap (`AIR-*`), RBAC (`RBAC-*`),
+    alert routing (`ALT-02`) and capacity (`CAP-01`).
+  - **#121–#130** — the checklists at the end of the `docs/theory/` notes. These are
+    concrete missing functions, not commentary: winsorisation and MAD-based σ in the
+    detector, three absent RCA cause nodes, Poisson probe spacing and Wilson-score loss
+    CIs for ICMP, active-vs-passive RTT labelling, the OT protocol-signature and
+    traffic-shape pre-checks, an entire DHCP segment-health probe, the eBPF BTF policy
+    decision, the storage priority order, and the Wi-Fi OTLP batching profile.
+  - **#131–#132** — `docs/security/code-scanning-remediation.md`. Only finding 6
+    (unpinned Actions) is live; the other eight target `collector/main.go`,
+    `collector/go.mod` and `monitor/outage_monitor.py`, none of which exist any more.
+    The document still reads as a live security backlog, which is the hazard.
+- **Go-era drift corrected.** 19 files under `docs/theory/` cited Go and v1 paths in
+  their implementation checklists. All backticked path tokens were rewritten to the v2
+  layout (`collector/checks/icmp.go` → `collector/checks/net_icmp.py`,
+  `monitor/detector.py` → `backend/analyse/detector.py`, `collector/net_dhcp_check.go`
+  → `collector/checks/net_dhcp.py`, and so on). Analysis, thresholds, citations and
+  recommendations are untouched. One caveat is recorded in #128: the eBPF constraints
+  document reasons about the Go `cilium/ebpf` library throughout, so two of its six
+  recommendations need re-grounding in `bcc` before they are implemented — that is
+  flagged in the issue rather than silently rewritten, because it is a substantive
+  question, not a path.
+- **`REQUIREMENTS-TRACEABILITY.md` is now the authority on total remaining scope.** The
+  gap analysis covers the collector only and says so; the matrix spans all 18 phases and
+  links an issue per row.
+- **One stale row noticed, not fixed:** `STO-02` claims "no implementation", but
+  `store/sqlite_queue.py` and `store/envelope.py` exist. #81 carries the re-audit.
+- **Nothing under `collector/`, `backend/`, `.github/`, `deploy/` or `docs/contracts/`
+  was touched, and no work item changed status.**
 
 ### A-ISSUES-1 — the backlog moves to GitHub Issues
 

@@ -51,7 +51,7 @@ The roadmap's transition rule `STABLE -> SUSPECT if loss > 1% OR rtt_p95 > 2x ba
 
 ### 2.3 Empirical Validation Requirement (Unavoidable)
 
-Both Zabala et al. (2023) and Mahmoody et al. (2015) emphasize that their theoretical schedules were **validated against real captured data / real probes**, not deployed on assumed parameters. The collector roadmap should follow the same discipline: before shipping Phase 4, backtest the CUSUM-derived STABLEâ†’SUSPECT threshold (Â§2.2A above) against at least 30 days of the standalone monitor's historical `ping_samples`/`events` tables, exactly as already scoped in `docs/research-guide-for-gap-topics.md` Â§4.2â€“4.4. This document supplies the missing theoretical justification for *why* CUSUM-based thresholds are preferable to arbitrary constants; the research guide supplies the *validation procedure*.
+Both Zabala et al. (2023) and Mahmoody et al. (2015) emphasize that their theoretical schedules were **validated against real captured data / real probes**, not deployed on assumed parameters. The collector roadmap should follow the same discipline: before shipping Phase 4, backtest the CUSUM-derived STABLEâ†’SUSPECT threshold (Â§2.2A above) against at least 30 days of the standalone monitor's historical `ping_samples`/`events` tables, exactly as already scoped in `docs/gap-analysis/research-guide-for-gap-topics.md` Â§4.2â€“4.4. This document supplies the missing theoretical justification for *why* CUSUM-based thresholds are preferable to arbitrary constants; the research guide supplies the *validation procedure*.
 
 ---
 
@@ -67,8 +67,8 @@ Once a target enters SUSPECT/DEGRADED, Phase 5's Frank-Wolfe-approximated budget
 |---|---|---|
 | Cite Cohen et al. (2013) and Mahmoody et al. (2015) alongside Zabala et al. (2023) in `ROADMAP.md` Phase 4 | `docs/collector/ROADMAP.md` | **Missing — add this** |
 | Clarify that Zabala et al. models single-processor capture/analysis contention, not multi-target reachability scheduling | `docs/collector/ROADMAP.md` | **Missing — add this** |
-| Replace ad hoc `loss>1% OR rtt_p95>2x` rule with CUSUM-alarm-based transition (reusing `anomaly-detection-theory.md` Â§2.2 parameters) | `collector/main.go` (Phase 4 state machine) | Specified here — needs implementation |
-| Backtest CUSUM-derived thresholds against 30+ days of `monitor/` historical data before enabling in production | N/A (validation step) | Already scoped in `docs/research-guide-for-gap-topics.md` Â§4 |
+| Replace ad hoc `loss>1% OR rtt_p95>2x` rule with CUSUM-alarm-based transition (reusing `anomaly-detection-theory.md` Â§2.2 parameters) | `collector/__main__.py` (Phase 4 state machine) | Specified here — needs implementation |
+| Backtest CUSUM-derived thresholds against 30+ days of `monitor/` historical data before enabling in production | N/A (validation step) | Already scoped in `docs/gap-analysis/research-guide-for-gap-topics.md` Â§4 |
 | Document the shared "uncertainty" interpretation linking Phase 4 states and Phase 5 variance weights | `docs/collector/ROADMAP.md` | **Missing — add this** |
 
 ---

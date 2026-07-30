@@ -40,6 +40,12 @@ backend outage.
 > the work board wins on *item status* and this table wins on *what code exists*.
 > The **Work item** column links the GitHub issue that holds each open scope;
 > a phase with no issue is complete.
+> **This table covers the collector only.** The analysis tier, ML, production API
+> and UI, deployment, federation, HA, RBAC, audit and air-gap requirements are not
+> here at all — they live in
+> [`REQUIREMENTS-TRACEABILITY.md`](../architecture/REQUIREMENTS-TRACEABILITY.md),
+> which spans all 18 phases and links an issue per requirement. Reading this page
+> as the whole backlog understates the remaining work by a wide margin.
 
 | Phase | Description | Built | Work item |
 |---|---|---|---|

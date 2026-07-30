@@ -1,7 +1,7 @@
 # Segment Health: ARP Storm & DHCP Starvation Detection Theory
 ## Academic Research for `collector/` Phase 3 Implementation
 
-> **Status:** Research document — feeds directly into `docs/collector/ROADMAP.md` Phase 3 (`net_arp_watch.go`, `net_segment_health.go`, `net_dhcp_check.go`) and the "excessive client" detection goal described there.
+> **Status:** Research document — feeds directly into `docs/collector/ROADMAP.md` Phase 3 (`net_arp.py`, `net_segment_health.py`, `net_dhcp.py`) and the "excessive client" detection goal described there.
 > **Priority:** Medium-High — Phase 3's current spec leaves the ARP-rate anomaly threshold as an unspecified "> N ARP replies per minute" and gives no detection method for DHCP-side congestion beyond a simple lease-percentage check. This document supplies concrete, citable detection methods and closes that gap, matching the depth of the sibling documents already in `docs/` (`anomaly-detection-theory.md`, `mdp-adaptive-scheduling-theory.md`, `probe-budget-allocation.md`).
 
 ---
@@ -16,13 +16,13 @@ The roadmap's current placeholder ("> N ARP replies per minute" from an IP) is a
 
 Combining two independent academic detection families gives a stronger signal than rate alone:
 
-**A. Volumetric/rate-based detection (broadcast storms).** Track ARP replies-per-minute per source IP using the ARP table diff already available from the standalone monitor's neighbour-table polling. Ijcsi's "ARP Storm Detection and Prevention Measures" formalizes the storm case as a sustained deviation from a learned per-host baseline rate rather than a single global constant — supporting the same "derive from your own baseline" approach already recommended in `docs/research-guide-for-gap-topics.md` Â§7 for this exact metric.
+**A. Volumetric/rate-based detection (broadcast storms).** Track ARP replies-per-minute per source IP using the ARP table diff already available from the standalone monitor's neighbour-table polling. Ijcsi's "ARP Storm Detection and Prevention Measures" formalizes the storm case as a sustained deviation from a learned per-host baseline rate rather than a single global constant — supporting the same "derive from your own baseline" approach already recommended in `docs/gap-analysis/research-guide-for-gap-topics.md` Â§7 for this exact metric.
 
 **B. Consistency-based detection (spoofing).** DS-ARP (Hindawi, *The Scientific World Journal*, 2014, "DS-ARP: A New Detection Scheme for ARP Spoofing Attacks Based on Routing Trace for Ubiquitous Environments") detects spoofing not by rate but by **cross-checking the claimed IP-MAC binding against an independent routing/path trace** — if a host's MAC-to-IP mapping changes without a corresponding, plausible network-path change, it is flagged. For this collector, the practical equivalent is: maintain a **persistent IPâ†’MAC binding table** (already partially implied by the existing ARP/neighbour polling) and alert whenever an existing binding changes MAC address without the old MAC disappearing entirely from the segment first (a legitimate device replacement typically shows old-MAC-vanishes-then-new-MAC-appears, not old-and-new-MAC-both-claiming-the-same-IP simultaneously).
 
-A 2022 SDN-focused paper (MDPI *Electronics* 11(13):1965, "An Extendable Software Architecture for Mitigating ARP Spoofing-Based Attacks in SDN Data Plane Layer") reinforces that IP-MAC binding-table verification, not packet rate, is the primary academically validated technique for the spoofing case specifically, while rate-based methods remain the correct tool for the storm case. **Both mechanisms should be implemented in `net_arp_watch.go`, not just one.**
+A 2022 SDN-focused paper (MDPI *Electronics* 11(13):1965, "An Extendable Software Architecture for Mitigating ARP Spoofing-Based Attacks in SDN Data Plane Layer") reinforces that IP-MAC binding-table verification, not packet rate, is the primary academically validated technique for the spoofing case specifically, while rate-based methods remain the correct tool for the storm case. **Both mechanisms should be implemented in `net_arp.py`, not just one.**
 
-### 1.3 Recommended Detection Logic for `net_arp_watch.go`
+### 1.3 Recommended Detection Logic for `net_arp.py`
 
 ```go
 // Two independent checks per ARP-table poll cycle:
@@ -43,7 +43,7 @@ This directly implements the storm-vs-spoofing distinction from the literature r
 
 ### 1.4 Applicability to Wireless/OT Segments
 
-The wireless sensor network broadcast-storm literature (MDPI *Sensors* 11(6):5952, "Adaptive Broadcasting Method Using Neighbor Type Information in Wireless Sensor Networks") is a useful cross-domain reference confirming that **broadcast storms scale with neighbor density**, not just attack intent — a legitimately crowded Wi-Fi segment (many IoT devices) can trigger false positives on a naive global threshold. This reinforces per-segment, density-aware baselining (Phase 3b's `net_segment_health.go`) rather than a single network-wide constant, and is consistent with the TU Munich (2024) finding already cited in `docs/collector/ROADMAP.md` that congestion should be correlated against neighbour count.
+The wireless sensor network broadcast-storm literature (MDPI *Sensors* 11(6):5952, "Adaptive Broadcasting Method Using Neighbor Type Information in Wireless Sensor Networks") is a useful cross-domain reference confirming that **broadcast storms scale with neighbor density**, not just attack intent — a legitimately crowded Wi-Fi segment (many IoT devices) can trigger false positives on a naive global threshold. This reinforces per-segment, density-aware baselining (Phase 3b's `net_segment_health.py`) rather than a single network-wide constant, and is consistent with the TU Munich (2024) finding already cited in `docs/collector/ROADMAP.md` that congestion should be correlated against neighbour count.
 
 ---
 
@@ -51,7 +51,7 @@ The wireless sensor network broadcast-storm literature (MDPI *Sensors* 11(6):595
 
 ### 2.1 Beyond Simple Lease-Percentage Thresholds
 
-The roadmap's current spec for `net_dhcp_check.go` ("alert if lease_count / max_leases > 80%") only detects **exhaustion after the fact**. Tripathi & Hubballi (2017, *Journal of Computer Virology and Hacking Techniques* 14(3):233â€“244, "Detecting stealth DHCP starvation attack using machine learning approach") show that a **stealth** starvation attack can exhaust the lease pool gradually and evade naive rate-based IDS because each individual DHCP request looks legitimate; detection instead requires **profiling the distribution of DHCP message types** (DISCOVER/OFFER/REQUEST/ACK/DECLINE ratios) and flagging deviation from the learned normal distribution, achieved in their study using one-class classifiers on real network captures.
+The roadmap's current spec for `net_dhcp.py` ("alert if lease_count / max_leases > 80%") only detects **exhaustion after the fact**. Tripathi & Hubballi (2017, *Journal of Computer Virology and Hacking Techniques* 14(3):233â€“244, "Detecting stealth DHCP starvation attack using machine learning approach") show that a **stealth** starvation attack can exhaust the lease pool gradually and evade naive rate-based IDS because each individual DHCP request looks legitimate; detection instead requires **profiling the distribution of DHCP message types** (DISCOVER/OFFER/REQUEST/ACK/DECLINE ratios) and flagging deviation from the learned normal distribution, achieved in their study using one-class classifiers on real network captures.
 
 Hubballi & Tripathi's earlier companion paper (2017, *Computers & Security* 65:387â€“404, "A closer look into DHCP starvation attack in wireless networks") proposes a lighter-weight, non-ML alternative directly implementable in Go: computing the **Hellinger distance** between a training-period distribution of DHCP message types and the live distribution, flagging an attack when the distance exceeds a learned threshold. This is a much better fit for a lightweight collector agent than a full ML pipeline, since it requires only counting message types and a simple distance calculation.
 
@@ -59,7 +59,7 @@ Hubballi & Tripathi's earlier companion paper (2017, *Computers & Security* 65:3
 
 The same authors describe an attack variant that abuses the client-side IP-conflict-detection mechanism: a malicious host injects a fake ARP reply during a victim's pre-use IP-conflict probe, causing the victim to broadcast a `DHCPDECLINE` and forfeit a valid lease repeatedly. This is directly relevant to the collector's design because it means **an unusually high rate of `DHCPDECLINE` messages relative to `DHCPACK`** is itself a distinct, specific indicator — not merely "lease pool getting full" — and should be tracked as its own counter rather than folded into the generic lease-percentage metric.
 
-### 2.3 Practical Detection Plan for `net_dhcp_check.go`
+### 2.3 Practical Detection Plan for `net_dhcp.py`
 
 ```go
 // For dnsmasq/Pi-hole-FTL deployments (already the user's DNS/DHCP stack):
@@ -84,12 +84,12 @@ Most recent detection papers (2023â€“2025) frame DHCP starvation mitigation
 
 | Item | File | Status |
 |---|---|---|
-| Volumetric ARP-rate check with per-host baseline (mean+3Ïƒ, empirically derived) | `collector/net_arp_watch.go` | Specified here — needs implementation |
-| IP-MAC binding-consistency check (spoofing detection, independent of rate) | `collector/net_arp_watch.go` | **Missing from current roadmap — add this** |
-| Density-aware baselining correlated with neighbour count | `collector/net_segment_health.go` | Partially specified in `ROADMAP.md` Â§3b — now grounded in WSN broadcast-storm literature |
-| DHCP message-type distribution tracking (DISCOVER/OFFER/REQUEST/ACK/DECLINE) | `collector/net_dhcp_check.go` | **Missing — add this** |
-| Hellinger-distance-based distribution anomaly check | `collector/net_dhcp_check.go` | **Missing — add this** |
-| DECLINE-to-ACK ratio tracking (Induced DHCP Starvation indicator) | `collector/net_dhcp_check.go` | **Missing — add this** |
+| Volumetric ARP-rate check with per-host baseline (mean+3Ïƒ, empirically derived) | `collector/checks/net_arp.py` (new) | Specified here — needs implementation |
+| IP-MAC binding-consistency check (spoofing detection, independent of rate) | `collector/checks/net_arp.py` (new) | **Missing from current roadmap — add this** |
+| Density-aware baselining correlated with neighbour count | `collector/checks/net_segment_health.py` (new) | Partially specified in `ROADMAP.md` Â§3b — now grounded in WSN broadcast-storm literature |
+| DHCP message-type distribution tracking (DISCOVER/OFFER/REQUEST/ACK/DECLINE) | `collector/checks/net_dhcp.py` (new) | **Missing — add this** |
+| Hellinger-distance-based distribution anomaly check | `collector/checks/net_dhcp.py` (new) | **Missing — add this** |
+| DECLINE-to-ACK ratio tracking (Induced DHCP Starvation indicator) | `collector/checks/net_dhcp.py` (new) | **Missing — add this** |
 | Explicit note that SDN-specific mitigation literature does not transfer to this non-SDN agent | `docs/collector/ROADMAP.md` Phase 3 | **Missing — add this** |
 
 ---

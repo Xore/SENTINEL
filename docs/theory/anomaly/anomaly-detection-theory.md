@@ -1,7 +1,7 @@
 # Anomaly Detection Theory: Holt-Winters & CUSUM ARL
 ## Academic Research for `monitor/` Implementation
 
-> **Status:** Research document — feeds directly into `monitor/residuals.py` and `monitor/detector.py`  
+> **Status:** Research document — feeds directly into `monitor/residuals.py` and `backend/analyse/detector.py`  
 > **Priority:** High — parameter choices here determine false positive rate and detection latency for the entire system.
 
 ---
@@ -406,14 +406,14 @@ Direct mapping from this research to code that needs to be written:
 | MSE parameter optimisation with bounds [0.01–0.5] | `monitor/residuals.py` | Specified — needs implementation |
 | Per-metric default parameters (table in §1.4) | `monitor/config.py` | Specified — needs implementation |
 | Hyndman initialisation (2×m samples) | `monitor/residuals.py` | Specified — needs implementation |
-| 48h warm-up alarm suppression | `monitor/detector.py` | Specified — needs implementation |
-| CUSUM with k_s=0.5, h_s=5 | `monitor/detector.py` | Partially implemented in ROADMAP sketch |
-| Winsorisation at ±3σ before CUSUM | `monitor/detector.py` | **Missing — add this** |
-| MAD-based σ estimation | `monitor/detector.py` | **Missing — add this** |
-| Metric-specific variance transforms | `monitor/transforms.py` | **Missing — create this file** |
-| CUSUM reset to zero on alarm | `monitor/detector.py` | Implemented in ROADMAP sketch |
-| EWMA with λ=0.2, L=3.0 | `monitor/detector.py` | Partially implemented |
-| Per-slot σ (168 hour-of-week buckets) | `monitor/detector.py` | Partially implemented |
+| 48h warm-up alarm suppression | `backend/analyse/detector.py` | Specified — needs implementation |
+| CUSUM with k_s=0.5, h_s=5 | `backend/analyse/detector.py` | Partially implemented in ROADMAP sketch |
+| Winsorisation at ±3σ before CUSUM | `backend/analyse/detector.py` | **Missing — add this** |
+| MAD-based σ estimation | `backend/analyse/detector.py` | **Missing — add this** |
+| Metric-specific variance transforms | `backend/analyse/transforms.py` | **Missing — create this file** |
+| CUSUM reset to zero on alarm | `backend/analyse/detector.py` | Implemented in ROADMAP sketch |
+| EWMA with λ=0.2, L=3.0 | `backend/analyse/detector.py` | Partially implemented |
+| Per-slot σ (168 hour-of-week buckets) | `backend/analyse/detector.py` | Partially implemented |
 
 ---
 

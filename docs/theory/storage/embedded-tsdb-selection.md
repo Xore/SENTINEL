@@ -2,7 +2,7 @@
 
 > **Status:** Open research / implementation guide  
 > **Scope:** `monitor/` backend storage engine for probe time-series data  
-> **Related:** `docs/research-guide-for-gap-topics.md` §9, `ROADMAP.md` §Open Research Questions  
+> **Related:** `docs/gap-analysis/research-guide-for-gap-topics.md` §9, `ROADMAP.md` §Open Research Questions  
 > **Reference architecture:** Pelkonen et al. "Gorilla: A Fast, Scalable, In-Memory TSDB."
 > VLDB 2015 — already cited in `docs/theory/probes/gorilla-compression-go-theory.md`
 

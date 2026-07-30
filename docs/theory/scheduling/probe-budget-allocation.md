@@ -239,7 +239,7 @@ def probe_phase_offset(target_id: str, cycle_seconds: int = 60) -> float:
 | Per-target σ tracking (residual std dev) | `monitor/residuals.py` | **Add — feed into scheduler** |
 | Probe phase offset (anti-thundering-herd) | `monitor/scheduler.py` | **Implement** |
 | n_min statistical guarantee logging | `monitor/scheduler.py` | **Add — warn if budget too low** |
-| Expose probe allocation as Prometheus metric | `collector/metrics.go` | **Add** |
+| Expose probe allocation as Prometheus metric | `collector/checks/net_icmp.py` + `collector/transport/otlp.py` | **Add** |
 
 ---
 

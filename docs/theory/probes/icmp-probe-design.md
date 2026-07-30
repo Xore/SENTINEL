@@ -1,7 +1,7 @@
 # ICMP RTT Probe Design: Statistics & Implementation
 ## Academic Research for `collector/` ICMP Checks
 
-> **Status:** Research document — feeds into `collector/checks/icmp.go`  
+> **Status:** Research document — feeds into `collector/checks/net_icmp.py`  
 > **Priority:** High — ICMP RTT is the foundation of every health check in the system. Correct probe design determines whether RTT distributions are statistically meaningful.
 
 ---
@@ -277,14 +277,14 @@ func PoissonDelayBounded(mean time.Duration) time.Duration {
 
 | Item | File | Status |
 |---|---|---|
-| Poisson inter-probe delays (exponential distribution) | `collector/checks/icmp.go` | **Missing — implement** |
-| `ProbeTarget(n, meanInterval)` function | `collector/checks/icmp.go` | **Missing — implement** |
-| p50/p95/p99/stddev/loss computation | `collector/checks/icmp.go` | Partially spec’d |
-| Wilson score CI for loss rate | `collector/checks/icmp.go` | **Missing — add** |
-| Probe count by MDP state | `collector/checks/icmp.go` | **Missing — add** |
-| ICMP rate-limit detection heuristic | `collector/checks/icmp.go` | **Missing — add** |
-| log(rtt_p95) transform before Holt-Winters | `monitor/transforms.py` | Specified in anomaly-detection-theory.md |
-| RTT CI in JSON push envelope | `collector/push.go` | **Missing — add fields** |
+| Poisson inter-probe delays (exponential distribution) | `collector/checks/net_icmp.py` | **Missing — implement** |
+| `ProbeTarget(n, meanInterval)` function | `collector/checks/net_icmp.py` | **Missing — implement** |
+| p50/p95/p99/stddev/loss computation | `collector/checks/net_icmp.py` | Partially spec’d |
+| Wilson score CI for loss rate | `collector/checks/net_icmp.py` | **Missing — add** |
+| Probe count by MDP state | `collector/checks/net_icmp.py` | **Missing — add** |
+| ICMP rate-limit detection heuristic | `collector/checks/net_icmp.py` | **Missing — add** |
+| log(rtt_p95) transform before Holt-Winters | `backend/analyse/transforms.py` | Specified in anomaly-detection-theory.md |
+| RTT CI in JSON push envelope | `collector/transport/otlp.py` | **Missing — add fields** |
 
 ---
 

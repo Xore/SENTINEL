@@ -27,6 +27,17 @@
 
 This guide's phase order still governs *sequence*; the issues govern *state*.
 
+Two label families are easy to miss. `theory` marks work that comes out of the
+checklists at the end of the `docs/theory/` notes — real missing functions
+(robust σ estimation, DHCP starvation detection, ICMP rate-limit heuristics),
+not background reading. Requirement-ID issues (`CON-*`, `ANA-*`, `FED-*`, …)
+come from
+[`../architecture/REQUIREMENTS-TRACEABILITY.md`](../architecture/REQUIREMENTS-TRACEABILITY.md)
+and cover all 18 phases, including the tiers this guide does not reach:
+analysis, ML, federation, HA, RBAC, air-gap. Close a requirement issue only when
+its **acceptance evidence** exists and runs in CI — for those rows, `PARTIAL`
+usually means the code is written and the end-to-end proof is not.
+
 ---
 
 ## 1. Mission and Non-Negotiable Rules

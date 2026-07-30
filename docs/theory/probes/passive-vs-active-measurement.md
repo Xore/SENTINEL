@@ -17,7 +17,7 @@ The IETF IPPM working group defines three measurement paradigms (Fioccola et al.
 | **Hybrid** | Tag or timestamp subset of real traffic | Near-zero overhead | On-path with tagging capability |
 
 This system uses all three:
-- **Active:** ICMP echo probes (`collector/checks/icmp.go`)
+- **Active:** ICMP echo probes (`collector/checks/net_icmp.py`)
 - **Passive:** eBPF TCP RTT extraction via `tcp_close` kprobe or TC hook (`collector/ebpf/`)
 - **Hybrid:** ePPing TCP timestamp matching (planned Phase 2)
 
@@ -165,10 +165,10 @@ For the collector's flow table at home/lab scale (<1k concurrent flows), **exact
 | Item | File | Status |
 |---|---|---|
 | Dual-metric collection (ICMP + eBPF) per target | `collector/checks/` | Partially spec’d |
-| ePPing aggregator (per-target RTT from flows) | `collector/ebpf/epping.go` | **New — Phase 2** |
-| Prometheus labels: `method="icmp"` vs `method="epping"` | `collector/metrics.go` | **Missing — add** |
-| RTT method delta as anomaly signal | `monitor/detector.py` | **Missing — add** |
-| Coverage matrix decision logic (when to use which) | `collector/checks/scheduler.go` | **Missing — add** |
+| ePPing aggregator (per-target RTT from flows) | `collector/checks/ebpf_epping.py` (new) | **New — Phase 2** |
+| Prometheus labels: `method="icmp"` vs `method="epping"` | `collector/checks/net_icmp.py` + `collector/transport/otlp.py` | **Missing — add** |
+| RTT method delta as anomaly signal | `backend/analyse/detector.py` | **Missing — add** |
+| Coverage matrix decision logic (when to use which) | `collector/scheduler.py` | **Missing — add** |
 
 ---
 

@@ -1,8 +1,8 @@
 # eBPF Deployment Constraints: Raspberry Pi/ARM and Containerized Environments
-## Research Backlog Item — Gap #1 from `docs/gap-analysis-collector-vs-standalone.md`
+## Research Backlog Item — Gap #1 from `docs/gap-analysis/gap-analysis-collector-vs-standalone.md`
 
 > **Status:** Research document. Closes the one topic previously flagged as short on *both* literature and validation ("eBPF passive RTT portability" in the gap analysis).
-> **Scope:** What specifically breaks or needs verification when running the Phase 2 eBPF passive-RTT collector (`docs/ROADMAP.md` Phase 2, kprobe on `tcp_close`, `cilium/ebpf` + `bpf2go`) on Raspberry Pi/ARM64 hardware and inside Docker containers, and the concrete graceful-fallback contract the collector must implement when these constraints are not met.
+> **Scope:** What specifically breaks or needs verification when running the Phase 2 eBPF passive-RTT collector (`docs/collector/ROADMAP.md` Phase 2, kprobe on `tcp_close`, `cilium/ebpf` + `bpf2go`) on Raspberry Pi/ARM64 hardware and inside Docker containers, and the concrete graceful-fallback contract the collector must implement when these constraints are not met.
 
 ---
 
@@ -10,9 +10,9 @@
 
 ### 1.1 BTF (`/sys/kernel/btf/vmlinux`) Is Not Guaranteed on Default Raspberry Pi OS Images
 
-CO-RE (Compile Once – Run Everywhere) relocation, which the collector's `tcprtt.c` design depends on for cross-kernel portability, requires the kernel to expose BTF type information at `/sys/kernel/btf/vmlinux`. This requires `CONFIG_DEBUG_INFO_BTF=y` at kernel build time. As of late 2025, Raspberry Pi's own kernel engineers confirmed that although `CONFIG_HAVE_EBPF_JIT=y` is enabled by default, `CONFIG_DEBUG_INFO_BTF` is not, and enabling it increases the compressed kernel image size by roughly 17% (9.3 MB → 11 MB) and the full Debian kernel package by 32% — which is why Raspberry Pi has so far declined to enable it by default, leaving BTF generation as a custom-kernel-build requirement rather than an out-of-the-box guarantee [web:290]. This directly validates and quantifies the risk flagged in `docs/research-guide-for-gap-topics.md` §6.2 ("check whether BTF is available... older Raspberry Pi OS images may not meet this").
+CO-RE (Compile Once – Run Everywhere) relocation, which the collector's `tcprtt.c` design depends on for cross-kernel portability, requires the kernel to expose BTF type information at `/sys/kernel/btf/vmlinux`. This requires `CONFIG_DEBUG_INFO_BTF=y` at kernel build time. As of late 2025, Raspberry Pi's own kernel engineers confirmed that although `CONFIG_HAVE_EBPF_JIT=y` is enabled by default, `CONFIG_DEBUG_INFO_BTF` is not, and enabling it increases the compressed kernel image size by roughly 17% (9.3 MB → 11 MB) and the full Debian kernel package by 32% — which is why Raspberry Pi has so far declined to enable it by default, leaving BTF generation as a custom-kernel-build requirement rather than an out-of-the-box guarantee [web:290]. This directly validates and quantifies the risk flagged in `docs/gap-analysis/research-guide-for-gap-topics.md` §6.2 ("check whether BTF is available... older Raspberry Pi OS images may not meet this").
 
-**Practical implication for this project:** the collector cannot assume `/sys/kernel/btf/vmlinux` exists on a stock Raspberry Pi OS (Bookworm or otherwise) image. The existing runtime check in `docs/ROADMAP.md`'s `initEBPF()` (`os.Stat("/sys/kernel/btf/vmlinux")`) is the correct approach, but the ROADMAP text describing this as an edge case understates how common it actually is on this specific hardware target — it should be treated as the *default* case for Raspberry Pi fleets, not an exception.
+**Practical implication for this project:** the collector cannot assume `/sys/kernel/btf/vmlinux` exists on a stock Raspberry Pi OS (Bookworm or otherwise) image. The existing runtime check in `docs/collector/ROADMAP.md`'s `initEBPF()` (`os.Stat("/sys/kernel/btf/vmlinux")`) is the correct approach, but the ROADMAP text describing this as an edge case understates how common it actually is on this specific hardware target — it should be treated as the *default* case for Raspberry Pi fleets, not an exception.
 
 ### 1.2 Kprobe/Tracepoint Program Types Have a History of Being Unavailable on ARM64 Kernels
 
@@ -50,11 +50,11 @@ Independent of runtime quirks, Aqua Security's Tracee documents the same two-tie
 
 ### 2.5 AppArmor: Explicit Profile Requirement on Ubuntu-Family Hosts
 
-Falco's official container deployment guide states plainly that "if you are running Falco on a system with the AppArmor LSM enabled (e.g. Ubuntu), you must" apply a specific unconfined or custom AppArmor profile, even when using the driverless "Modern eBPF" mode that requires no out-of-tree kernel module [web:294]. Debian and Raspberry Pi OS do not enable AppArmor by default, but any Ubuntu-based collector node (a stated deployment target in this project) will need this explicitly addressed — the Docker Compose pattern in `docs/ROADMAP.md` already sets `security_opt: no-new-privileges:true`, but does not yet address AppArmor confinement, which is a gap this document flags for that file.
+Falco's official container deployment guide states plainly that "if you are running Falco on a system with the AppArmor LSM enabled (e.g. Ubuntu), you must" apply a specific unconfined or custom AppArmor profile, even when using the driverless "Modern eBPF" mode that requires no out-of-tree kernel module [web:294]. Debian and Raspberry Pi OS do not enable AppArmor by default, but any Ubuntu-based collector node (a stated deployment target in this project) will need this explicitly addressed — the Docker Compose pattern in `docs/collector/ROADMAP.md` already sets `security_opt: no-new-privileges:true`, but does not yet address AppArmor confinement, which is a gap this document flags for that file.
 
 ### 2.6 `hostNetwork`/`network_mode: host` and `hostPID`/`pid: host` Are Correctly Identified as Mandatory in the Existing ROADMAP
 
-The existing `docs/ROADMAP.md` Phase 2d already correctly states that TC hooks and kprobes require host network and host PID namespaces respectively, because BPF maps and kprobes observe the *host* kernel, not a container-scoped view. This is consistent with every external source reviewed for this document and required no correction — it is called out here only to confirm it does not need re-validation.
+The existing `docs/collector/ROADMAP.md` Phase 2d already correctly states that TC hooks and kprobes require host network and host PID namespaces respectively, because BPF maps and kprobes observe the *host* kernel, not a container-scoped view. This is consistent with every external source reviewed for this document and required no correction — it is called out here only to confirm it does not need re-validation.
 
 ### 2.7 Kernel Lockdown Mode Can Silently Break eBPF Even When Capabilities Are Correct
 
@@ -64,7 +64,7 @@ A frequently overlooked constraint is Linux kernel lockdown mode (available sinc
 
 ## Part 3 — Revised Graceful-Degradation Contract
 
-The existing `initEBPF()` sketch in `docs/ROADMAP.md` Phase 2d checks OS, BTF file existence, and memlock rlimit removal, in that order. Based on the findings above, this check sequence should be extended:
+The existing `initEBPF()` sketch in `docs/collector/ROADMAP.md` Phase 2d checks OS, BTF file existence, and memlock rlimit removal, in that order. Based on the findings above, this check sequence should be extended:
 
 ```go
 func (c *Collector) initEBPF() {
@@ -111,7 +111,7 @@ The two additions relative to the existing ROADMAP sketch are the kernel-lockdow
 1. **Treat missing BTF as the expected default on stock Raspberry Pi OS**, not an edge case — either commit to building and distributing a custom Raspberry Pi kernel with `CONFIG_DEBUG_INFO_BTF=y` (accepting the ~17% kernel image size increase [web:290]) for any Pi expected to run the eBPF module, or budget for BTFHub-sourced prebuilt BTF files matched per exact kernel build [web:304], or accept that Raspberry Pi nodes fall back to active ICMP-only monitoring indefinitely.
 2. **Add a runtime kprobe feature-probe, not just a BTF/kernel-version check**, since ARM64 kernel builds have historically diverged from x86_64 in program-type availability independent of the reported kernel version [web:287].
 3. **Document a minimum container-runtime version for Docker/Kubernetes deployments** and explicitly note `CAP_SYS_ADMIN` as a documented (not silent) fallback when `CAP_BPF` is not recognized by an older runtime [web:301].
-4. **Add an AppArmor profile note to the Docker Compose deployment pattern** in `docs/ROADMAP.md` for Ubuntu-based collector nodes specifically, since Debian/Raspberry Pi OS nodes are unaffected but Ubuntu nodes are a stated deployment target [web:294].
+4. **Add an AppArmor profile note to the Docker Compose deployment pattern** in `docs/collector/ROADMAP.md` for Ubuntu-based collector nodes specifically, since Debian/Raspberry Pi OS nodes are unaffected but Ubuntu nodes are a stated deployment target [web:294].
 5. **Add a kernel-lockdown-mode pre-flight check** to the graceful-degradation logic, since this failure mode is otherwise indistinguishable from a capability misconfiguration and would waste debugging time [web:313].
 6. **Re-run the arm64 CI-status check periodically** — `cilium/ebpf` arm64 support materially improved between 2021 and 2023 [web:287][web:293], so this document's findings should be revisited if the collector's `cilium/ebpf` dependency is upgraded across a major version boundary.
 

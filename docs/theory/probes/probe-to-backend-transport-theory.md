@@ -274,13 +274,13 @@ the most recent 26 hours of data**. This directly informs the SQLite schema desi
 
 | Requirement | Where to implement | Academic basis |
 |---|---|---|
-| R-T1: TLS 1.3 mandatory | `collector/main.go` TLS config; OTLP exporter | Tagliaro et al. ACM CCS 2024 |
-| R-T2: OTLP/gRPC push exporter | `collector/` — new `exporter.go` | OTLP Spec v1.0 (OpenTelemetry 2024) |
-| R-T3: MQTT fallback | Optional `collector/mqtt_exporter.go` | Tofan et al. MDPI Sensors 2024 |
-| Cipher preference (Curve25519) | `collector/main.go` TLS `CurvePreferences` | After et al. MDPI Sensors 2023 |
+| R-T1: TLS 1.3 mandatory | `collector/__main__.py` TLS config; OTLP exporter | Tagliaro et al. ACM CCS 2024 |
+| R-T2: OTLP/gRPC push exporter | `collector/` — new `collector/transport/otlp.py` | OTLP Spec v1.0 (OpenTelemetry 2024) |
+| R-T3: MQTT fallback | Optional `collector/transport/otlp.py` (MQTT variant, not built) | Tofan et al. MDPI Sensors 2024 |
+| Cipher preference (Curve25519) | `collector/__main__.py` TLS `CurvePreferences` | After et al. MDPI Sensors 2023 |
 | R-C1: Gorilla-compatible encoding | Automatic via OTLP protobuf metric batching | Pelkonen et al. VLDB 2015 |
-| R-C2: Batch flush 5–30 s, ring queue | `collector/exporter.go` sending queue | OTLP exporter defaults |
-| R-A1: mTLS + 90-day cert rotation | `collector/tls.go`, `GetClientCertificate` | NIST SP 800-57 Pt3; Tofan 2024 |
+| R-C2: Batch flush 5–30 s, ring queue | `collector/transport/otlp.py` sending queue | OTLP exporter defaults |
+| R-A1: mTLS + 90-day cert rotation | `collector/transport/mtls.py`, `GetClientCertificate` | NIST SP 800-57 Pt3; Tofan 2024 |
 | Streaming ingestion | `dashboard/` API endpoint → SQLite WAL write | TMA 2025 Trinocular study |
 | Batch baseline recomputation | `scheduler.py` periodic SQLite window queries | TMA 2025; Amorim et al. 2021 |
 | Tuple-pipeline schema | SQLite schema — `(target, metric, ts, value, tags)` | Gupta et al. HotNets 2016 |
