@@ -402,8 +402,11 @@ class CollectorSettings(BaseSettings):
     log_level: str = "INFO"
     data_dir: str = "/var/lib/analyselaptop/data"
     # Shared semaphore size capping total concurrent check network operations
-    # (see docs/guides/ASYNCIO-OPTIMIZATION.md §4) — 20 is right for a
-    # Raspberry Pi 3B; raise on higher-spec nodes rather than hardcoding.
+    # (see docs/guides/ASYNCIO-OPTIMIZATION.md §4). The default of 20 was
+    # derived from the retired Raspberry Pi 3B baseline and is due to be
+    # re-derived for the reference Pi 5 (ADR 0012) — that needs measurement,
+    # not a guess, so the value is unchanged here. Raise it per node rather
+    # than hardcoding a new one.
     max_concurrent_probes: int = Field(default=20, ge=1)
     # Workers in the shared CPU-bound thread pool (see
     # docs/guides/ASYNCIO-OPTIMIZATION.md §3). Defaults to a count derived

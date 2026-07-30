@@ -10,7 +10,7 @@ import structlog
 from opentelemetry.metrics import Meter
 
 from collector.checks import BaseCheck, CheckResult
-from collector.checks.net_icmp import ping, target_identifier
+from collector.checks.net_icmp import ping, resolve_ipv4, target_identifier
 from collector.config import CollectorSettings, LatencyTarget
 
 log = structlog.get_logger()
@@ -94,15 +94,32 @@ class LatencyCheck(BaseCheck):
         labels = {"target": self.target.host}
         rtts_ms: list[float] = []
         failures = 0
+        timeout_s = self.config.latency.timeout_s
+
+        # Resolved once for the whole burst, not once per sample: a failing
+        # resolver would otherwise cost `sample_count` timeouts in a single
+        # check run, and a name that changed mid-burst would give samples that
+        # do not describe one destination.
+        try:
+            destination_ip = await resolve_ipv4(self.target.host, timeout_s=timeout_s)
+        except Exception as exc:
+            log.warning("check.degraded", check=self.name, target=self.target.host, error=str(exc))
+            self._record(rtt_ms=None, jitter_ms=None, loss_pct=100.0)
+            return CheckResult(
+                ok=False,
+                metrics={"icmp_loss_pct": 100.0},
+                labels=labels,
+                error=str(exc),
+            )
 
         for _ in range(self.sample_count):
             self._sequence = (self._sequence + 1) % 65536
             try:
                 rtt_ms = await ping(
-                    self.target.host,
+                    destination_ip,
                     identifier=self._identifier,
                     sequence=self._sequence,
-                    timeout_s=self.config.latency.timeout_s,
+                    timeout_s=timeout_s,
                 )
                 rtts_ms.append(rtt_ms)
             except Exception as exc:

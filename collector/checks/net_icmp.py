@@ -6,6 +6,7 @@ this check instance's target. Requires `CAP_NET_RAW` (or root) to open an
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 import socket
 import struct
@@ -66,19 +67,61 @@ def target_identifier(target: str) -> int:
     return (os.getpid() ^ hash(target)) & 0xFFFF
 
 
-def _ping_once_blocking(target_ip: str, identifier: int, sequence: int, timeout_s: float) -> float:
-    """Send one echo request and block for the matching reply.
+async def resolve_ipv4(host: str, *, timeout_s: float) -> str:
+    """Resolve `host` to an IPv4 literal, bounded by `timeout_s`.
 
-    Returns RTT in milliseconds. Raises `TimeoutError`/`OSError` on failure.
-    This is a plain blocking function run off the event loop via
-    `asyncio.to_thread` (see `ping()`) — not an `async def` — so it can be
-    exercised in tests by mocking `socket.socket`, without a real
-    (privileged) raw socket or asyncio fd registration.
+    Deliberately **not** routed through `run_in_thread`. A blocked resolver is
+    not CPU work, and a `run_in_executor` future cannot be cancelled once it
+    is running: putting resolution on the collector's small shared CPU pool
+    means a black-holed nameserver occupies a worker until the resolver's own
+    (uncapped, ~5s x 2 per nameserver on glibc) timeout fires, long after the
+    awaiting probe was cancelled. That starves every other check using the
+    pool and puts the probe outside its configured `timeout_s`.
+
+    `loop.getaddrinfo` uses the event loop's default executor instead, which
+    is separate from the collector's CPU pool and sized for exactly this kind
+    of stall. `asyncio.timeout` still cannot reclaim that thread early —
+    nothing can — but the *probe* now fails on schedule and the CPU pool is
+    untouched, which is what the check's timeout budget actually promises.
+
+    IPv4 literals short-circuit without touching a resolver. IPv6 is rejected
+    upstream by config validation (`_validate_icmp_host`); this raises rather
+    than silently probing something else if one arrives anyway.
+    """
+    try:
+        ipaddress.IPv4Address(host)
+    except ValueError:
+        pass
+    else:
+        return host
+
+    loop = asyncio.get_running_loop()
+    try:
+        async with asyncio.timeout(timeout_s):
+            infos = await loop.getaddrinfo(host, None, family=socket.AF_INET)
+    except TimeoutError:
+        raise TimeoutError(f"could not resolve {host} within {timeout_s}s") from None
+    if not infos:
+        raise OSError(f"no IPv4 address for {host}")
+    return str(infos[0][4][0])
+
+
+def _ping_once_blocking(
+    destination_ip: str, identifier: int, sequence: int, timeout_s: float
+) -> float:
+    """Send one echo request to an IPv4 literal and block for the matching reply.
+
+    `destination_ip` must already be a literal — `resolve_ipv4()` is the
+    caller's job, precisely so that no name resolution happens on the shared
+    CPU pool. Returns RTT in milliseconds; raises `TimeoutError`/`OSError`.
+    This is a plain blocking function run off the event loop (see `ping()`) —
+    not an `async def` — so it can be exercised in tests by mocking
+    `socket.socket`, without a real (privileged) raw socket or asyncio fd
+    registration.
     """
     payload = struct.pack("!d", time.monotonic())
     packet = _build_echo_request(identifier, sequence, payload)
 
-    destination_ip = socket.gethostbyname(target_ip)
     sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
     try:
         start = time.monotonic()
@@ -87,12 +130,14 @@ def _ping_once_blocking(target_ip: str, identifier: int, sequence: int, timeout_
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(f"no reply from {target_ip} within {timeout_s}s")
+                raise TimeoutError(f"no reply from {destination_ip} within {timeout_s}s")
             sock.settimeout(remaining)
             try:
                 reply, addr = sock.recvfrom(1024)
             except TimeoutError:
-                raise TimeoutError(f"no reply from {target_ip} within {timeout_s}s") from None
+                raise TimeoutError(
+                    f"no reply from {destination_ip} within {timeout_s}s"
+                ) from None
             if addr[0] == destination_ip and _parse_echo_reply(reply, identifier, sequence):
                 return (time.monotonic() - start) * 1000.0
             # Not our reply (e.g. one meant for a concurrent ping) — keep waiting.
@@ -100,18 +145,22 @@ def _ping_once_blocking(target_ip: str, identifier: int, sequence: int, timeout_
         sock.close()
 
 
-async def ping(target_ip: str, *, identifier: int, sequence: int, timeout_s: float) -> float:
+async def ping(destination_ip: str, *, identifier: int, sequence: int, timeout_s: float) -> float:
     """Async wrapper around the blocking ping — RTT in milliseconds.
 
-    Runs on the collector's shared, hard-capped 2-worker thread pool
-    (`collector.utils.thread_pool.run_in_thread`), not the default
-    `asyncio.to_thread` executor — raw-socket ICMP is exactly the kind of
-    blocking call that pool exists for (docs/guides/ASYNCIO-OPTIMIZATION.md
-    §3), and using the unbounded default pool here would let a burst of
-    concurrent ICMP/latency checks exceed the Pi 3B CPU NFR the rest of the
-    collector enforces.
+    `destination_ip` must be an IPv4 literal; call `resolve_ipv4()` once per
+    check run, not once per ping, so a latency burst does not pay resolution
+    `sample_count` times.
+
+    Runs on the collector's shared CPU thread pool
+    (`collector.utils.thread_pool.run_in_thread`) rather than the loop's
+    default executor — raw-socket ICMP is exactly the kind of blocking call
+    that pool exists for (docs/guides/ASYNCIO-OPTIMIZATION.md §3). The pool's
+    worker count is configuration (`CollectorSettings.cpu_pool_workers`,
+    ADR 0012), so what bounds this call is `timeout_s`, enforced by the socket
+    deadline inside `_ping_once_blocking` — not the pool's size.
     """
-    return await run_in_thread(_ping_once_blocking, target_ip, identifier, sequence, timeout_s)
+    return await run_in_thread(_ping_once_blocking, destination_ip, identifier, sequence, timeout_s)
 
 
 class IcmpCheck(BaseCheck):
@@ -162,12 +211,14 @@ class IcmpCheck(BaseCheck):
 
     async def run(self) -> CheckResult:
         self._sequence = (self._sequence + 1) % 65536
+        timeout_s = self.config.icmp.timeout_s
         try:
+            destination_ip = await resolve_ipv4(self.target.host, timeout_s=timeout_s)
             rtt_ms = await ping(
-                self.target.host,
+                destination_ip,
                 identifier=self._identifier,
                 sequence=self._sequence,
-                timeout_s=self.config.icmp.timeout_s,
+                timeout_s=timeout_s,
             )
             self._record(rtt_ms=rtt_ms, loss_pct=0.0)
             return CheckResult(

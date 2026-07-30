@@ -56,8 +56,10 @@ class BaseCheck(ABC):
         Bounds total concurrent network operations across every check via a
         shared `asyncio.Semaphore` (sized from
         `CollectorSettings.max_concurrent_probes`), so a burst of due checks
-        can't exhaust file descriptors on constrained nodes (e.g. a
-        Raspberry Pi 3B). A no-op passthrough if no semaphore was supplied —
+        can't exhaust file descriptors on a constrained node — the reference
+        platform is a Raspberry Pi 5 (ADR 0012), but the cap exists to make
+        the limit deliberate rather than discovered at runtime, on any node.
+        A no-op passthrough if no semaphore was supplied —
         constructing a check directly, as most unit tests do, doesn't need
         one.
         """
