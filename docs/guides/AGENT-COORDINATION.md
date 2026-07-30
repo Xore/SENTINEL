@@ -94,7 +94,7 @@ Detailed Sonnet follow-on scopes and gates are in
 | 2026-07-28T17:42:13Z | CODEX | S2-02 | takeover of Sonnet's frozen exact claim: `collector/checks/net_icmp.py`, `collector/checks/net_tcp.py`, `collector/checks/net_http.py`, `collector/checks/net_dns.py`, `collector/checks/net_latency.py`, `collector/checks/__init__.py`, `collector/config.py` (network + latency target sections only), `collector/__main__.py` (check-registration wiring only), `collector/tests/checks/test_net_icmp.py`, `collector/tests/checks/test_net_tcp.py`, `collector/tests/checks/test_net_http.py`, `collector/tests/checks/test_net_dns.py`, `collector/tests/checks/test_net_latency.py`, `collector/tests/checks/test_base.py`, `collector/tests/test_config.py` (target-validation portions only), `collector/tests/test_main.py` (registration portions only), this ledger |
 | 2026-07-30T11:00:07Z | SONNET5 | S3-01A | corrections to Codex design review 1 only: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
 | 2026-07-26T14:10:00Z | SONNET5 | S3-01A | superseded by the correction row above; original new-file claim: `collector/checks/host_cpu.py`, `collector/checks/host_memory.py`, `collector/checks/host_disk.py`, `collector/checks/host_load.py`, `collector/checks/host_network.py`, `collector/checks/host_process.py`, `collector/checks/host_service.py`, `collector/tests/checks/test_host_cpu.py`, `collector/tests/checks/test_host_memory.py`, `collector/tests/checks/test_host_disk.py`, `collector/tests/checks/test_host_load.py`, `collector/tests/checks/test_host_network.py`, `collector/tests/checks/test_host_process.py`, `collector/tests/checks/test_host_service.py`, this ledger |
-| 2026-07-30T13:36:40Z | SONNET5 | GATES-S3-01A/S4-01A | ledger-only in this repo: this ledger. Also claims exclusive use of the shared Ubuntu gate host `.33` (`/home/adminuser/analyseLaptop`) until released, because running exact-commit gates there detaches its working copy. The host is returned to `main` before the claim closes. |
+| 2026-07-30T13:33:49Z | SONNET5 | GATES-S3-01A/S4-01A | ledger-only in this repo: this ledger. Also claims exclusive use of the shared Ubuntu gate host `.33` (`/home/adminuser/analyseLaptop`) until released, because running exact-commit gates there detaches its working copy. The host is returned to `main` before the claim closes. |
 | 2026-07-30T11:41:18Z | SONNET5 | REVIEW-S2-02/C2-03 | ledger-only: this ledger. Read-only inspection of `4e18ad8..0e254b0` (S2-02) and `278e49f..dc571f8` + the workflow portion of `21502d9..fec75f1` (C2-03). No implementation file is edited under this claim. |
 | 2026-07-30T11:19:04Z | SONNET5 | S4-01A | corrections to Codex review 1 only: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
 | 2026-07-26T15:05:00Z | SONNET5 | S4-01A | superseded by the correction row above; original new-file claim: `collector/store/__init__.py`, `collector/store/envelope.py`, `collector/store/sqlite_queue.py`, `collector/tests/store/__init__.py`, `collector/tests/store/test_envelope.py`, `collector/tests/store/test_sqlite_queue.py`, this ledger |
@@ -117,7 +117,7 @@ new REVIEW handoff.
    - S4-01A — six review-1 groups done at `0dc7f5d` (A-S4-01A-2 below); now
      `REVIEW`. One deliberate deviation from the claimed plan is flagged in
      that handoff (group 5), and Q-14 records the lease question it raised.
-   - **The Ubuntu gate debt on both is cleared (A-GATES-1, 13:44Z).** `.33`
+   - **The Ubuntu gate debt on both is cleared (A-GATES-1, 13:37Z).** `.33`
      answered again, and both exact commits pass all four gates there —
      S3-01A `612 passed, 1 skipped`, S4-01A `656 passed, 1 skipped`, Ruff and
      mypy clean and Pylint `10.00/10` on each, plus 25/25 clean repetitions of
@@ -1203,7 +1203,7 @@ truncating it for forensics.
 
 ### A-GATES-1 — Sonnet 5 Ubuntu gate-evidence claim
 
-- **Timestamp:** 2026-07-30T13:36:40Z.
+- **Timestamp:** 2026-07-30T13:33:49Z.
 - **Status:** COMPLETE — results below, `.33` returned to `main` at `0895375`
   with a clean tree. The claim on the gate host is released.
 - **Why:** the S3-01A (`e81cdaf`) and S4-01A (`0dc7f5d`) correction handoffs
@@ -1219,7 +1219,7 @@ truncating it for forensics.
 
 #### Ubuntu gate evidence for S3-01A and S4-01A
 
-- **Timestamp:** 2026-07-30T13:44:05Z.
+- **Timestamp:** 2026-07-30T13:37:01Z.
 - **Host:** `.33` (`MGPNetworkAnalayses02`), Ubuntu 24.04, kernel
   `7.0.0-28-generic`, Python 3.12.3, `collector/.venv`. The working copy was
   clean at `fec75f1` before the run and was detached onto each exact
@@ -1253,7 +1253,7 @@ truncating it for forensics.
 
 #### S2-02 resolver finding, reproduced on Ubuntu
 
-- **Timestamp:** 2026-07-30T13:44:05Z.
+- **Timestamp:** 2026-07-30T13:37:01Z.
 - The S2-02 review's measurement was Windows-only when published. Repeated on
   `.33` at exact `0e254b0`, same method — only `socket.gethostbyname` replaced
   by a 2.0s-then-fail stand-in, nothing else patched:
