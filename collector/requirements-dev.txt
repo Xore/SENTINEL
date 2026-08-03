@@ -4,7 +4,7 @@
 pytest==9.1.1
 pytest-asyncio==1.4.0
 mypy==1.20.2
-ruff==0.16.0
+ruff==0.16.1
 pyinstaller==6.21.0
 types-PyYAML==6.0.12.20260724
 pylint==3.3.9
